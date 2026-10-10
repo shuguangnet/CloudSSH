@@ -1,0 +1,14 @@
+.git
+node_modules
+frontend/node_modules
+frontend/dist
+dist
+data
+.env
+.env.*
+.dev.vars*
+.wrangler
+coverage
+test-results
+playwright-report
+*.log

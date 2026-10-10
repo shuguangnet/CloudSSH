@@ -164,6 +164,9 @@ export function normalizeTerminalSize(cols: unknown, rows: unknown): TerminalSiz
 }
 
 export interface Env {
+  /** Set only by the standalone runtime; private SSH destinations require saved servers. */
+  SELF_HOSTED_ALLOW_PRIVATE?: string;
+  SELF_HOSTED?: string;
   SSH_SESSION: DurableObjectNamespace;
   USER_DB: DurableObjectNamespace;
   SSH_SHARE: DurableObjectNamespace;

@@ -3252,6 +3252,14 @@ export class SSHSession {
     }
   }
 
+  /** Execute on an authenticated headless session, without a browser or AI model. */
+  async executeHeadlessCommand(command: string, timeout: number, signal?: AbortSignal) {
+    if (this.closed || this.state !== 'tunnel-ready') {
+      throw new Error('Headless SSH session is not authenticated');
+    }
+    return this.executeAgentCommand(command, timeout, signal);
+  }
+
   private async executeAgentCommand(
     command: string,
     timeout: number,
@@ -3265,6 +3273,8 @@ export class SSHSession {
     const execCh = new AgentExecChannel(channelID, channel);
     this.activeExecChannels.set(channelID, execCh);
 
+    let execTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | undefined;
     // Open channel
     const openMsg = channel.buildOpenSession(channelID);
     await this.sendEncrypted(openMsg);
@@ -3287,19 +3297,17 @@ export class SSHSession {
       const result = await Promise.race([
         execCh.getClosedPromise(),
         new Promise<{ stdout: string; stderr: string; exitCode: number }>((_, reject) => {
-          const timer = setTimeout(
+          execTimer = setTimeout(
             () => reject(new Error(`Exec timeout after ${timeout}ms`)),
             timeout
           );
-          signal?.addEventListener(
-            'abort',
-            () => {
-              aborted = true;
-              clearTimeout(timer);
-              reject(new Error('Exec aborted'));
-            },
-            { once: true }
-          );
+          abortHandler = () => {
+            aborted = true;
+            if (execTimer !== null) clearTimeout(execTimer);
+            reject(new Error('Exec aborted'));
+          };
+          signal?.addEventListener('abort', abortHandler, { once: true });
+          if (signal?.aborted) abortHandler();
         }),
       ]);
 
@@ -3321,6 +3329,11 @@ export class SSHSession {
 
       return result;
     } finally {
+      if (execTimer !== null) clearTimeout(execTimer);
+      if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+      if (!channel.isClosed()) {
+        try { await this.sendEncrypted(channel.buildClose()); } catch { /* Session closing. */ }
+      }
       // 无论成功、失败、超时或被中止，都必须清理 channel 引用，防止资源泄漏
       // （之前 waitForExecChannelOpen 超时 throw 会跳过清理，导致 execCh 残留在 activeExecChannels）
       this.activeExecChannels.delete(channelID);

@@ -1,0 +1,16 @@
+:root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+body { margin: 0; background: light-dark(#f5f7fa, #13171e); color: light-dark(#20252b, #e3e8ef); }
+main { max-width: 980px; margin: 32px auto; padding: 0 20px 40px; }
+nav { display: flex; justify-content: space-between; align-items: center; }
+a { color: light-dark(#185abe, #8db6ff); }
+section { border: 1px solid light-dark(#d5dbe3, #404753); border-radius: 12px; padding: 22px; margin: 24px 0; background: light-dark(white, #1b212a); }
+h1, h2 { line-height: 1.3; } h2 { font-size: 1.3rem; margin-top: 0; }
+label { display: block; margin: 12px 0; } label span { display: block; }
+input:not([type=checkbox]), textarea, select { box-sizing: border-box; border: 1px solid #7b8594; border-radius: 5px; padding: 9px; font: inherit; }
+input:not([type=checkbox]), textarea { width: 100%; } .choice { display: flex; gap: 10px; align-items: flex-start; }
+fieldset { margin: 16px 0; border: 1px solid #7b8594; border-radius: 6px; }
+button { padding: 9px 16px; border: 1px solid #59749b; border-radius: 6px; font: inherit; cursor: pointer; background: light-dark(#e8efff, #263b58); }
+button:disabled { opacity: .5; cursor: default; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #7b8594; font-size: .9rem; } table { width: 100%; border-collapse: collapse; }
+.scroll { overflow-x: auto; } pre { overflow-x: auto; padding: 16px; background: light-dark(#f5f7fa, #13171e); }
+textarea { min-height: 85px; } #message { min-height: 1.6em; } code { overflow-wrap: anywhere; }

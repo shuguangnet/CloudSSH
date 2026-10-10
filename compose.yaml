@@ -1,0 +1,25 @@
+services:
+  cloudssh:
+    build: .
+    image: cloudssh-self-hosted:local
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 200s
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8787}:8787"
+    environment:
+      BASE_URL: "${BASE_URL:-http://localhost:8787}"
+      ALLOW_INSECURE_HTTP: "${ALLOW_INSECURE_HTTP:-false}"
+      GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
+      GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
+      GITHUB_ALLOWED_USER_IDS: "${GITHUB_ALLOWED_USER_IDS:-}"
+      IDLE_TIMEOUT: "${IDLE_TIMEOUT:-30m}"
+    volumes:
+      - cloudssh-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+volumes:
+  cloudssh-data:

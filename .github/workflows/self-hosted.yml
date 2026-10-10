@@ -1,0 +1,32 @@
+name: Self-hosted and MCP checks
+
+on:
+  push:
+    branches: [test, main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: "11.8.0"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: sudo apt-get update && sudo apt-get install -y openssh-server && sudo mkdir -p /run/sshd
+      - run: pnpm run typecheck && pnpm test && pnpm run build:self-hosted
+      - name: Native HTTP, browser settings, MCP and real OpenSSH integration
+        run: sudo env SELF_HOSTED_BROWSER_TESTS=1 PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright" "$(command -v node)" --test tests/standalone/*.test.mjs
+      - run: pnpm run test:e2e
+      - name: Docker deployment and restart persistence
+        run: node tests/standalone/docker-smoke.mjs
