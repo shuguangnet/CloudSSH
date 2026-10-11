@@ -35,7 +35,10 @@ const tokenStatus = (token) => token.revoked_at ? 'revoked' : token.expires_at <
 const serverName = (id) => servers.find((server) => server.id === id)?.name || `#${id}`;
 const tokenName = (id) => tokens.find((token) => token.id === id)?.name || `#${String(id).slice(0, 8)}`;
 
-/* ---------- 创建令牌：服务器多选 / 全选 / 搜索 ---------- */
+/* ---------- 创建令牌：服务器多选 / 全选 / 搜索 ----------
+   selectedServers 是勾选状态的唯一真源：搜索过滤会重建卡片 DOM，
+   勾选不丢失；全选/取消作用于全部服务器（含被搜索隐藏的）。 */
+const selectedServers = new Set();
 function renderServerPicker() {
   const query = $('server-search').value.trim().toLowerCase();
   const grid = $('servers'); grid.replaceChildren();
@@ -44,6 +47,7 @@ function renderServerPicker() {
   for (const server of visible) {
     const label = document.createElement('label'); label.className = 'server-card';
     const input = document.createElement('input'); input.type = 'checkbox'; input.name = 'server'; input.value = server.id;
+    if (selectedServers.has(server.id)) { input.checked = true; label.classList.add('server-card--selected'); }
     const body = document.createElement('span'); body.className = 'server-card__body';
     const name = document.createElement('span'); name.className = 'server-card__name'; name.textContent = server.name;
     const host = document.createElement('span'); host.className = 'server-card__host'; host.textContent = `${server.host}:${server.port}`;
@@ -58,22 +62,26 @@ function renderServerPicker() {
   syncSelectionState();
 }
 function syncSelectionState() {
-  const checked = [...document.querySelectorAll('input[name=server]:checked')];
-  const all = [...document.querySelectorAll('input[name=server]')];
-  $('server-count').textContent = fill('selectedCount', { n: checked.length, total: servers.length });
+  $('server-count').textContent = fill('selectedCount', { n: selectedServers.size, total: servers.length });
   const selectAll = $('select-all');
-  selectAll.checked = all.length > 0 && checked.length === all.length;
-  selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+  selectAll.checked = servers.length > 0 && selectedServers.size === servers.length;
+  selectAll.indeterminate = selectedServers.size > 0 && selectedServers.size < servers.length;
   for (const card of document.querySelectorAll('.server-card')) {
     card.classList.toggle('server-card--selected', card.querySelector('input').checked);
   }
 }
 $('select-all').addEventListener('change', (event) => {
-  const { checked } = event.target;
-  for (const input of document.querySelectorAll('input[name=server]')) input.checked = checked;
+  selectedServers.clear();
+  if (event.target.checked) for (const server of servers) selectedServers.add(server.id);
+  renderServerPicker();
+});
+$('servers').addEventListener('change', (event) => {
+  const input = event.target;
+  if (input.name !== 'server') return;
+  const id = Number(input.value);
+  if (input.checked) selectedServers.add(id); else selectedServers.delete(id);
   syncSelectionState();
 });
-$('servers').addEventListener('change', syncSelectionState);
 $('server-search').addEventListener('input', () => renderServerPicker());
 
 /* ---------- 访问令牌：状态/名称筛选 + 撤销/删除 ---------- */
@@ -184,7 +192,7 @@ $('create-token').addEventListener('submit', async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   $('created').hidden = true; $('token').value = ''; $('client-config').textContent = '';
   try {
-    const server_ids = [...document.querySelectorAll('input[name=server]:checked')].map((item) => Number(item.value));
+    const server_ids = [...selectedServers];
     const scopes = [...document.querySelectorAll('input[name=scope]:checked')].map((item) => item.value);
     if (!server_ids.length || !scopes.length) throw new Error(text('choose'));
     const response = await api('/api/mcp/tokens', { method: 'POST', body: JSON.stringify({
