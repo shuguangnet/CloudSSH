@@ -66,6 +66,8 @@ export const zhTW = {
   'auth.adminUsernameRequired': '請輸入管理員帳號。',
   'auth.adminAccountSettings': '帳號設定',
   'auth.automation': '自動化',
+  'menu.functions': '功能',
+  'menu.settings': '設定',
   'auth.keyPairTitle': '金鑰操作',
   'auth.generateKeyPair': '產生金鑰組',
   'auth.generateKeyFailed': '產生金鑰組失敗。',

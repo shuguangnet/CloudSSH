@@ -65,6 +65,7 @@ test('AI 配置首次点击立即显示，配置数据异步加载', async ({ pa
   });
 
   await page.goto('/');
+  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
 
   await expect(page.locator('#ai-config-modal')).toBeVisible();
@@ -120,6 +121,7 @@ test('AI 模型选择下拉框：免重复输入 token 获取模型列表，且�
   });
 
   await page.goto('/');
+  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
   await expect(page.locator('#ai-config-modal')).toBeVisible();
 
@@ -287,6 +289,7 @@ test('Liquid Glass 主题下 AI 模型下拉与设置面板保持可滚动、可
   await page.goto('/?lang=zh-CN');
   await expect(page.locator('html')).toHaveAttribute('data-ui-style', 'liquid');
 
+  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
   await expect(page.locator('#ai-config-modal')).toBeVisible();
   await page.locator('#ai-fetch-models-btn').click();
@@ -376,6 +379,7 @@ test('窄视口 AI 设置弹窗不出现横向滚动条，且 .no-scrollbar 已�
 
   const moreBtn = page.locator('#user-space-more-btn');
   if (await moreBtn.isVisible()) await moreBtn.click();
+  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
   await expect(page.locator('#ai-config-modal')).toBeVisible();
   await page.locator('#ai-fetch-models-btn').click();
@@ -448,4 +452,102 @@ test('标签栏不绘制无效纵向滚动条（单行横向容器必须禁止�
   expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight);
   // 多标签时仍需横向滚动，不得因禁止纵向滚动而一并关闭
   expect(metrics.overflowX).toBe('auto');
+});
+
+test('用户菜单按功能/设置分组展示独立页面入口', async ({ page }) => {
+  await blockOptionalThirdPartyAssets(page);
+  await page.route('**/api/user/theme', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"theme":null}' })
+  );
+  await page.route('**/api/auth/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 1, github_id: 1, username: 'tester', avatar_url: '' }),
+    })
+  );
+  await page.route('**/api/servers', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  );
+  // 自托管能力全开：功能组（自动化/MCP）与设置组（账号设置/AI）都应出现
+  await page.route('**/api/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sshSharingEnabled: true,
+        mcpEnabled: true,
+        adminAccountEnabled: true,
+        automationEnabled: true,
+      }),
+    })
+  );
+
+  await page.goto('/?lang=zh-CN');
+  await expect(page.locator('#user-space-section')).toBeVisible();
+
+  // 初始收起
+  await expect(page.locator('#user-menu')).toBeHidden();
+
+  await page.locator('#user-menu-btn').click();
+  await expect(page.locator('#user-menu')).toBeVisible();
+  await expect(page.locator('#user-menu [data-menu-group="functions"]')).toBeVisible();
+  await expect(page.locator('#user-menu [data-menu-group="settings"]')).toBeVisible();
+  await expect(page.locator('#menu-automation')).toHaveAttribute('href', '/automation');
+  await expect(page.locator('#menu-mcp')).toHaveAttribute('href', '/mcp/settings');
+  await expect(page.locator('#menu-account')).toHaveAttribute('href', '/account/settings');
+  await expect(page.locator('#user-menu .user-menu-group-label').first()).toHaveText('功能');
+  await expect(page.locator('#user-menu .user-menu-group-label').nth(1)).toHaveText('设置');
+  await expect(page.locator('#ai-config-btn')).toBeVisible();
+  await expect(page.locator('#logout-btn')).toBeVisible();
+
+  // 点击菜单外区域收起
+  await page.mouse.click(8, 200);
+  await expect(page.locator('#user-menu')).toBeHidden();
+
+  // Escape 收起
+  await page.locator('#user-menu-btn').click();
+  await expect(page.locator('#user-menu')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#user-menu')).toBeHidden();
+});
+
+test('Workers 部署（无自动化/MCP/账号页能力）隐藏功能组与受限入口', async ({ page }) => {
+  await blockOptionalThirdPartyAssets(page);
+  await page.route('**/api/user/theme', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"theme":null}' })
+  );
+  await page.route('**/api/auth/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 1, github_id: 1, username: 'tester', avatar_url: '' }),
+    })
+  );
+  await page.route('**/api/servers', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  );
+  await page.route('**/api/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sshSharingEnabled: true,
+        mcpEnabled: false,
+        adminAccountEnabled: false,
+        automationEnabled: false,
+      }),
+    })
+  );
+
+  await page.goto('/?lang=zh-CN');
+  await expect(page.locator('#user-space-section')).toBeVisible();
+
+  await page.locator('#user-menu-btn').click();
+  await expect(page.locator('#user-menu')).toBeVisible();
+  // 功能组整组隐藏；设置组仅剩 AI Agent 设置
+  await expect(page.locator('#user-menu [data-menu-group="functions"]')).toBeHidden();
+  await expect(page.locator('#menu-account')).toBeHidden();
+  await expect(page.locator('#user-menu [data-menu-group="settings"]')).toBeVisible();
+  await expect(page.locator('#user-menu [data-menu-group="settings"] .user-menu-item:not(.hidden)')).toHaveCount(1);
 });

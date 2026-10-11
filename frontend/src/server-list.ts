@@ -180,6 +180,14 @@ export function sortServers(
 /**
  * 用户空间 — 服务器列表管理组件
  */
+/** 用户菜单分组标签随内容显隐：组内无可见入口时隐藏整组（如 Workers 部署无功能组） */
+function syncUserMenuGroups(): void {
+  document.querySelectorAll<HTMLDivElement>('#user-menu .user-menu-group').forEach((group) => {
+    const hasVisibleItem = !!group.querySelector('.user-menu-item:not(.hidden)');
+    group.classList.toggle('hidden', !hasVisibleItem);
+  });
+}
+
 export class ServerList {
   private user: UserInfo;
   private servers: ServerConfig[] = [];
@@ -525,33 +533,14 @@ export class ServerList {
       this.automationEnabled = config.automationEnabled === true;
       if (this.automationEnabled) {
         document.getElementById('server-generate-key')?.classList.remove('hidden');
-        if (!document.getElementById('automation-link')) {
-          const link = document.createElement('a');
-          link.id = 'automation-link';
-          link.href = '/automation';
-          link.textContent = t('auth.automation');
-          link.className = 'text-xs font-bold text-primary underline';
-          document.getElementById('user-info')?.appendChild(link);
-        }
       }
+      // 用户菜单：功能/设置分组的独立页面入口按部署能力显隐
+      document.getElementById('menu-automation')?.classList.toggle('hidden', !this.automationEnabled);
+      document.getElementById('menu-mcp')?.classList.toggle('hidden', config.mcpEnabled !== true);
+      document.getElementById('menu-account')?.classList.toggle('hidden', config.adminAccountEnabled !== true);
+      syncUserMenuGroups();
       // 状态按钮依赖 automationEnabled，配置就位后重绘一次卡片
       if (this.automationEnabled !== automationWasEnabled && this.servers.length) this.renderServerGrid();
-      if (config.adminAccountEnabled && !document.getElementById('admin-account-link')) {
-        const link = document.createElement('a');
-        link.id = 'admin-account-link';
-        link.href = '/account/settings';
-        link.textContent = t('auth.adminAccountSettings');
-        link.className = 'text-xs font-bold text-primary underline';
-        document.getElementById('user-info')?.appendChild(link);
-      }
-      if (config.mcpEnabled && !document.getElementById('mcp-settings-link')) {
-        const link = document.createElement('a');
-        link.id = 'mcp-settings-link';
-        link.href = '/mcp/settings';
-        link.textContent = 'MCP';
-        link.className = 'text-xs font-bold text-primary underline';
-        document.getElementById('user-info')?.appendChild(link);
-      }
     } catch {
       this.sharingEnabled = false;
     }

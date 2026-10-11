@@ -66,6 +66,8 @@ export const zhCN = {
   'auth.adminUsernameRequired': '请输入管理员账号。',
   'auth.adminAccountSettings': '账号设置',
   'auth.automation': '自动化',
+  'menu.functions': '功能',
+  'menu.settings': '设置',
   'auth.keyPairTitle': '密钥操作',
   'auth.generateKeyPair': '生成密钥对',
   'auth.generateKeyFailed': '生成密钥对失败。',

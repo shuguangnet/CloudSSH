@@ -159,7 +159,7 @@ WantedBy=multi-user.target
 
 ## 自动化（定时任务、可用性监控、推送通知、密钥对生成、PWA）
 
-自托管面板提供 `/automation` 独立页面（主面板右上角入口，仅自托管部署显示），包含六块能力，均仅对管理员会话开放，Cloudflare Workers 部署无这些路由：
+自托管面板提供 `/automation` 独立页面（主面板右上角用户菜单「功能」组入口，仅自托管部署显示），包含六块能力，均仅对管理员会话开放，Cloudflare Workers 部署无这些路由：
 
 独立页面（自动化、MCP 设置、账号设置）共享 `standalone/page.css` 设计系统，并自动跟随主面板的主题选择（同源 `localStorage` 中的 `cloudssh_theme_selection`，由 `standalone/page.js` 同步，跨标签页实时生效）；自定义导入主题同样适用。
 

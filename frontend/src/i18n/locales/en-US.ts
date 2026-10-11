@@ -100,6 +100,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.adminUsernameRequired': 'Enter the administrator account.',
   'auth.adminAccountSettings': 'Account settings',
   'auth.automation': 'Automation',
+  'menu.functions': 'Functions',
+  'menu.settings': 'Settings',
   'auth.keyPairTitle': 'Key operations',
   'auth.generateKeyPair': 'Generate key pair',
   'auth.generateKeyFailed': 'Failed to generate key pair.',

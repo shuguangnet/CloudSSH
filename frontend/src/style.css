@@ -835,6 +835,141 @@ select optgroup {
   display: none;
 }
 
+/* ==================== User Dropdown Menu ==================== */
+
+/* 头像+用户名即菜单按钮；下拉内按「功能 / 设置」分组展示独立页面入口 */
+.user-menu-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.user-menu-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  color: var(--on-surface);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.user-menu-button:hover,
+.user-menu-button:focus-visible,
+.user-menu-button[aria-expanded="true"] {
+  background: var(--accent-bg);
+  border-color: var(--border-strong);
+}
+
+.user-menu-chevron {
+  font-size: 18px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.user-menu-button[aria-expanded="true"] .user-menu-chevron {
+  transform: rotate(180deg);
+}
+
+.user-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 130;
+  min-width: 216px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--modal-radius);
+  box-shadow: var(--shadow-floating);
+  color: var(--on-surface);
+}
+
+.user-menu.hidden,
+.user-menu-item.hidden {
+  /* Tailwind .hidden 在文件头部，会被此处的 display 规则覆盖，需显式声明 */
+  display: none;
+}
+
+.user-menu-group-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim, var(--text-muted));
+  user-select: none;
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  color: var(--on-surface);
+  background: transparent;
+  border: none;
+  border-radius: var(--control-radius);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.user-menu-item .material-symbols-outlined {
+  font-size: 18px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+a.user-menu-item:hover,
+button.user-menu-item:hover,
+.user-menu-item:focus-visible {
+  background: var(--accent-bg);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.user-menu-item:hover .material-symbols-outlined,
+.user-menu-item:focus-visible .material-symbols-outlined {
+  color: var(--accent);
+}
+
+.user-menu-item.danger {
+  color: var(--error);
+}
+
+.user-menu-item.danger .material-symbols-outlined {
+  color: var(--error);
+}
+
+.user-menu-item.danger:hover,
+.user-menu-item.danger:focus-visible {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.user-menu-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-menu-chevron,
+  .user-menu-button,
+  .user-menu-item {
+    transition: none;
+  }
+}
+
 .responsive-modal {
   height: var(--visual-viewport-height);
   padding: 16px;
@@ -3961,6 +4096,26 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
 
   .user-space-header-actions.is-open {
     display: flex;
+  }
+
+  /* 移动端：用户下拉菜单改为内联展开（嵌套在 more 面板里不受 overflow 裁剪） */
+  .user-menu-wrapper {
+    position: static;
+  }
+
+  .user-menu {
+    position: static;
+    min-width: 0;
+    margin-top: 4px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .user-menu-divider {
+    margin: 4px 0;
   }
 
   .theme-segmented-wrapper {
