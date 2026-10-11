@@ -870,6 +870,54 @@
         </div>
       </div>
 
+      <!-- 服务器状态弹窗：由 server-status.ts 动态渲染指标 -->
+      <div
+        id="status-modal"
+        class="responsive-modal hidden fixed inset-0 z-[100] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="status-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="status-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-md mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div
+            class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"
+          ></div>
+          <div class="flex items-center justify-between mb-4 pb-3 border-b border-dim shrink-0">
+            <span
+              id="status-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
+              data-i18n="server.status.title"
+              >服务器状态</span
+            >
+            <button
+              id="status-modal-close-btn"
+              class="panel-close-btn"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="status-modal-body" class="overflow-y-auto custom-scrollbar min-h-0"></div>
+          <div class="flex items-center justify-between gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <label class="flex items-center gap-2 text-xs text-muted cursor-pointer select-none">
+              <input id="status-auto-refresh" type="checkbox" class="accent-[var(--accent-secondary)]" checked />
+              <span data-i18n="server.status.autoRefresh">自动刷新</span>
+            </label>
+            <button
+              id="status-refresh-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">refresh</span>
+              <span data-i18n="server.status.refresh">刷新</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Terminal Page -->
       <div
         id="terminal-section"

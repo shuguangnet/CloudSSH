@@ -6,6 +6,7 @@ import { parsePort } from './port';
 import { populateRegionSelect, regionLabel } from './regions';
 import { ShareManager } from './share-manager';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
+import { serverStatusPanel, initServerStatusPanel } from './server-status';
 import type { SSHHostInfo } from './terminal';
 import { confirmAction, notify } from './ui-feedback';
 import { formatTimestampWithRelative } from '../../src/server-memory-schema';
@@ -195,6 +196,7 @@ export class ServerList {
   private currentPage = 1;
   private pageSize = currentServerPageSize();
   private sharingEnabled = false;
+  private automationEnabled = false;
   private readonly shareManager = new ShareManager();
 
   constructor(
@@ -288,6 +290,9 @@ export class ServerList {
   private bindEvents(): void {
     // 退出登录
     document.getElementById('logout-btn')?.addEventListener('click', () => this.logout());
+
+    // 服务器状态弹窗（关闭/背景点击/手动刷新/Escape）
+    initServerStatusPanel();
 
     // 添加服务器按钮
     document
@@ -514,7 +519,9 @@ export class ServerList {
       if (!response.ok) return;
       const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean; automationEnabled?: boolean };
       this.sharingEnabled = config.sshSharingEnabled === true;
-      if (config.automationEnabled) {
+      const automationWasEnabled = this.automationEnabled;
+      this.automationEnabled = config.automationEnabled === true;
+      if (this.automationEnabled) {
         document.getElementById('server-generate-key')?.classList.remove('hidden');
         if (!document.getElementById('automation-link')) {
           const link = document.createElement('a');
@@ -525,6 +532,8 @@ export class ServerList {
           document.getElementById('user-info')?.appendChild(link);
         }
       }
+      // 状态按钮依赖 automationEnabled，配置就位后重绘一次卡片
+      if (this.automationEnabled !== automationWasEnabled && this.servers.length) this.renderServerGrid();
       if (config.adminAccountEnabled && !document.getElementById('admin-account-link')) {
         const link = document.createElement('a');
         link.id = 'admin-account-link';
@@ -623,6 +632,9 @@ export class ServerList {
       document
         .getElementById(`connect-${server.id}`)
         ?.addEventListener('click', () => this.connectServer(server.id));
+      document
+        .getElementById(`status-${server.id}`)
+        ?.addEventListener('click', () => serverStatusPanel.open(server.id, server.name));
       document
         .getElementById(`clone-${server.id}`)
         ?.addEventListener('click', () => this.showModal('clone', server));
@@ -795,6 +807,9 @@ export class ServerList {
             <span class="material-symbols-outlined" style="font-size: 14px;">power_settings_new</span>
             ${t('common.connect')}
           </button>
+          ${this.automationEnabled ? `<button id="status-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.status.button')}" aria-label="${t('server.status.button')}">
+            <span class="material-symbols-outlined" style="font-size: 14px;">monitoring</span>
+          </button>` : ''}
           <button id="clone-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.clone')}">
             <span class="material-symbols-outlined" style="font-size: 14px;">content_copy</span>
           </button>

@@ -4,6 +4,7 @@ import { savedServers } from './operations.mjs';
 import { validateChannel, sendToChannels } from './notify.mjs';
 import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
+import { collectServerStatus } from './status.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -16,6 +17,9 @@ function ownerUser(user) {
 }
 
 export function createAutomationRoutes({ env, SSHSession, store, engine, executeSaved, getAuthenticatedUser }) {
+  // On-demand status collection opens a real SSH exec; keep at most one in
+  // flight per server and space requests out so a polling UI cannot hammer it.
+  const statusQueries = new Map();
   async function requireUser(request) {
     const user = await getAuthenticatedUser(request, env);
     if (!user) return { error: Response.json({ error: 'Authentication required' }, { status: 401 }) };
@@ -233,6 +237,31 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       if (!Number.isFinite(hours) || hours < 1 || hours > 72) return BAD_REQUEST('Hours must be 1–72');
       const since = Date.now() - hours * 3600_000;
       return Response.json({ samples: store.listSamples(owner, Number(match[1]), since) });
+    }
+
+    match = pathname.match(/^\/api\/automation\/status\/(\d+)$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const key = `${user.github_id}:${serverId}`;
+      const now = Date.now();
+      const entry = statusQueries.get(key);
+      if (entry?.inflight) return Response.json({ error: 'Status collection already in progress' }, { status: 409 });
+      if (entry && now - entry.last < 1500) return Response.json({ error: 'Too many status requests' }, { status: 429 });
+      statusQueries.set(key, { last: now, inflight: true });
+      try {
+        const { identity } = ownerUser(user);
+        const status = await collectServerStatus(env, identity, serverId, executeSaved, SSHSession, request.signal);
+        return Response.json(status);
+      } catch (caught) {
+        return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 500 });
+      } finally {
+        statusQueries.set(key, { last: Date.now(), inflight: false });
+      }
     }
 
     // ---------- SSH keypair helpers ----------
