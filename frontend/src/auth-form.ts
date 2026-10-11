@@ -400,6 +400,7 @@ export class ConnectionForm {
       pending = true;
       submitButton.disabled = true;
       errorText.style.display = 'none';
+      let loginRequestStarted = false;
       try {
         // 浏览器本地 PBKDF2 预拉伸（server relief），原始密码不出浏览器
         const key = await stretchAdminPassword(
@@ -407,6 +408,7 @@ export class ConnectionForm {
           this.passwordAuthParams.salt,
           this.passwordAuthParams.iterations
         );
+        loginRequestStarted = true;
         const response = await fetch('/api/auth/password/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -449,7 +451,7 @@ export class ConnectionForm {
           showError(t('auth.adminLoginNetwork'));
         }
       } catch {
-        showError(t('auth.adminLoginNetwork'));
+        showError(t(loginRequestStarted ? 'auth.adminLoginNetwork' : 'auth.adminLoginCrypto'));
       } finally {
         pending = false;
         submitButton.disabled = false;

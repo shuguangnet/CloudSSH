@@ -72,6 +72,7 @@ export const zhCN = {
   'auth.adminLoginLocked': '尝试过于频繁，请 {seconds} 秒后再试',
   'auth.adminLoginTurnstileFailed': '人机验证未通过，请重试。',
   'auth.adminLoginUnavailable': '密码登录当前不可用（认证模式可能已变更），请刷新页面。',
+  'auth.adminLoginCrypto': '浏览器无法处理登录密码。请更新浏览器并刷新页面后重试。',
   'auth.adminLoginNetwork': '网络错误，请稍后重试。',
   // --- 管理员密码哈希生成器（浏览器内本地生成 ADMIN_PASSWORD_HASH） ---
   'auth.adminHashGenTitle': '管理员密码登录设置',

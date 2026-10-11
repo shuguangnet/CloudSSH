@@ -57,27 +57,26 @@ export async function stretchAdminPassword(
   const salt = b64urlToBytes(saltB64url);
   if (salt.length < 8) throw new Error('Invalid KDF salt');
 
-  // Web Crypto is restricted to secure contexts. Public HTTP still computes
-  // the identical KDF locally, yielding periodically to keep the UI responsive.
-  if (typeof crypto === 'undefined' || !crypto.subtle) {
-    const stretched = await pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
-      c: iterations, dkLen: STRETCHED_KEY_BYTES, asyncTick: 10,
-    });
-    return bytesToB64url(stretched);
+  // Some embedded/older browsers expose subtle but reject PBKDF2 operations.
+  // Keep the same local derivation when native Web Crypto is unavailable.
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const baseKey = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+      );
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations },
+        baseKey, STRETCHED_KEY_BYTES * 8
+      );
+      return bytesToB64url(new Uint8Array(bits));
+    } catch {
+      // No credentials leave the browser until local derivation succeeds.
+    }
   }
-
-  const baseKey = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-  // SAFETY: b64urlToBytes 以 `new Uint8Array(length)` 构造，底层恒为纯 ArrayBuffer，
-  // 运行时满足 BufferSource；断言仅桥接 TS 5.7+ lib 对 Uint8Array<ArrayBufferLike> 的类型收敛差异。
-  const kdfParams = { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations };
-  const bits = await crypto.subtle.deriveBits(kdfParams, baseKey, STRETCHED_KEY_BYTES * 8);
-  return bytesToB64url(new Uint8Array(bits));
+  const stretched = await pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
+    c: iterations, dkLen: STRETCHED_KEY_BYTES, asyncTick: 10,
+  });
+  return bytesToB64url(stretched);
 }
 
 /**

@@ -72,6 +72,7 @@ export const zhTW = {
   'auth.adminLoginLocked': '嘗試過於頻繁，請 {seconds} 秒後再試',
   'auth.adminLoginTurnstileFailed': '人機驗證未通過，請重試。',
   'auth.adminLoginUnavailable': '密碼登入目前無法使用（認證模式可能已變更），請重新整理頁面。',
+  'auth.adminLoginCrypto': '瀏覽器無法處理登入密碼。請更新瀏覽器並重新整理頁面後再試。',
   'auth.adminLoginNetwork': '網路錯誤，請稍後重試。',
   // --- 管理員密碼雜湊產生器（瀏覽器內本地產生 ADMIN_PASSWORD_HASH） ---
   'auth.adminHashGenTitle': '管理員密碼登入設定',

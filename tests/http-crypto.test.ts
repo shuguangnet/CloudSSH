@@ -24,6 +24,15 @@ describe('public HTTP browser crypto compatibility', () => {
     expect(verifier).toBe(createHash('sha256').update(derived).digest('base64url'));
   });
 
+  it('falls back when a browser exposes Web Crypto but rejects PBKDF2', async () => {
+    const importKey = vi.fn().mockRejectedValue(new Error('Operation not supported'));
+    vi.stubGlobal('crypto', { subtle: { importKey } });
+    const salt = Buffer.from('0123456789abcdef');
+    expect(await stretchAdminPassword('test password', salt.toString('base64url'), 1000))
+      .toBe(pbkdf2Sync('test password', salt, 1000, 32, 'sha256').toString('base64url'));
+    expect(importKey).toHaveBeenCalledOnce();
+  });
+
   it('generates valid distinct UUIDs without the HTTPS-only randomUUID API', () => {
     insecureContext();
     const ids = Array.from({ length: 50 }, () => randomUUID());

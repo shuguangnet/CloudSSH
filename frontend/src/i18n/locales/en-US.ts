@@ -108,6 +108,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.adminLoginTurnstileFailed': 'Human verification failed. Please try again.',
   'auth.adminLoginUnavailable':
     'Password sign-in is unavailable (auth mode may have changed). Refresh the page.',
+  'auth.adminLoginCrypto': 'Your browser could not process the login password. Update your browser and reload the page.',
   'auth.adminLoginNetwork': 'Network error. Please try again later.',
   // --- Admin password hash generator (in-browser local ADMIN_PASSWORD_HASH generation) ---
   'auth.adminHashGenTitle': 'Admin Password Sign-In Setup',
