@@ -98,6 +98,7 @@ export class ServerStatusPanel {
   private timer: ReturnType<typeof setInterval> | null = null;
   private controller: AbortController | null = null;
   private failures = 0;
+  private pending = false;
 
   open(serverId: number, serverName: string): void {
     this.serverId = serverId;
@@ -151,22 +152,34 @@ export class ServerStatusPanel {
   }
 
   private async collect(): Promise<void> {
-    if (this.serverId === null) return;
-    this.controller?.abort();
+    // One collection at a time: a tick while SSH is still running skips instead
+    // of aborting + refetching — that combo used to trip the server-side
+    // per-server throttle ("Too many status requests" / "already in progress").
+    if (this.serverId === null || this.pending) return;
+    this.pending = true;
     const controller = new AbortController();
     this.controller = controller;
     const serverId = this.serverId;
     try {
       const response = await fetch(`/api/automation/status/${serverId}`, { signal: controller.signal });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+      if (!response.ok) {
+        const message = (await response.json().catch(() => ({}))).error || `HTTP ${response.status}`;
+        throw Object.assign(new Error(message), { status: response.status });
+      }
       const payload = (await response.json()) as ServerStatusPayload;
       if (this.serverId !== serverId || controller.signal.aborted) return;
       this.failures = 0;
       this.render(payload);
     } catch (error) {
       if (controller.signal.aborted || this.serverId !== serverId) return;
+      // 429/409 are transient throttle replies (server still busy with the
+      // previous collection); the next tick retries — not a panel failure.
+      if ((error as { status?: number }).status === 429 || (error as { status?: number }).status === 409) return;
       this.failures++;
       this.renderError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (this.controller === controller) this.controller = null;
+      this.pending = false;
     }
   }
 

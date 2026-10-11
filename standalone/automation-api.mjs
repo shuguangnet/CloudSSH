@@ -21,14 +21,18 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
   // On-demand collections open a real SSH exec; keep at most one in flight per
   // server and space requests out so a polling UI cannot hammer it.
   const statusQueries = new Map();
-  function acquireThrottledSlot(map, key) {
+  function acquireThrottledSlot(map, key, signal) {
     const now = Date.now();
     const entry = map.get(key);
     if (entry?.inflight) return { conflict: 409 };
     if (entry && now - entry.last < 1500) return { conflict: 429 };
-    map.set(key, { last: now, inflight: true });
+    // Keep the pre-existing cooldown while inflight; an aborted request never
+    // delivered a result, so releasing it must not push the cooldown forward
+    // or the poll that replaced it gets answered with 429.
+    const previousLast = entry?.last ?? 0;
+    map.set(key, { last: previousLast, inflight: true });
     return {
-      release() { map.set(key, { last: Date.now(), inflight: false }); },
+      release() { map.set(key, { last: signal?.aborted ? previousLast : Date.now(), inflight: false }); },
     };
   }
   async function requireUser(request) {
@@ -259,7 +263,7 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
         return Response.json({ error: 'Unknown server' }, { status: 404 });
       }
       const key = `${user.github_id}:${serverId}`;
-      const slot = acquireThrottledSlot(statusQueries, key);
+      const slot = acquireThrottledSlot(statusQueries, key, request.signal);
       if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Status collection already in progress' : 'Too many status requests' }, { status: slot.conflict });
       try {
         const { identity } = ownerUser(user);
@@ -282,7 +286,7 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
         return Response.json({ error: 'Unknown server' }, { status: 404 });
       }
-      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker:${serverId}`);
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker:${serverId}`, request.signal);
       if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker query already in progress' : 'Too many requests' }, { status: slot.conflict });
       try {
         const { identity } = ownerUser(user);

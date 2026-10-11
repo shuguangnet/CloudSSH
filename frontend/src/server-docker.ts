@@ -95,6 +95,7 @@ export class DockerPanel {
   private timer: ReturnType<typeof setInterval> | null = null;
   private controller: AbortController | null = null;
   private busy = false;
+  private pending = false;
 
   open(serverId: number, serverName: string): void {
     this.serverId = serverId;
@@ -143,20 +144,32 @@ export class DockerPanel {
   }
 
   private async collect(): Promise<void> {
-    if (this.serverId === null || this.busy) return;
-    this.controller?.abort();
+    // One listing at a time: a tick while SSH is still running skips instead
+    // of aborting + refetching — that combo used to trip the server-side
+    // per-server throttle ("Too many requests" / "query already in progress").
+    if (this.serverId === null || this.pending) return;
+    this.pending = true;
     const controller = new AbortController();
     this.controller = controller;
     const serverId = this.serverId;
     try {
       const response = await fetch(`/api/docker/${serverId}/containers`, { signal: controller.signal });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+      if (!response.ok) {
+        const message = (await response.json().catch(() => ({}))).error || `HTTP ${response.status}`;
+        throw Object.assign(new Error(message), { status: response.status });
+      }
       const payload = (await response.json()) as { containers: DockerContainer[] };
       if (this.serverId !== serverId || controller.signal.aborted) return;
       this.render(payload.containers);
     } catch (error) {
       if (controller.signal.aborted || this.serverId !== serverId) return;
+      // 429/409 are transient throttle replies; the next tick retries — do not
+      // tear down the listing or disable auto-refresh over them.
+      if ((error as { status?: number }).status === 429 || (error as { status?: number }).status === 409) return;
       this.renderError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (this.controller === controller) this.controller = null;
+      this.pending = false;
     }
   }
 

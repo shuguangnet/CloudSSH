@@ -111,15 +111,20 @@ export async function readBody(req) {
   }
   return Buffer.concat(chunks);
 }
-function requestFromNode(req, body) {
+function requestFromNode(req, body, res) {
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
   }
   // Client-supplied proxy/IP headers must not impersonate the trusted Cloudflare header.
   headers.set('CF-Connecting-IP', req.socket.remoteAddress || 'unknown');
+  // Propagate client disconnects: routes pass request.signal into executeSaved
+  // so aborted status/docker polls tear down their SSH chains early instead of
+  // holding throttle slots (which made follow-up polls fail with 429/409).
+  const abort = new AbortController();
+  if (res) res.once('close', () => { if (!res.writableEnded) abort.abort(); });
   return new Request(new URL(req.url, env.BASE_URL), {
-    method: req.method, headers,
+    method: req.method, headers, signal: abort.signal,
     ...(body?.length && !['GET', 'HEAD'].includes(req.method) ? { body } : {}),
   });
 }
@@ -346,7 +351,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     const body = !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
-    const request = requestFromNode(req, body);
+    const request = requestFromNode(req, body, res);
     if (pathname === '/api/admin/account') return sendResponse(res, await accountManagement(request));
     if (pathname === '/account/settings') {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
