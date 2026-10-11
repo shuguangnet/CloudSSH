@@ -1,4 +1,6 @@
-export const zhTW = {
+import type { zhCN } from './zh-CN';
+
+export const zhTW: Record<keyof typeof zhCN, string> = {
   'language.label': '語言',
   'language.zhCN': '簡體中文',
   'language.zhTW': '繁體中文',
