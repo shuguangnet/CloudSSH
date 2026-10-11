@@ -434,6 +434,8 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
 41. **SFTP 上传续传、校验与目录删除** - 上传按远端已写入大小续传，失败或取消时保留部分文件；浏览器通过 `sha256-stream.ts` 流式计算完整文件（含续传前缀）哈希，不得恢复整文件内存读取。上传完成后在远端校验工具可用时比对 SHA-256，不可用时不因校验本身阻止成功。直连/隧道窗口与 ACK 必须使用共享策略（见 #38），4 秒 ACK 等待恢复仍受最大窗口限制，不得无限放开。非空目录删除先尝试 `rmdir`，通用 `Failure` 才触发递归遍历；它不是 `ENOTEMPTY` 的确切证明，权限等失败仍应报告。目录句柄必须关闭，跳过 `.` / `..`，符号链接按文件删除而非递归进入。
 
+42. **主面板左侧导航栏（替代用户下拉菜单）** - 主面板的功能/设置分组入口（自动化、MCP、账号设置、AI Agent 设置、退出登录）位于左侧常驻边栏 `#app-sidebar`（`frontend/index.html`：`header + .user-space-body > aside#app-sidebar + .user-space-content`），不再使用右上角用户下拉菜单（`#user-menu`/`#user-menu-btn` 已删除，`main.ts` 无菜单开关逻辑）。**ID 契约**：`menu-automation`/`menu-mcp`/`menu-account`/`ai-config-btn`/`logout-btn`/`user-info` 各 ID 必须保留——`server-list.ts` 的能力门控（`syncUserMenuGroups` 查询 `#app-sidebar .sidebar-group`，组内无可见项时整组隐藏）与 `main.ts` 事件绑定按 ID 直取。移动端（<768px）侧边栏转为 header 下方横向滚动条带（分组标签隐藏、用户块+退出内联末尾），more 面板只剩主题/语言。两个已踩过的布局坑：①桌面 `.sidebar-item { width: 100% }` 在移动端横向布局（`flex-direction: row`）中会与容器宽度循环计算，导致首项被撑满、后续项溢出并与 footer 重叠拦截点击——移动端媒体查询必须显式复位 `.app-sidebar .sidebar-item, .sidebar-user { width: auto }`；②横向 overflow 滚动容器中 footer 不能用 `margin-left: auto` 贴右（内容溢出时错位覆盖前置项），应作为普通末尾组排列。`.sidebar-group.hidden`/`.sidebar-item.hidden` 需显式 `display: none`（Tailwind `.hidden` 会被本文件的 `display: flex` 覆盖，同 #37）。
+
 ## Deployment Notes
 
 ### 双环境部署

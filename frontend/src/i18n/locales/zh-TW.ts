@@ -67,6 +67,8 @@ export const zhTW = {
   'auth.adminAccountSettings': '帳號設定',
   'auth.automation': '自動化',
   'menu.functions': '功能',
+
+  'nav.main': '主導航',
   'menu.settings': '設定',
   'auth.keyPairTitle': '金鑰操作',
   'auth.generateKeyPair': '產生金鑰組',

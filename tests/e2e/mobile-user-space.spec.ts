@@ -179,8 +179,7 @@ test('移动端服务器卡片不会被长文本撑宽且表单弹窗在视口�
 
 test('移动端 AI 设置弹窗完整位于可视区域内', async ({ page }) => {
   await page.goto('/?lang=zh-CN');
-  await page.locator('#user-space-more-btn').click();
-  await page.locator('#user-menu-btn').click();
+  // AI 设置入口常驻于顶栏下方的横向导航条
   await page.locator('#ai-config-btn').click();
 
   const panel = page.locator('#ai-config-modal .responsive-modal-panel');

@@ -351,9 +351,9 @@ test('administrator account migration, account/password changes, invalidation an
         // 密码模式登录对话框内嵌滑块验证码：真实拖拽对齐固定目标后才能提交
         await dragCaptchaToTestTarget(page, dialog);
         await dialog.locator('.auth-challenge-dialog__button--submit').click();
-        // 登录成功 → reload 进入用户空间；账号设置入口在用户下拉菜单（cc73480 重构后 #menu-account）
+        // 登录成功 → reload 进入用户空间；账号设置入口在左侧导航栏常驻展示
         await page.locator('#user-space-section').waitFor({ state: 'visible' });
-        await page.locator('#user-menu-btn').click();
+        await page.locator('#app-sidebar').waitFor({ state: 'visible' });
         await page.locator('#menu-account').waitFor({ state: 'visible' });
         assert.equal(await page.locator('#menu-account').getAttribute('href'), '/account/settings');
         assert.deepEqual(errors, []);

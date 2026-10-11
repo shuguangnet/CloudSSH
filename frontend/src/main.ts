@@ -47,8 +47,6 @@ const snippetManager = new SnippetManager({
 function setUserSpaceMenuOpen(open: boolean): void {
   document.getElementById('user-space-header-actions')?.classList.toggle('is-open', open);
   document.getElementById('user-space-more-btn')?.setAttribute('aria-expanded', String(open));
-  // 收起 more 面板时同步收起嵌套的用户菜单，避免残留展开状态
-  if (!open) setUserMenuOpen(false);
 }
 
 function initUserSpaceMobileMenu(): void {
@@ -61,8 +59,8 @@ function initUserSpaceMobileMenu(): void {
   });
   menu.addEventListener('click', (event) => {
     const target = event.target as HTMLElement;
-    // 用户菜单按钮自身不折叠 more 面板（由它展开嵌套菜单）
-    if (target.closest('button') && !target.closest('#user-menu-btn')) setUserSpaceMenuOpen(false);
+    // 点击面板内任意按钮后收起（主题/语言切换完成）
+    if (target.closest('button')) setUserSpaceMenuOpen(false);
   });
   menu.addEventListener('change', () => setUserSpaceMenuOpen(false));
   document.addEventListener(
@@ -76,39 +74,6 @@ function initUserSpaceMobileMenu(): void {
   );
 }
 
-/** 用户下拉菜单（功能/设置分组）：开关、点外关闭、Escape 关闭、选项点击后收起 */
-function setUserMenuOpen(open: boolean): void {
-  const menu = document.getElementById('user-menu');
-  const button = document.getElementById('user-menu-btn');
-  menu?.classList.toggle('hidden', !open);
-  button?.setAttribute('aria-expanded', String(open));
-}
-
-function initUserMenu(): void {
-  const button = document.getElementById('user-menu-btn');
-  const menu = document.getElementById('user-menu');
-  if (!button || !menu) return;
-
-  button.addEventListener('click', () => {
-    setUserMenuOpen(menu.classList.contains('hidden'));
-  });
-  menu.addEventListener('click', (event) => {
-    // 链接跳转 / 打开弹窗后收起菜单（菜单内点击非选项区域不处理）
-    if ((event.target as HTMLElement).closest('.user-menu-item')) setUserMenuOpen(false);
-  });
-  document.addEventListener(
-    'pointerdown',
-    (event) => {
-      const target = event.target as Node | null;
-      if (target && (button.contains(target) || menu.contains(target))) return;
-      setUserMenuOpen(false);
-    },
-    true
-  );
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') setUserMenuOpen(false);
-  });
-}
 
 function initServerPaginationBreakpoints(): void {
   const queries = [
@@ -1020,7 +985,6 @@ async function init(): Promise<void> {
     void navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
   initUserSpaceMobileMenu();
-  initUserMenu();
   initServerPaginationBreakpoints();
   bindBackToTerminalButtons();
   initPointerSpecularTracking();

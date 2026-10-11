@@ -301,7 +301,6 @@ test('AI 模型选择下拉面板在浅色与暗色内置主题下无缝自适�
   await userThemeSelector.selectOption('liquid-glass');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'liquid-glass');
 
-  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
   const modal = page.locator('#ai-config-modal');
   await expect(modal).toBeVisible();
@@ -326,7 +325,6 @@ test('AI 模型选择下拉面板在浅色与暗色内置主题下无缝自适�
   await userThemeSelector.selectOption('cyberpunk');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'cyberpunk');
 
-  await page.locator('#user-menu-btn').click();
   await page.locator('#ai-config-btn').click();
   await expect(modal).toBeVisible();
   await page.locator('#ai-model-dropdown-btn').click();

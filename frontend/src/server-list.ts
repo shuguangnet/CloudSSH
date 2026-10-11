@@ -180,10 +180,10 @@ export function sortServers(
 /**
  * 用户空间 — 服务器列表管理组件
  */
-/** 用户菜单分组标签随内容显隐：组内无可见入口时隐藏整组（如 Workers 部署无功能组） */
+/** 侧边栏分组随内容显隐：组内无可见入口时隐藏整组（如 Workers 部署无功能组） */
 function syncUserMenuGroups(): void {
-  document.querySelectorAll<HTMLDivElement>('#user-menu .user-menu-group').forEach((group) => {
-    const hasVisibleItem = !!group.querySelector('.user-menu-item:not(.hidden)');
+  document.querySelectorAll<HTMLDivElement>('#app-sidebar .sidebar-group').forEach((group) => {
+    const hasVisibleItem = !!group.querySelector('.sidebar-item:not(.hidden)');
     group.classList.toggle('hidden', !hasVisibleItem);
   });
 }

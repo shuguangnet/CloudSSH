@@ -101,6 +101,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.adminAccountSettings': 'Account settings',
   'auth.automation': 'Automation',
   'menu.functions': 'Functions',
+
+  'nav.main': 'Main navigation',
   'menu.settings': 'Settings',
   'auth.keyPairTitle': 'Key operations',
   'auth.generateKeyPair': 'Generate key pair',

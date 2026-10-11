@@ -67,6 +67,8 @@ export const zhCN = {
   'auth.adminAccountSettings': '账号设置',
   'auth.automation': '自动化',
   'menu.functions': '功能',
+
+  'nav.main': '主导航',
   'menu.settings': '设置',
   'auth.keyPairTitle': '密钥操作',
   'auth.generateKeyPair': '生成密钥对',
