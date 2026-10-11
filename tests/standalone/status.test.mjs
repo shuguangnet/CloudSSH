@@ -2,6 +2,7 @@
 // end-to-end pass over GET /api/automation/status/:id (auth, ownership and a
 // real sshd collection on root-capable runners).
 import test from 'node:test';
+import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
@@ -135,7 +136,7 @@ async function stop(child) {
 }
 async function startPanel(directory, port) {
   const child = spawn(process.execPath, ['standalone/server.mjs'], {
-    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}` },
+    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}`, CAPTCHA_MODE: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
@@ -159,7 +160,7 @@ test('status API enforces auth and ownership', { timeout: 60000 }, async () => {
 
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, {
       method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -199,7 +200,7 @@ test('status API collects live metrics over a real SSH connection', {
     panel = await startPanel(dataDir, port);
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, {
       method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });

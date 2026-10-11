@@ -153,8 +153,8 @@ frontend/
 │   ├── i18n/
 │   │   ├── index.ts        # 语言解析、词条查询（t）与 locale 变更通知
 │   │   └── locales/        # zh-CN.ts / en-US.ts 词条字典
+│   ├── slider-captcha.ts    # 管理员登录滑块拼图验证码组件（fetch 挑战、SVG 注入、指针轨迹采样）
 │   ├── style.css           # Global styles (CSS variable theme system)
-│   └── turnstile.d.ts      # Turnstile type declarations
 └── vite.config.ts          # Dev proxy to localhost:8787（+ esbuild minifySyntax 关闭以规避 xterm 6 DECRQM bug）
 ```
 
@@ -250,7 +250,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 - `GITHUB_ALLOWED_USER_IDS` - Optional comma-separated numeric GitHub user ID allowlist; omitted means unrestricted GitHub login
 - `REQUIRE_GITHUB_AUTH` - Optional; `true` disables anonymous SSH and requires a valid GitHub session（语义已泛化为要求登录：单管理员密码会话同样满足）。wrangler.toml `[vars]` 默认下发 `"false"`（`[env.test.vars]` 默认 `"true"`：测试环境部署即要求登录），自定义请改配置文件
 - `ENABLE_SSH_SHARING` - Optional; `true` enables one-time audited SSH sharing for signed-in owners. wrangler.toml `[vars]` 默认置 `true`：Git 集成/CLI 部署开箱即用，关闭改为 `false`（Dashboard 手动上传部署不受 `[vars]` 影响，需自行配置）
-- `TURNSTILE_SECRET` / `TURNSTILE_SITEKEY` - Bot verification（默认不部署，用户自行选择加入；经 Git/CLI 部署的实例建议 SECRET 用 Dashboard Secret 类型——Secret 不受 wrangler 部署覆盖）
+- `CAPTCHA_MODE` - 管理员登录滑块验证码：`on`（默认，配置 ADMIN_PASSWORD_HASH 后自动启用）/ `off`（停用，挑战端点返回 501）/ `test`（固定目标位 120,48，自动化测试专用缝）。签名密钥 = SHA-256(`captcha:${ADMIN_PASSWORD_HASH}`)，换密即全灭未决挑战
 - `BASE_URL` - OAuth callback URL
 - `STRICT_HOST_KEY_VERIFY` - Optional; `false` skips host-key signature verification failures (default true, fails closed)。wrangler.toml `[vars]` 默认下发 `"true"`，自定义请改配置文件
 - `DEBUG_MODE` - Optional; `true` appends debug info to API responses（wrangler.toml `[vars]` 已声明 `DEBUG_MODE`）
@@ -267,7 +267,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/auth/callback` | GET | No | OAuth callback, creates user + session |
 | `/api/auth/logout` | POST | No | Logout, clears session |
 | `/api/auth/me` | GET | Yes | Returns current user info |
-| `/api/auth/password/login` | POST | No | 单管理员密码登录（密码模式专用；同源 Origin 校验 + Turnstile 可选 + DO 持久化节流 + 恒时比对） |
+| `/api/auth/password/login` | POST | No | 单管理员密码登录（密码模式专用；同源 Origin 校验 + 滑块验证码[CAPTCHA_MODE≠off 时必验，先于节流] + DO 持久化节流 + 恒时比对；body 可带 `captcha:{challenge,x,samples:[{x,t}]}`） |
 | `/api/servers` | GET/POST | Yes | List or create saved servers（含 `tags` 与可选 `jump_server_id`） |
 | `/api/servers/:id` | PUT/DELETE | Yes | Update or delete a server（含标签和跳板关系校验） |
 | `/api/servers/:id/connect` | POST | Yes | Generate one-time-token, return WebSocket URL |
@@ -287,11 +287,11 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/snippets/:id` | PUT/DELETE | Yes | Update or delete a command snippet (ownership scoped by user_id) |
 | `/api/ai/config` | GET/PUT | Yes | Get or save AI LLM config |
 | `/api/ai/models` | POST | Yes | Proxy model list from user's LLM provider |
-| `/api/verify` | POST | No | Turnstile bot verification |
+| `/api/captcha/challenge` | GET | No | 下发滑块拼图挑战（`{challenge, background, piece, width, height, pieceSize, startX, y}`；目标 X 仅在 HMAC 签名载荷中；per-IP 限流 10/min，off 模式 501） |
 | `/api/ssh` | WebSocket | Conditional | SSH terminal WebSocket connection |
 | `/api/ssh/sftp` | WebSocket | Token | SFTP data WebSocket (attaches to existing session) |
 | `/api/health` | GET | No | Health check |
-| `/api/config` | GET | No | Feature flags (turnstile, GitHub auth enabled, self-hosted adds automationEnabled) |
+| `/api/config` | GET | No | Feature flags (captchaEnabled, GitHub auth, passwordAuth 参数, self-hosted adds automationEnabled) |
 
 ### 自托管专属路由（standalone/server.mjs）
 
@@ -381,7 +381,7 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 6. **AI Agent runs in DO** - The agent control loop (`agent/core.ts`) executes inside the Durable Object, not the Worker itself, to access the SSH session directly
 7. **Agent tool confirmations** - Dangerous commands (rm -rf, shutdown, etc.) require user confirmation via `agent_confirm` WebSocket message before execution. Blocked commands (rm -rf /, fork bomb, etc.) are rejected outright without prompting. Preserve detection across shell control boundaries (`;`, `&&`, `||`, pipes, parentheses, and newlines), including combinations without surrounding spaces.
 8. **Agent loop timeouts & Watchdog** - The agent run loop has a step-based timeout of 300 seconds (managed by a watchdog timer in `agent/core.ts` that resets after each LLM response or tool execution). When waiting for user confirmation via `agent_confirm`, the watchdog timer is paused to prevent timeouts due to user delays.
-9. **SSH rate limiting** - `/api/ssh` uses a bounded, Worker-isolate in-memory limiter for traffic shedding. It skips requests without `CF-Connecting-IP`; Turnstile and one-time tokens remain the connection authorization controls.
+9. **SSH rate limiting** - `/api/ssh` uses a bounded, Worker-isolate in-memory limiter for traffic shedding. It skips requests without `CF-Connecting-IP`; one-time tokens remain the connection authorization controls.
 10. **Tailwind is built locally** - `frontend/postcss.config.cjs` and `frontend/tailwind.config.cjs` generate Tailwind CSS during Vite builds. Do not reintroduce `cdn.tailwindcss.com`; keep content scan paths and theme variable mappings synchronized when adding frontend source locations or theme tokens.
 11. **Builds never install dependencies** - run `pnpm install --frozen-lockfile` before build/deploy. `scripts/build-html.js` requires exactly one JS and one CSS bundle so every production asset is inlined deterministically.
 12. **Server list organization** - server tags are stored as normalized JSON in SQLite, filtered client-side, and rendered with responsive pagination（桌面端每页 6 张、平板 6 张、移动端 3 张，三档常量见 `frontend/src/server-list.ts`）。Search/tag changes must reset pagination to page 1.
@@ -428,7 +428,7 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
 38. **Cloudflare 隧道连接（Cloudflare Tunnel WebSocket Carrier & Zero Trust Access）** - 为无公网 IP、无跳板机的内网服务器提供直连能力。底层通过 Cloudflare Tunnel 的 WebSocket Carrier 机制传输原始 SSH 二进制字节流；`src/worker/tunnel-stream.ts`（`TunnelWebSocketStream`）将出站 WebSocket 桥接为 WHATWG Streams，上层 SSH 协议栈完全复用。**载体消息边界**：cloudflared 2026.9.3/2026.10.0 的 TCP-over-WebSocket 路径经 `stream.Pipe` 使用 16KiB 复制缓冲，`websocket.Conn.Read` 读取整个消息后仅 `copy(reader, data)`、不保留超出部分；因此 `TunnelWebSocketStream` 必须在 **SSH 加密后**将每条出站 WebSocket 二进制消息限制为 ≤16KiB，并按原顺序完整发送所有尾片。SSH 通道载荷上限不含包头、padding、MAC/tag，单独缩小该上限不能替代载体分帧；此限制仅属于隧道适配器，不得施加到直连 TCP。**有界上传流水线**：`src/sftp-upload-policy.ts` 为前后端参数的唯一来源；隧道保留 32KiB SFTP 分片，允许 16 个并发写请求（512KiB 在途），浏览器确认窗口从 256KiB 启动、下限 128KiB、上限 2MiB、增量 128KiB，Worker 每确认 32KiB 即发送进度 ACK；进度阈值必须小于等于最小窗口以避免等待死锁。直连保持 128KiB 分片、16 并发（2MiB）、2–8MiB 启动/最大窗口与 256KiB ACK；大载体消息现有 2ms 节奏保留，放宽上传流水线不得绕过 16KiB 加密后消息边界。安全守卫与生命周期：隧道域名必须为合法的标准公开域名（`isValidTunnelHostname`，排除内网 IP 与单级主机名），经 DoH（`dns-check.ts`）严格检验非保留地址；出站握手 `fetch` 必须显式 `redirect: 'manual'`（默认 follow 会跟随 Zero Trust 的 302 到登录页而使 3xx 诊断分支失效，并把 Service Token 转发给重定向目标）；隧道连接不支持跳板机（`jump_server_id` 必须为 null）；隧道连接免除直连 TCP 443 端口拦截；流关闭时显式解绑事件监听器；支持 Cloudflare Zero Trust 的 Service Token（`cf_access_client_id` 与经过 AES-GCM 行级加密的 `cf_access_client_secret`，前端支持一键清除已存密钥）；隧道模式跳过自动 IPinfo 推断以保护私有域名隐私，但允许用户手动指定 DO 区域（Location Hint）以就近调度并消除跨洋三角路由；卡片显示 CF 隧道标识与域名快捷复制；隧道模式下服务器表单隐藏端口字段（域名输入占满整行），卡片仅展示域名不显示端口——连接只看域名，实际 SSH 端口由内网 cloudflared ingress 配置决定，端口字段仅作存储记录（缺省时保存回落 22）。
 
-39. **单管理员密码登录（与 GitHub OAuth 互斥，密码优先）** - 认证模式由环境变量在部署时决定，运行时单一激活：`ADMIN_PASSWORD_HASH` 非空即密码模式（优先级最高，GitHub 配置原地保留但路由 501 禁用，前端入口整体替换为管理员登录）；置空/删除即刻退回 GitHub 模式（GitHub 侧配置与数据零影响）；哈希非空但格式损坏 → fail closed（登录 500、`/api/config` 暴露 `passwordHashInvalid`、前端错误面板），**绝不静默回退**。本地管理员使用哨兵 `github_id = -1`（GitHub ID 恒为正数无碰撞）路由到专属 UserDBDO 实例 `idFromName('-1')`，零数据迁移；首次登录幂等 upsert 唯一用户行，密码模式下 GitHub OAuth 回调被 501 堵死（唯一的建用户入口），单用户排他性由“不存在注册路径”天然保证。会话令牌格式 `-1:<fp8>:<randomHex>`（fp8 = 哈希串 SHA-256 前 8 hex，内嵌密码代际指纹）：换 `ADMIN_PASSWORD_HASH` 即全灭旧会话，`getAuthenticatedUser` 在 Worker 侧校验指纹，无需 DO 清理。**双向模式门**：密码模式拒绝 GitHub 会话/一次性令牌，GitHub/匿名模式拒绝哨兵会话/令牌（`getAuthenticatedUser` + `/api/ssh` token 路径两处，防止模式切换后旧凭据残活）。登录验证采用客户端预拉伸（server relief）：浏览器按 `/api/config` 公开参数（盐/迭代数非机密）在本地跑 PBKDF2（Free 套餐 10ms CPU 上限使服务端高强度 KDF 不可行），Worker 仅做一次 SHA-256 + 恒时比对（`timingSafeEqualBytes` 手写恒时比较，勿改回非常时比较），原始密码永不离开浏览器；哈希生成入口（模式感知）：仅匿名模式（未配置任何登录方式）显示认证页脚「管理员密码登录设置」链接——GitHub 模式（含 `REQUIRE_GITHUB_AUTH` 强制面板）一律隐藏，既有用户升级后界面零变化；`#password-setup` URL 路由全模式可用（`main.ts` init 消费后从地址栏清除，README 引导 GitHub 实例切换与密码轮换）；坏哈希面板保留「重新生成」链接。生成器（`admin-hash-generator.ts`）供 Dashboard-only 部署用户在浏览器内用自定义密码生成，密码同样不出浏览器；另配 `scripts/hash-password.mjs`（本地 CLI）；生成器（`buildAdminPasswordHash`）、登录预拉伸（`stretchAdminPassword`）、服务端 `parseAdminPasswordHash` 与脚本四方口径必须一致（`tests/worker/password-auth.test.ts` 守护，格式 `pbkdf2$sha256$<iterations>$<salt-b64url>$<verifier-b64url>`）。防爆破三道防线：同源 Origin 校验（防跨站登录 CSRF）→ Turnstile（已配置时必验）→ 哨兵 DO 持久化登录节流（5 次连败后指数退避 60s×2^n 封顶 15 分钟，跨 isolate 权威，连败超 15 分钟衰减重置；公网部署建议开启 Turnstile，否则攻击者可持频造成持续锁定骚扰）。`REQUIRE_GITHUB_AUTH` 语义泛化为“要求登录”（密码会话同样满足，变量名保留兼容）；密码模式**不改变匿名 SSH 行为**，需强制登录请配合 `REQUIRE_GITHUB_AUTH=true`。模式切换为平行数据宇宙：密码模式期间新建数据留在哨兵 DO，切回 GitHub 不合并（旧 GitHub 数据即刻恢复）。前端：`auth-form.ts` 按 `authMode` 整体替换登录入口（按钮/强制登录面板/坏哈希错误面板三处文案同步），登录对话框复用 `auth-challenge-dialog` 样式类，错误按状态码映射 i18n 不回显后端原文；`server-list.ts` 对本地管理员 `avatar_url` 为 null 渲染首字母回退块，勿直接 `img.src = null`。
+39. **单管理员密码登录（与 GitHub OAuth 互斥，密码优先）** - 认证模式由环境变量在部署时决定，运行时单一激活：`ADMIN_PASSWORD_HASH` 非空即密码模式（优先级最高，GitHub 配置原地保留但路由 501 禁用，前端入口整体替换为管理员登录）；置空/删除即刻退回 GitHub 模式（GitHub 侧配置与数据零影响）；哈希非空但格式损坏 → fail closed（登录 500、`/api/config` 暴露 `passwordHashInvalid`、前端错误面板），**绝不静默回退**。本地管理员使用哨兵 `github_id = -1`（GitHub ID 恒为正数无碰撞）路由到专属 UserDBDO 实例 `idFromName('-1')`，零数据迁移；首次登录幂等 upsert 唯一用户行，密码模式下 GitHub OAuth 回调被 501 堵死（唯一的建用户入口），单用户排他性由“不存在注册路径”天然保证。会话令牌格式 `-1:<fp8>:<randomHex>`（fp8 = 哈希串 SHA-256 前 8 hex，内嵌密码代际指纹）：换 `ADMIN_PASSWORD_HASH` 即全灭旧会话，`getAuthenticatedUser` 在 Worker 侧校验指纹，无需 DO 清理。**双向模式门**：密码模式拒绝 GitHub 会话/一次性令牌，GitHub/匿名模式拒绝哨兵会话/令牌（`getAuthenticatedUser` + `/api/ssh` token 路径两处，防止模式切换后旧凭据残活）。登录验证采用客户端预拉伸（server relief）：浏览器按 `/api/config` 公开参数（盐/迭代数非机密）在本地跑 PBKDF2（Free 套餐 10ms CPU 上限使服务端高强度 KDF 不可行），Worker 仅做一次 SHA-256 + 恒时比对（`timingSafeEqualBytes` 手写恒时比较，勿改回非常时比较），原始密码永不离开浏览器；哈希生成入口（模式感知）：仅匿名模式（未配置任何登录方式）显示认证页脚「管理员密码登录设置」链接——GitHub 模式（含 `REQUIRE_GITHUB_AUTH` 强制面板）一律隐藏，既有用户升级后界面零变化；`#password-setup` URL 路由全模式可用（`main.ts` init 消费后从地址栏清除，README 引导 GitHub 实例切换与密码轮换）；坏哈希面板保留「重新生成」链接。生成器（`admin-hash-generator.ts`）供 Dashboard-only 部署用户在浏览器内用自定义密码生成，密码同样不出浏览器；另配 `scripts/hash-password.mjs`（本地 CLI）；生成器（`buildAdminPasswordHash`）、登录预拉伸（`stretchAdminPassword`）、服务端 `parseAdminPasswordHash` 与脚本四方口径必须一致（`tests/worker/password-auth.test.ts` 守护，格式 `pbkdf2$sha256$<iterations>$<salt-b64url>$<verifier-b64url>`）。防爆破三道防线：同源 Origin 校验（防跨站登录 CSRF）→ 滑块验证码（`CAPTCHA_MODE≠off` 时必验，位于节流检查之前——未过滑块者不暴露节流状态；见 `src/worker/captcha.ts`：HMAC 挑战单次使用+5min TTL+轨迹校验[样本 3–256/时长 120ms–30s/≥2 离散 X]，签名密钥派生自 ADMIN_PASSWORD_HASH）→ 哨兵 DO 持久化登录节流（5 次连败后指数退避 60s×2^n 封顶 15 分钟，跨 isolate 权威，连败超 15 分钟衰减重置；公网部署建议开启 Turnstile，否则攻击者可持频造成持续锁定骚扰）。`REQUIRE_GITHUB_AUTH` 语义泛化为“要求登录”（密码会话同样满足，变量名保留兼容）；密码模式**不改变匿名 SSH 行为**，需强制登录请配合 `REQUIRE_GITHUB_AUTH=true`。模式切换为平行数据宇宙：密码模式期间新建数据留在哨兵 DO，切回 GitHub 不合并（旧 GitHub 数据即刻恢复）。前端：`auth-form.ts` 按 `authMode` 整体替换登录入口（按钮/强制登录面板/坏哈希错误面板三处文案同步），登录对话框复用 `auth-challenge-dialog` 样式类，错误按状态码映射 i18n 不回显后端原文；`server-list.ts` 对本地管理员 `avatar_url` 为 null 渲染首字母回退块，勿直接 `img.src = null`。
 
 40. **Responses 原生无状态 Agent** - LLM 调用仅通过 `agent/responses-client.ts` 使用 `/responses`，不兼容 Chat Completions。全部请求（主任务、上下文压缩、记忆提炼）强制使用 `store:false`（无状态模式），不依赖 `previous_response_id` 或上游响应链，原生支持所有兼容标准 Responses API 的平台（包括 OpenRouter 及各类兼容中继与 OpenAI 本身）。由 CloudSSH 在本地维护原生历史输出项（assistant message、function_call 及通用 reasoning 节点），不依赖任何特定厂商私有字段（如 encrypted_content）；reasoning 仅作为结构化逻辑保留并回传，绝不作为正文展示或写入长期记忆。动态终端/环境/记忆为显式不可信观察；`call_id` 严格配对工具结果，只有在完整 `response.completed` 且参数通过本地校验后才执行函数。停止/抢占将调用结果妥善闭合为执行事实（succeeded / failed / blocked / rejected / cancelled / unknown），替换任务先等旧 exec 清理，绝不自动重放副作用。`requestId` 仅作前端关联（非授权）；正文 stream_end 不等于任务结束，以 run_end 为准。上下文输入预算默认 64K token、输出 8K（含推理），超限时原子触发结构化检查点开启干净续接段。长期记忆由 AgentMemoryManager 驱动任务相关性筛选、证据脱敏、版本条件写入（乐观锁 revision）与并发队列保护；凭据采用 AES-GCM 行级静态加密存储，绝不截断凭据。历史分支编辑只在本地分叉交互段，绝不回滚远端已发生的物理操作。Base URL 只接受 HTTPS 根地址或 /responses；路径大小写敏感，更新地址不带新 key 必须拒绝（PUT 与 /models 同步防外带）。用量日志仅包含数字元数据，不能记录请求、终端内容或密钥。
 
@@ -490,7 +490,7 @@ pnpm run deploy:test     # 部署 test 环境
 - `REQUIRE_GITHUB_AUTH` - 可选，设为 `true` 时禁用匿名 SSH 并要求有效登录（GitHub 或单管理员密码会话均可）；wrangler.toml `[vars]` 已默认下发 `"false"`（`[env.test.vars]` 默认 `"true"`）
 - `ENABLE_SSH_SHARING` - 可选，允许登录用户创建一次性、受审计的 SSH 分享（wrangler.toml `[vars]` 已随部署默认置 true，关闭改为 false）
 - `ADMIN_PASSWORD_HASH` - 可选，单管理员密码登录凭据（务必设为 Secret 类型，用 `pnpm run hash-password` 生成）
-- `TURNSTILE_SECRET` / `TURNSTILE_SITEKEY` - Bot 验证（默认不部署，自行选择加入；建议 SECRET 用 Dashboard Secret 类型，不受 wrangler 部署覆盖）
+- `CAPTCHA_MODE` - 滑块验证码模式 `on`/`off`/`test`（默认 on；test 固定目标位供 standalone 测试）
 - `BASE_URL` - OAuth 回调地址（需与实际域名一致）
 
 Dashboard: Workers → 你的 Worker → Settings → Variables → Environment Variables

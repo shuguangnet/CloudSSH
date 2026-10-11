@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { solveCaptcha } from './captcha-helper.mjs';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
@@ -34,7 +35,7 @@ try {
   assert.equal(healthy, true);
   const config = await (await fetch(`${base}/api/config`)).json();
   const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-  const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+  const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
   assert.equal(login.status, 200);
   const cookie = login.headers.getSetCookie()[0].split(';')[0];
   const api = (path, method = 'GET', body) => fetch(`${base}${path}`, { method,

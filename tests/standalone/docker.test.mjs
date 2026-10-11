@@ -2,6 +2,7 @@
 // end-to-end pass over the /api/docker/* routes (auth, ownership, validation
 // and a real sshd session whose PATH points at a fake docker binary).
 import test from 'node:test';
+import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, chmodSync, mkdirSync } from 'node:fs';
@@ -79,7 +80,7 @@ async function stop(child) {
 }
 async function startPanel(directory, port) {
   const child = spawn(process.execPath, ['standalone/server.mjs'], {
-    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}` },
+    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}`, CAPTCHA_MODE: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
@@ -104,7 +105,7 @@ test('docker API enforces auth and ownership', { timeout: 60000 }, async () => {
 
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, {
       method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -177,7 +178,7 @@ test('docker API manages containers over a real SSH connection with a stub docke
     panel = await startPanel(dataDir, port);
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, {
       method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });

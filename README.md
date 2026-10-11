@@ -54,7 +54,7 @@
   - [GitHub 绑定自动部署](#推荐通过-github-绑定自动部署)
     - [自动同步上游版本](#可选自动同步上游版本)
   - [可配置环境变量](#可配置环境变量)
-  - [配置 Turnstile](#可选配置-turnstile-人机验证)
+  - [配置滑块验证码](#可选配置-滑块验证码)
   - [配置 GitHub OAuth](#可选配置-github-oauth-登录与服务器管理)
 - [开发说明](#development)
   - [本地开发](#本地开发)
@@ -81,7 +81,7 @@
 
 - **双段加密**：浏览器 ↔ Worker 走 HTTPS/WSS；Worker ↔ 服务器走完整 SSH-2.0 协议（Curve25519-SHA256/ECDH-NISTP256 密钥交换、AES-256-GCM/CTR 加密、HMAC-SHA2 完整性校验）。
 - **主机指纹验证**：Ed25519/ECDSA P-256/P-384/P-521/RSA 签名校验，首次连接展示 SHA-256 指纹（TOFU）。
-- **多层防护**：IPv6/保留地址 SSRF + DNS 防重绑定、Worker 内存限流削峰、Turnstile 人机验证；已保存凭据在每用户 SQLite 中以 AES-256-GCM 加密存储。
+- **多层防护**：IPv6/保留地址 SSRF + DNS 防重绑定、Worker 内存限流削峰、自研滑块拼图验证码；已保存凭据在每用户 SQLite 中以 AES-256-GCM 加密存储。
 - **会话隔离**：每个终端会话由独立 Durable Object 管理，活动 SSH TCP 连接使会话保持唤醒。
 - **凭据内部流转**：一键连接时服务端解密凭据并经一次性令牌内部传递到会话，浏览器全程不接触明文。
 
@@ -219,10 +219,9 @@ Fork 仓库可以通过内置的 `Sync upstream` GitHub Actions 工作流，定�
 | `GITHUB_CLIENT_SECRET`    | 启用登录时必填 | 无           | GitHub OAuth 应用的 Client Secret，用于服务端向 GitHub 安全换取用户访问令牌。                          | **敏感凭据，务必在 Cloudflare Dashboard 中设为 Secret 类型**。严禁泄露或直接提交到公共代码仓库。                                                                                                                                       |
 | `BASE_URL`                | 启用登录时必填 | 无           | 部署站点的完整公网访问根地址（如 `https://ssh.example.com`），用于生成 OAuth 授权回调跳转。            | 域名必须与 GitHub OAuth App 中的 Authorization callback URL 完全一致，末尾**不要**加斜杠 `/`。未配置时降级使用请求上下文 Host。                                                                                                        |
 | `GITHUB_ALLOWED_USER_IDS` | 可选           | 无（不限制） | 允许登录系统的 GitHub **数字用户 ID** 白名单列表，多个 ID 以英文逗号分隔（如 `83105156,6236783`）。    | **私有化部署核心防线**。未配置时任何 GitHub 用户均可登录；一旦配置，仅白名单用户允许登录（fail-closed 机制）。数字 ID 可访问 `https://api.github.com/users/<username>` 查看 `id` 字段获取。                                            |
-| `ADMIN_PASSWORD_HASH`    | 启用密码登录时必填 | 无           | 单管理员密码登录凭据（格式：`pbkdf2$sha256$<迭代数>$<盐>$<校验值>`，用自定义密码在浏览器内生成——匿名实例页尾入口或任意实例 `#password-setup` 路由——或本地 `pnpm run hash-password`）。非空即启用密码模式：与 GitHub 登录互斥且优先级更高，全实例仅本地管理员一个账号，功能与 GitHub 登录完全一致。 | **敏感凭据，务必设为 Secret 类型**。置空/删除即刻退回 GitHub 登录模式（GitHub 配置与数据零影响）；换新值 = 修改密码（所有已登录会话立即失效）。密码模式不改变匿名 SSH 行为，需强制登录请配合 `REQUIRE_GITHUB_AUTH=true`；公网部署建议同时开启 Turnstile 防爆破。 |
+| `ADMIN_PASSWORD_HASH`    | 启用密码登录时必填 | 无           | 单管理员密码登录凭据（格式：`pbkdf2$sha256$<迭代数>$<盐>$<校验值>`，用自定义密码在浏览器内生成——匿名实例页尾入口或任意实例 `#password-setup` 路由——或本地 `pnpm run hash-password`）。非空即启用密码模式：与 GitHub 登录互斥且优先级更高，全实例仅本地管理员一个账号，功能与 GitHub 登录完全一致。 | **敏感凭据，务必设为 Secret 类型**。置空/删除即刻退回 GitHub 登录模式（GitHub 配置与数据零影响）；换新值 = 修改密码（所有已登录会话立即失效）。密码模式不改变匿名 SSH 行为，需强制登录请配合 `REQUIRE_GITHUB_AUTH=true`；公网部署建议保留默认开启的滑块验证码防爆破（`CAPTCHA_MODE=off` 可显式关闭）。 |
 | `REQUIRE_GITHUB_AUTH`     | 可选           | `false`      | 是否强制登录后才可使用 SSH 终端（GitHub 或单管理员密码会话均满足）。设为 `true` 时彻底禁用匿名直连入口。 | **公网部署防被蹭推荐开启**。若不希望未授权访客将你的 Worker 用作公开 SSH 代理节点，建议配置为 `true` 并配合白名单使用。wrangler.toml `[vars]` 随部署默认下发，自定义请改配置文件。                                                                                                                |
-| `TURNSTILE_SITEKEY`       | 可选           | 无           | Cloudflare Turnstile 人机验证的前端公开 Site Key。                                                     | 公开密钥。与 `TURNSTILE_SECRET` 配合使用，在未配置或配置任一为空时人机验证功能自动禁用。                                                                                                                                               |
-| `TURNSTILE_SECRET`        | 可选           | 无           | Cloudflare Turnstile 人机验证的服务端 Secret Key，用于校验前端回传的人机验证 Token。                   | **敏感密钥，建议保存为 Secret 类型**。开启后可有效拦截自动化扫描脚本、批量机器人和恶意滥用。默认不部署（自行选择加入）；经 Git/CLI 部署的实例建议用 Dashboard Secret 类型配置——Secret 不受 wrangler 部署覆盖。                                                                                                                                           |
+| `CAPTCHA_MODE`            | 可选           | `on`         | 管理员密码登录的滑块拼图验证码模式：`on`（默认，随 `ADMIN_PASSWORD_HASH` 自动启用）/ `off`（完全停用）。 | 自研实现、零外部依赖、无需注册第三方服务：服务端渲染拼图挑战，拖拽轨迹 + 单次使用 HMAC 签名证明，仅对未认证流量增加机器人摩擦；真实防线仍是 PBKDF2 + 恒时比对 + 登录节流。`test` 值供自动化测试使用（固定目标位，生产环境请勿使用）。 |
 | `ENABLE_SSH_SHARING`      | 可选           | `true`（随部署默认启用） | 是否开启一次性受控 SSH 分享功能。开启后登录用户可为已保存服务器生成临时受控分享链接。 | wrangler.toml `[vars]` 已默认置 `true`，Git 集成/CLI 部署开箱即用；关闭请改 wrangler.toml 为 `false`。分享链路仅支持受限终端与可选 SFTP，受完整操作审计记录监督，禁止使用 AI Agent、修改服务器元数据或跨网络重连；Dashboard 手动上传部署不受 `[vars]` 影响，如需启用自行添加该变量。 |
 | `STRICT_HOST_KEY_VERIFY`  | 可选           | `true`       | SSH 远端主机公钥签名严格校验开关。默认 `true`（fail-closed，签名不合法或算法不支持时立即终止握手）。   | **生产环境务必保持默认 `true`**。仅在本地调试、测试自签或老旧不兼容服务器且明确知晓安全风险时才允许设为 `false`。wrangler.toml `[vars]` 随部署默认下发，自定义请改配置文件。                                                                                                                      |
 | `DEBUG_MODE`              | 可选           | `false`      | 详细调试模式开关。设为 `true` 时在 API 响应和前端终端中输出底层协议握手与诊断日志。                    | `wrangler.toml` 默认声明为 `false`。仅在排查连接握手故障时临时开启，生产环境日常运行建议保持 `false`。                                                                                                                                 |
@@ -232,7 +231,7 @@ Fork 仓库可以通过内置的 `Sync upstream` GitHub Actions 工作流，定�
 > 1. **Secret 安全存储**：在 Cloudflare Dashboard 的 _Settings → Variables and Secrets_ 中，强烈建议将所有包含密码、Secret、Key 等敏感凭据的变量统一选择为 **Secret** 类型。Secrets 存储在 Cloudflare 独立加密存储层中，重新构建和部署 Worker 时不会被代码覆盖。
 > 2. **预留变量说明**：代码中保留了 `MAX_CONNECTIONS` 环境变量接口定义，当前版本暂未读取生效，请勿依赖。
 >
-> 3. **wrangler 部署的变量权威性**：经 Git 集成/CLI（wrangler）部署的实例以 `wrangler.toml` 为配置权威——Dashboard 中的同名普通变量会在部署时被覆盖，**Secret 类型不受影响**。`IDLE_TIMEOUT` / `REQUIRE_GITHUB_AUTH` / `ENABLE_SSH_SHARING` / `STRICT_HOST_KEY_VERIFY` 已随 `[vars]` 默认下发，如需自定义请直接修改 `wrangler.toml`；`TURNSTILE` 与 `ADMIN_PASSWORD_HASH` 等按需变量建议在 Dashboard 中以 Secret 类型维护。
+> 3. **wrangler 部署的变量权威性**：经 Git 集成/CLI（wrangler）部署的实例以 `wrangler.toml` 为配置权威——Dashboard 中的同名普通变量会在部署时被覆盖，**Secret 类型不受影响**。`IDLE_TIMEOUT` / `REQUIRE_GITHUB_AUTH` / `ENABLE_SSH_SHARING` / `STRICT_HOST_KEY_VERIFY` 已随 `[vars]` 默认下发，如需自定义请直接修改 `wrangler.toml`；`ADMIN_PASSWORD_HASH` 等按需变量建议在 Dashboard 中以 Secret 类型维护。
 
 #### 可选：启用单管理员密码登录（替代 GitHub OAuth）
 
@@ -249,16 +248,13 @@ Fork 仓库可以通过内置的 `Sync upstream` GitHub Actions 工作流，定�
 
 > **说明**：如需本地命令行部署或调试 Worker，请参考 [开发说明](#development) 中的本地开发部分。
 
-#### 可选：配置 Turnstile 人机验证
+#### 可选：配置滑块验证码
 
-为防止恶意机器人滥用，建议启用 Cloudflare Turnstile 验证：
+管理员密码登录默认启用自研滑块拼图验证码（无第三方依赖、无需注册任何服务），为登录入口增加一道机器人摩擦：
 
-1. **创建 Turnstile Widget**：登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入 Turnstile 页面创建一个新的 Widget。
-2. **获取密钥**：创建后会获得一个 **Site Key**（公开）和一个 **Secret Key**（保密）。
-3. **配置环境变量**：在 Cloudflare Dashboard 的 Workers 设置中，进入 "Settings" → "Variables and Secrets"，添加以下环境变量：
-   - `TURNSTILE_SECRET` = 你的 Secret Key
-   - `TURNSTILE_SITEKEY` = 你的 Site Key
-4. **重新部署**：运行部署命令使配置生效。
+- **默认行为**：配置 `ADMIN_PASSWORD_HASH`（启用密码登录）后滑块自动生效——登录对话框需先拖动拼图对齐缺口，验证通过后才能提交密码。
+- **工作方式**：拼图缺口位置仅存在于服务端 HMAC 签名的挑战载荷中；拖拽轨迹（多点采样、时长约束）随登录请求一并提交，服务端校验对齐精度与轨迹合理性，挑战单次使用、5 分钟过期。
+- **关闭方法**：确认无需滑块时，设置环境变量 `CAPTCHA_MODE=off`（挑战接口返回 501，登录跳过滑块）。安全提示：关闭后登录防线仍保留 PBKDF2 密码拉伸、恒时比对与每 IP 登录节流，但会失去对低成本脚本扫号的额外摩擦。
 
 #### 可选：配置 GitHub OAuth 登录与服务器管理
 

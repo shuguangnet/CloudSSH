@@ -12,7 +12,7 @@ import type { Env } from '../../src/types';
 //   2. GitHub 策略 — 登录白名单、强制登录及 token 归属
 //   3. IDOR/越权   — handler 强制覆盖 body.user_id、DO 层二次归属校验
 //   4. SSRF 接缝   — AI base_url 经 validateBaseUrl 在路由层拦截
-//   5. 签名伪造    — cf_verified cookie HMAC 完整性
+//   5. 滑块验证码  — 挑战端点限流与挑战伪造
 //   6. CSWSH       — 跨站 WebSocket 劫持（Origin 校验）
 //   附：一次性 token 防重放、SFTP attach 鉴权、速率限制
 //
@@ -73,7 +73,7 @@ function makeRequest(
   return new Request(url.toString(), init);
 }
 
-// ---------- 集中 mock global.fetch（OAuth / Turnstile / LLM 代理都用它） ----------
+// ---------- 集中 mock global.fetch（OAuth / LLM 代理都用它） ----------
 
 const fetchMock = vi.fn();
 beforeEach(() => {
@@ -867,111 +867,69 @@ describe('安全 — SSRF 接缝（AI base_url）', () => {
 });
 
 // =====================================================================
-// 5. 签名伪造 — cf_verified cookie HMAC 完整性
+// 5. 滑块验证码 — 挑战端点限流与挑战伪造
 // =====================================================================
 
-describe('安全 — cf_verified 签名伪造', () => {
-  it('伪造的 cf_verified cookie（签名不匹配）→ 走 Turnstile 分支且 token 无效 → 403', async () => {
+describe('安全 — 滑块验证码挑战端点', () => {
+  it('CAPTCHA_MODE=off → 挑战端点 501', async () => {
     const worker = await loadWorker();
-    const env = makeEnv({
-      TURNSTILE_SECRET: 'supersecret',
-    });
+    const env = makeEnv({ CAPTCHA_MODE: 'off' });
 
-    // 伪造的 cookie：expires 远未来但签名是乱填的
-    const fakeToken = '9999999999999:deadbeef';
-    const req = makeRequest('/api/ssh?turnstile_token=bogus', {
-      headers: {
-        Upgrade: 'websocket',
-        Origin: 'https://cloudssh.test',
-      },
-      cookies: { cf_verified: fakeToken },
-    });
-
-    // Turnstile siteverify 失败
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ success: false }), {
-        headers: { 'Content-Type': 'application/json' },
-      })
+    const res = await worker.fetch(
+      makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '198.51.100.70' } }),
+      env
     );
 
-    const res = await worker.fetch(req, env);
-
-    // 伪造 cookie 通过不了 HMAC 校验 → 走 turnstile_token 分支 → turnstile 无效 → 403
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(501);
   });
 
-  it('篡改签名（expires 不变，签名换 1 字节）→ HMAC verify 失败', async () => {
+  it('挑战端点复用 per-IP 限流（10 次/分钟）→ 第 11 次 429', async () => {
     const worker = await loadWorker();
-    const env = makeEnv({ TURNSTILE_SECRET: 'supersecret' });
+    const fakeHash = `pbkdf2$sha256$1000$${'a'.repeat(22)}$${'b'.repeat(43)}`;
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: fakeHash });
 
-    // 先生成合法 token：手工走 generateVerifiedToken 的逻辑
-    const secret = 'supersecret';
-    const expires = String(Date.now() + 3600000); // 1h valid
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(expires));
-    const sigHex = Array.from(new Uint8Array(sig))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    // 根据原字符选择必然不同的十六进制字符，确保每次都真正破坏签名。
-    const tamperedSig = (sigHex[0] === '0' ? '1' : '0') + sigHex.slice(1);
-    expect(tamperedSig).not.toBe(sigHex);
-    const tamperedToken = `${expires}:${tamperedSig}`;
+    let last: Response | undefined;
+    for (let i = 0; i < 11; i++) {
+      last = await worker.fetch(
+        makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '198.51.100.71' } }),
+        env
+      );
+    }
 
-    // 需要直接调内部函数测——通过路由间接测：
-    // 用篡改的 cookie 访问 /api/ssh，HMAC 应失败，走 turnstile 分支
-    const req = makeRequest('/api/ssh?turnstile_token=bogus', {
-      headers: { Upgrade: 'websocket', Origin: 'https://cloudssh.test' },
-      cookies: { cf_verified: tamperedToken },
-    });
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ success: false }), {
-        headers: { 'Content-Type': 'application/json' },
-      })
-    );
-    const res = await worker.fetch(req, env);
-
-    expect(res.status).toBe(403); // 篡改签名 → 走 turnstile → turnstile 无效 → 403
+    expect(last?.status).toBe(429);
+    expect(last?.headers.get('Retry-After')).toBeTruthy();
   });
 
-  it.each([
-    [
-      '签名长度错误',
-      (expires: string, signature: string) => `${expires}:${signature.slice(0, -2)}`,
-    ],
-    [
-      '签名包含非十六进制字符',
-      (expires: string, signature: string) => `${expires}:z${signature.slice(1)}`,
-    ],
-    ['缺少分隔符', (expires: string, signature: string) => `${expires}${signature}`],
-  ])('%s → 安全降级到 Turnstile 验证并返回 403', async (_name, makeToken) => {
+  it('伪造挑战串（无有效 HMAC 签名）→ 登录 403', async () => {
     const worker = await loadWorker();
-    const env = makeEnv({ TURNSTILE_SECRET: 'supersecret' });
-    const expires = String(Date.now() + 3600000);
-    const validLengthSignature = 'a'.repeat(64);
-    const malformedToken = makeToken(expires, validLengthSignature);
+    const fakeHash = `pbkdf2$sha256$1000$${'a'.repeat(22)}$${'b'.repeat(43)}`;
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: fakeHash });
 
-    const req = makeRequest('/api/ssh?turnstile_token=bogus', {
-      headers: { Upgrade: 'websocket', Origin: 'https://cloudssh.test' },
-      cookies: { cf_verified: malformedToken },
-    });
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ success: false }), {
-        headers: { 'Content-Type': 'application/json' },
-      })
+    const forged = btoa('v1|120|48|9999999999999|0011223344556677').replace(/=+$/, '');
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test', 'CF-Connecting-IP': '198.51.100.72' },
+        body: {
+          key: 'A'.repeat(43),
+          captcha: {
+            challenge: `${forged}.${'A'.repeat(43)}`,
+            x: 120,
+            samples: [
+              { x: 10, t: 1000 },
+              { x: 60, t: 1200 },
+              { x: 120, t: 1400 },
+            ],
+          },
+        },
+      }),
+      env
     );
 
-    const res = await worker.fetch(req, env);
-
     expect(res.status).toBe(403);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
 
 // =====================================================================
 // 6. CSWSH — 跨站 WebSocket 劫持（Origin 校验）
@@ -980,7 +938,7 @@ describe('安全 — cf_verified 签名伪造', () => {
 describe('安全 — 跨站 WebSocket 劫持（CSWSH）', () => {
   it('/api/ssh 跨域 Origin → 403 Forbidden', async () => {
     const worker = await loadWorker();
-    const env = makeEnv(); // 未配置 TURNSTILE_SECRET，跳过验证分支，专注 Origin 校验
+    const env = makeEnv(); // 无需额外配置，专注 Origin 校验
 
     const req = makeRequest('/api/ssh', {
       headers: {

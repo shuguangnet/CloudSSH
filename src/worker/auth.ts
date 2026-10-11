@@ -1,4 +1,5 @@
 import type { Env, PasswordAuthParams, UserInfo } from '../types';
+import { captchaActiveFor, verifyCaptcha } from './captcha';
 
 /**
  * GitHub OAuth 流程处理 + Session 中间件 + 单管理员密码认证
@@ -143,21 +144,6 @@ function timingSafeEqualBytes(a: Uint8Array, b: Uint8Array): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   return diff === 0;
-}
-
-/** Turnstile 人机验证（index.ts 的 /api/verify 与本文件登录共用） */
-export async function verifyTurnstile(token: string, secret: string, ip: string): Promise<boolean> {
-  try {
-    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `secret=${secret}&response=${token}&remoteip=${ip}`,
-    });
-    const result = await response.json<{ success: boolean }>();
-    return result.success === true;
-  } catch {
-    return false;
-  }
 }
 
 interface GitHubAccessPolicy {
@@ -478,8 +464,9 @@ export async function handleGetMe(request: Request, env: Env): Promise<Response>
  *
  * 浏览器先按 /api/config 下发的公开参数（盐/迭代数）在本地完成 PBKDF2 预拉伸
  * （server relief，规避 Free 套餐 10ms CPU 上限），提交 32 字节拉伸密钥；
- * 本端仅做一次 SHA-256 + 恒时比对。防线：同源 Origin 校验 → Turnstile（已配置
- * 时）→ 哨兵 DO 持久化节流（跨 isolate，指数退避封顶 15 分钟）→ 恒时比对。
+ * 本端仅做一次 SHA-256 + 恒时比对。防线：同源 Origin 校验 → 滑块验证码（可
+ * CAPTCHA_MODE=off 停用）→ 哨兵 DO 持久化节流（跨 isolate，指数退避封顶 15 分钟）
+ * → 恒时比对。
  */
 export async function handlePasswordLogin(request: Request, env: Env): Promise<Response> {
   // Keep password/username generation stable across asynchronous login steps.
@@ -506,7 +493,7 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Forbidden origin' }, { status: 403 });
   }
 
-  let body: { key?: unknown; username?: unknown; turnstileToken?: unknown };
+  let body: { key?: unknown; username?: unknown; captcha?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -521,16 +508,13 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const stub = getUserDBStub(env, LOCAL_ADMIN_GITHUB_ID);
 
-  // Turnstile（已配置则必验；公网部署建议开启以阻断自动化爆破）
-  if (env.TURNSTILE_SECRET) {
-    const turnstileToken = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
-    if (!turnstileToken) {
-      return Response.json({ error: 'Turnstile verification required' }, { status: 403 });
-    }
-    const valid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET, clientIP);
-    if (!valid) {
-      console.warn(`[Auth] password_login result=denied reason=turnstile ip=${clientIP}`);
-      return Response.json({ error: 'Turnstile verification failed' }, { status: 403 });
+  // 滑块验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
+  // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
+  if (captchaActiveFor(env)) {
+    const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; x?: unknown; samples?: unknown });
+    if (!captcha.ok) {
+      console.warn(`[Auth] password_login result=denied reason=captcha:${captcha.reason} ip=${clientIP}`);
+      return Response.json({ error: 'Captcha verification failed' }, { status: 403 });
     }
   }
 

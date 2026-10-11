@@ -21,7 +21,7 @@ const SERVERS_FIXTURE = [
 async function mockStatusPanel(page: Page, options: { automationEnabled: boolean; statusCalls?: number[] }): Promise<void> {
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
   await page.route('**/api/config', route => route.fulfill({
-    json: { githubAuthEnabled: true, turnstileEnabled: false, automationEnabled: options.automationEnabled },
+    json: { githubAuthEnabled: true, automationEnabled: options.automationEnabled },
   }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   await page.route('**/api/servers', route => {

@@ -35,7 +35,7 @@ const LOGS_FIXTURE = { logs: '2026-10-11T08:00:01.000000000Z line one\n2026-10-1
 async function mockDocker(page: Page, options: { automationEnabled: boolean; actions?: { container: string; action: string }[]; logsRequests?: { container: string; tail: number }[] }): Promise<void> {
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
   await page.route('**/api/config', route => route.fulfill({
-    json: { githubAuthEnabled: true, turnstileEnabled: false, automationEnabled: options.automationEnabled },
+    json: { githubAuthEnabled: true, automationEnabled: options.automationEnabled },
   }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   await page.route('**/api/servers', route => {

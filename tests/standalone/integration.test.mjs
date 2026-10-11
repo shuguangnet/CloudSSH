@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -25,7 +26,7 @@ async function stop(child) {
 }
 async function startPanel(directory, port) {
   const child = spawn(process.execPath, ['standalone/server.mjs'], {
-    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}` },
+    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}`, CAPTCHA_MODE: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
@@ -49,8 +50,18 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal((await fetch(`${base}/mcp`, { method: 'POST' })).status, 401);
     const config = await (await fetch(`${base}/api/config`)).json();
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
+    assert.equal(config.captchaEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    // 滑块负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
+    const noCaptcha = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    assert.equal(noCaptcha.status, 403);
+    // 挑战单次使用：同一证明重放 → 403
+    const proof = await solveCaptcha(base);
+    const replay = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: proof }) });
+    assert.equal(replay.status, 200);
+    const replayAgain = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: proof }) });
+    assert.equal(replayAgain.status, 403);
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     assert.equal(login.status, 200);
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -129,7 +140,7 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     panel = await startPanel(dataDir, port);
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie()[0].split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const addServer = async (name, jump_server_id) => {
@@ -262,7 +273,7 @@ test('administrator account migration, account/password changes, invalidation an
     const config = await (await fetch(`${base}/api/config`)).json();
     return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
   };
-  const login = (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key }) });
+  const login = async (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key, captcha: await solveCaptcha(base) }) });
   const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
   const request = (cookie, path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   try {

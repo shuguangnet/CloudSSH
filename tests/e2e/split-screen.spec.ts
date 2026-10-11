@@ -82,7 +82,7 @@ async function mockSession(page: Page): Promise<void> {
   await page.route('**/api/auth/me', route =>
     route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
   await page.route('**/api/config', route =>
-    route.fulfill({ json: { githubAuthEnabled: true, turnstileEnabled: false, automationEnabled: false } }));
+    route.fulfill({ json: { githubAuthEnabled: true, automationEnabled: false } }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   await page.route('**/api/servers', route => route.fulfill({ json: SERVERS_FIXTURE }));
   await page.route('**/api/servers/7/connect', route =>

@@ -31,7 +31,7 @@ async function mockHostFileApi(page: Page, fixture?: Record<string, HostFileEntr
 test('saved server keys can be picked from deployment server files', async ({ page }) => {
   await blockOptionalThirdPartyAssets(page);
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
-  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true, turnstileEnabled: false } }));
+  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true } }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   await mockHostFileApi(page);
   const saves: Record<string, unknown>[] = [];
@@ -89,7 +89,7 @@ test('saved server keys can be picked from deployment server files', async ({ pa
 test('host key button stays hidden when the deployment has no file API', async ({ page }) => {
   await blockOptionalThirdPartyAssets(page);
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
-  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true, turnstileEnabled: false } }));
+  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true } }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   await page.route('**/api/servers', route => route.fulfill({ json: [] }));
   // Cloudflare Workers deployments do not expose host file browsing.

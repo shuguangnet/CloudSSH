@@ -197,8 +197,8 @@ async function accountManagement(request) {
   const verified = await worker.fetch(new Request(`${env.BASE_URL}/api/auth/password/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: env.BASE_URL,
       'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || 'unknown' },
-    body: JSON.stringify({ username: usernameBefore, key: body.currentKey, turnstileToken: body.turnstileToken }),
-  }), { ...env, TURNSTILE_SECRET: undefined });
+    body: JSON.stringify({ username: usernameBefore, key: body.currentKey }),
+  }), { ...env, CAPTCHA_MODE: 'off' });
   // Already authenticated and origin-checked; retain throttling without a second CAPTCHA.
   if (!verified.ok) return verified;
   if (generation !== authGeneration || usernameBefore !== env.ADMIN_USERNAME) {

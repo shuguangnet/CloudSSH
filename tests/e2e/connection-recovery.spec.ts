@@ -112,7 +112,6 @@ test.beforeEach(async ({ page }) => {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        turnstileEnabled: false,
         sitekey: '',
         githubAuthEnabled: true,
         githubAuthRequired: false,

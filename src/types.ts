@@ -172,8 +172,8 @@ export interface Env {
   SSH_SHARE: DurableObjectNamespace;
   MAX_CONNECTIONS?: string;
   IDLE_TIMEOUT?: string;
-  TURNSTILE_SECRET?: string;
-  TURNSTILE_SITEKEY?: string;
+  // 滑块验证码模式：on（默认）/off/test（固定目标，自动化测试用）
+  CAPTCHA_MODE?: string;
   // GitHub OAuth（可选，未配置则登录功能自动禁用）
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;

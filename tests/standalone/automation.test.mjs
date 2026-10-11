@@ -2,6 +2,7 @@
 // key generation, the automation store and the scheduler engine, plus a spawned
 // end-to-end pass over the /api/automation and /api/ssh/keys routes.
 import test from 'node:test';
+import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
@@ -371,7 +372,7 @@ async function stop(child) {
 }
 async function startPanel(directory, port) {
   const child = spawn(process.execPath, ['standalone/server.mjs'], {
-    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}` },
+    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}`, CAPTCHA_MODE: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
@@ -407,7 +408,7 @@ test('automation and key APIs enforce auth and persist across restart', { timeou
     const config = await (await fetch(`${base}/api/config`)).json();
     assert.equal(config.automationEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     assert.equal(login.status, 200);
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, {
