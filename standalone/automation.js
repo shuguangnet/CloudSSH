@@ -1,5 +1,9 @@
 const dictionaries = {
   'zh-CN': {
+    wpEndpoint: '推送端点 (endpoint)', wpKey: 'p256dh 公钥', wpAuth: 'auth 密钥',
+    wpHint: '点击下方按钮在本浏览器一键订阅；换设备或清空数据后需重新订阅。',
+    wpSubscribe: '一键订阅本浏览器', wpSubscribed: '订阅成功，已回填字段，请保存渠道',
+    wpSubscribeFail: '订阅失败', wpDenied: '通知权限未授予', wpUnsupported: '此浏览器不支持 Web Push',
     'nav.panel': '返回面板', 'nav.automation': '自动化', 'nav.mcp': 'MCP', 'nav.account': '账号设置', back: '返回面板', title: '自动化', intro: '定时执行命令、监控服务器可达性，并在异常时推送通知。所有操作通过已验证指纹的 SSH 通道完成。',
     failed: '请求失败，请检查登录状态与输入。', empty: '暂无记录', cancel: '取消', edit: '编辑', delete: '删除', close: '关闭',
     enabledNow: '启用', on: '启用', off: '停用', confirmDelete: '确认删除？',
@@ -28,6 +32,10 @@ const dictionaries = {
     channelSaved: '渠道已保存', channelDeleted: '渠道已删除',
   },
   'zh-TW': {
+    wpEndpoint: '推送端點 (endpoint)', wpKey: 'p256dh 公鑰', wpAuth: 'auth 金鑰',
+    wpHint: '點擊下方按鈕在本瀏覽器一鍵訂閱；換裝置或清空資料後需重新訂閱。',
+    wpSubscribe: '一鍵訂閱本瀏覽器', wpSubscribed: '訂閱成功，已回填欄位，請儲存渠道',
+    wpSubscribeFail: '訂閱失敗', wpDenied: '通知權限未授予', wpUnsupported: '此瀏覽器不支援 Web Push',
     'nav.panel': '返回面板', 'nav.automation': '自動化', 'nav.mcp': 'MCP', 'nav.account': '帳號設定', back: '返回面板', title: '自動化', intro: '定時執行命令、監控伺服器可達性，並在異常時推送通知。所有操作透過已驗證指紋的 SSH 通道完成。',
     failed: '請求失敗，請檢查登入狀態與輸入。', empty: '暫無記錄', cancel: '取消', edit: '編輯', delete: '刪除', close: '關閉',
     enabledNow: '啟用', on: '啟用', off: '停用', confirmDelete: '確認刪除？',
@@ -56,6 +64,10 @@ const dictionaries = {
     channelSaved: '渠道已儲存', channelDeleted: '渠道已刪除',
   },
   'en-US': {
+    wpEndpoint: 'Push endpoint', wpKey: 'p256dh public key', wpAuth: 'auth secret',
+    wpHint: 'Click the button below to subscribe this browser in one step; re-subscribe after switching devices or clearing site data.',
+    wpSubscribe: 'Subscribe this browser', wpSubscribed: 'Subscribed — fields filled, save the channel',
+    wpSubscribeFail: 'Subscribe failed', wpDenied: 'Notification permission not granted', wpUnsupported: 'This browser does not support Web Push',
     'nav.panel': 'Back to panel', 'nav.automation': 'Automation', 'nav.mcp': 'MCP', 'nav.account': 'Account settings', back: 'Back to panel', title: 'Automation', intro: 'Run commands on schedule, monitor server reachability and get push notifications on failures. Everything goes through fingerprint-verified SSH.',
     failed: 'Request failed. Check your login and input.', empty: 'No records', cancel: 'Cancel', edit: 'Edit', delete: 'Delete', close: 'Close',
     enabledNow: 'Enabled', on: 'On', off: 'Off', confirmDelete: 'Delete this item?',
@@ -308,6 +320,7 @@ function channelFields(type) {
     bark: [['url', 'barkUrl', 'url', true], ['key', 'barkKey', 'text', false]],
     telegram: [['token', 'telegramToken', 'password', true], ['chat_id', 'telegramChatId', 'text', true]],
     webhook: [['url', 'webhookUrl', 'url', true]],
+    webpush: [['endpoint', 'wpEndpoint', 'url', true], ['p256dh', 'wpKey', 'text', true], ['auth', 'wpAuth', 'text', true]],
     smtp: [['host', 'smtpHost', 'text', true], ['port', 'smtpPort', 'number', true], ['security', 'smtpSecurity', 'select', true],
       ['username', 'smtpUser', 'text', false], ['password', 'smtpPassword', 'password', false],
       ['from', 'smtpFrom', 'email', true], ['to', 'smtpTo', 'email', true]],
@@ -336,6 +349,8 @@ function renderChannelConfig() {
       input.autocomplete = 'off'; input.spellcheck = false;
     }
     input.name = name; input.required = required;
+    if (name === 'endpoint') input.placeholder = 'https://fcm.googleapis.com/…';
+    if (name === 'p256dh' || name === 'auth') { input.className = 'mono'; }
     if (existing?.type === type) {
       const value = existing.config[name];
       if (value !== undefined && value !== null) {
@@ -345,6 +360,49 @@ function renderChannelConfig() {
     }
     label.append(span, input); holder.append(label);
   }
+  if (type === 'webpush') {
+    const hint = document.createElement('p'); hint.className = 'muted'; hint.textContent = text('wpHint');
+    const subscribe = document.createElement('button');
+    subscribe.type = 'button'; subscribe.textContent = text('wpSubscribe');
+    subscribe.addEventListener('click', () => void subscribeThisBrowser(subscribe));
+    holder.append(hint, subscribe);
+  }
+}
+
+/** 在本浏览器向推送服务订阅，自动回填 endpoint/p256dh/auth 三个字段。 */
+async function subscribeThisBrowser(button) {
+  button.disabled = true;
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error(text('wpUnsupported'));
+    if (Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error(text('wpDenied'));
+    } else if (Notification.permission !== 'granted') {
+      throw new Error(text('wpDenied'));
+    }
+    const { publicKey } = await api('/api/automation/webpush/vapid');
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlB64ToBytes(publicKey),
+    });
+    const keys = subscription.toJSON().keys || {};
+    $('channel-config').querySelector('[name=endpoint]').value = subscription.endpoint;
+    $('channel-config').querySelector('[name=p256dh]').value = keys.p256dh || '';
+    $('channel-config').querySelector('[name=auth]').value = keys.auth || '';
+    notify(text('wpSubscribed'));
+  } catch (error) {
+    notify(`${text('wpSubscribeFail')}: ${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function urlB64ToBytes(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const raw = atob((value + padding).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
 }
 
 function channelTarget(channel) {
@@ -352,6 +410,9 @@ function channelTarget(channel) {
   if (channel.type === 'bark') return config.url;
   if (channel.type === 'telegram') return `chat ${config.chat_id}`;
   if (channel.type === 'webhook') return config.url;
+  if (channel.type === 'webpush') {
+    try { const url = new URL(config.endpoint); return `${url.host}${url.pathname.slice(0, 24)}…`; } catch { return config.endpoint; }
+  }
   if (channel.type === 'smtp') return `${config.host}:${config.port} → ${config.to}`;
   return '';
 }

@@ -10,6 +10,8 @@ import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
 import { savedServers, executeSaved, drainSshChainPool } from './operations.mjs';
 import { AutomationStore } from './automation-store.mjs';
+import { generateVapidKeys } from './webpush.mjs';
+import { setVapidProvider } from './notify.mjs';
 import { AutomationEngine } from './scheduler.mjs';
 import { DashboardEngine } from './dashboard.mjs';
 import { createAutomationRoutes } from './automation-api.mjs';
@@ -54,6 +56,8 @@ env.SSH_SESSION = new LocalNamespace('ssh', SSHSessionDO, env, dataDir);
 env.SSH_SHARE = new LocalNamespace('shares', SSHShareDO, env, dataDir);
 const store = new AccessStore(join(dataDir, 'mcp.sqlite'));
 const automationStore = new AutomationStore(join(dataDir, 'automation.sqlite'));
+// Web Push VAPID 身份：首次生成后落库，重启不变，否则浏览器订阅会全部失效。
+setVapidProvider(async () => automationStore.getOrCreateVapid(generateVapidKeys));
 const automationEngine = new AutomationEngine({
   store: automationStore, env, SSHSession, executeSaved, log: (message) => console.error(`[automation] ${message}`),
 });

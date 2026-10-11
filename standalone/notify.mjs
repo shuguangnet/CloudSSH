@@ -1,6 +1,7 @@
 // Notification dispatchers shared by scheduled tasks and uptime monitoring.
 import { connect as netConnect } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
+import { webpushSend } from './webpush.mjs';
 
 const FETCH_TIMEOUT_MS = 15000;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -32,6 +33,15 @@ export function validateChannel(type, config) {
     const url = httpUrl(config.url);
     if (!url) throw new Error('Webhook URL must be an http(s) address');
     return { type, config: { url } };
+  }
+  if (type === 'webpush') {
+    const endpoint = httpUrl(config.endpoint);
+    if (!endpoint || !endpoint.startsWith('https://')) throw new Error('Push endpoint must be an https URL');
+    const p256dh = typeof config.p256dh === 'string' ? config.p256dh : '';
+    const auth = typeof config.auth === 'string' ? config.auth : '';
+    if (!/^\S+$/.test(p256dh) || p256dh.length < 43 || p256dh.length > 200) throw new Error('Invalid p256dh key');
+    if (!/^\S+$/.test(auth) || auth.length < 16 || auth.length > 128) throw new Error('Invalid auth secret');
+    return { type, config: { endpoint, p256dh, auth } };
   }
   if (type === 'smtp') {
     if (typeof config.host !== 'string' || !config.host.trim() || config.host.length > 253) throw new Error('Invalid SMTP host');
@@ -214,11 +224,28 @@ async function sendToChannel(channel, { title, body }) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return true;
   }
+  if (type === 'webpush') {
+    // VAPID 身份由 server.mjs 启动时注入（全局、持久化）。
+    if (!vapidProvider) throw new Error('Web Push is not configured on this server');
+    const vapid = await vapidProvider();
+    await webpushSend(
+      { endpoint: config.endpoint, keys: { p256dh: config.p256dh, auth: config.auth } },
+      { title, body, tag: 'cloudssh-alert' },
+      vapid
+    );
+    return true;
+  }
   if (type === 'smtp') {
     await smtpSend({ ...config, subject: title, text: body });
     return true;
   }
   throw new Error(`Unknown channel type: ${type}`);
+}
+
+let vapidProvider = null;
+/** server.mjs 启动时注入 () => Promise<{publicKey, privateKey}>，避免循环依赖。 */
+export function setVapidProvider(provider) {
+  vapidProvider = typeof provider === 'function' ? provider : null;
 }
 
 /** Returns [{id, type, ok, error?}] per channel; never throws. */

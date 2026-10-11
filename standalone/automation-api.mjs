@@ -6,6 +6,7 @@ import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
 import { collectServerStatus } from './status.mjs';
 import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from './docker.mjs';
+import { generateVapidKeys } from './webpush.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -94,6 +95,11 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, dashboa
     }
 
     // ---------- notification channels ----------
+    if (pathname === '/api/automation/webpush/vapid' && request.method === 'GET') {
+      const { error } = await requireUser(request);
+      if (error) return error;
+      return Response.json({ publicKey: store.getOrCreateVapid(generateVapidKeys).publicKey });
+    }
     if (pathname === '/api/automation/notifications') {
       const { error, user } = await requireUser(request);
       if (error) return error;

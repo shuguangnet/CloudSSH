@@ -44,6 +44,8 @@ export class AutomationStore {
         ok INTEGER NOT NULL, latency_ms INTEGER,
         cpu_percent REAL, mem_percent REAL, rx_kbps REAL, tx_kbps REAL);
       CREATE INDEX IF NOT EXISTS monitor_samples_idx ON monitor_samples(owner, server_id, ts);
+      CREATE TABLE IF NOT EXISTS app_kv (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     // Migrations for databases created before notify-on-change existed.
     for (const column of ['notify_on_change INTEGER NOT NULL DEFAULT 0', 'last_output_sha TEXT']) {
@@ -59,6 +61,20 @@ export class AutomationStore {
 
   ownerKey(user) {
     return String(user.github_id);
+  }
+
+  /** 全局 VAPID 身份：首次访问时生成并持久化，重启不变（否则全部订阅失效）。 */
+  getOrCreateVapid(generate) {
+    const row = this.db.prepare("SELECT value FROM app_kv WHERE key='webpush_vapid'").get();
+    if (row) {
+      try {
+        const keys = JSON.parse(row.value);
+        if (keys.publicKey && keys.privateKey) return keys;
+      } catch { /* fall through to regeneration */ }
+    }
+    const keys = generate();
+    this.db.prepare("INSERT OR REPLACE INTO app_kv (key, value) VALUES ('webpush_vapid', ?)").run(JSON.stringify(keys));
+    return keys;
   }
 
   // ---------- notification channels ----------
