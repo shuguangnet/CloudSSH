@@ -12,7 +12,7 @@ import type { Env } from '../../src/types';
 //   2. GitHub 策略 — 登录白名单、强制登录及 token 归属
 //   3. IDOR/越权   — handler 强制覆盖 body.user_id、DO 层二次归属校验
 //   4. SSRF 接缝   — AI base_url 经 validateBaseUrl 在路由层拦截
-//   5. 滑块验证码  — 挑战端点限流与挑战伪造
+//   5. 图片验证码  — 挑战端点限流与挑战伪造
 //   6. CSWSH       — 跨站 WebSocket 劫持（Origin 校验）
 //   附：一次性 token 防重放、SFTP attach 鉴权、速率限制
 //
@@ -867,10 +867,10 @@ describe('安全 — SSRF 接缝（AI base_url）', () => {
 });
 
 // =====================================================================
-// 5. 滑块验证码 — 挑战端点限流与挑战伪造
+// 5. 图片验证码 — 挑战端点限流与挑战伪造
 // =====================================================================
 
-describe('安全 — 滑块验证码挑战端点', () => {
+describe('安全 — 图片验证码挑战端点', () => {
   it('CAPTCHA_MODE=off → 挑战端点 501', async () => {
     const worker = await loadWorker();
     const env = makeEnv({ CAPTCHA_MODE: 'off' });

@@ -177,7 +177,7 @@ export default {
         return handleAIRoute(request, url, env);
       }
 
-      // ==================== 滑块验证码挑战（登录前公开，复用 per-IP 限流） ====================
+      // ==================== 图片验证码挑战（登录前公开，复用 per-IP 限流） ====================
 
       if (url.pathname === '/api/captcha/challenge' && request.method === 'GET') {
         const retryAfter = getRateLimitRetryAfter(request.headers.get('CF-Connecting-IP'));

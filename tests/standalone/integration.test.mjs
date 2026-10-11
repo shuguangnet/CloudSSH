@@ -52,7 +52,7 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
     assert.equal(config.captchaEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    // 滑块负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
+    // 验证码负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
     const noCaptcha = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
     assert.equal(noCaptcha.status, 403);
     // 挑战单次使用：同一证明重放 → 403
@@ -273,20 +273,10 @@ test('administrator account migration, account/password changes, invalidation an
     const config = await (await fetch(`${base}/api/config`)).json();
     return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
   };
-  /** 真实拖拽管理员登录对话框内的滑块，对齐 CAPTCHA_MODE=test 固定目标（120,48） */
-  const dragCaptchaToTestTarget = async (page, dialog) => {
-    await dialog.locator('.slider-captcha__piece').waitFor();
-    const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
-    const thumb = dialog.locator('.slider-captcha__thumb');
-    const box = await thumb.boundingBox();
-    const dx = (120 - 10) * scale;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    for (let i = 1; i <= 8; i++) {
-      await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
-      await page.waitForTimeout(35);
-    }
-    await page.mouse.up();
+  /** 在管理员登录对话框内填写 CAPTCHA_MODE=test 固定答案（TESTS） */
+  const fillCaptchaTestAnswer = async (page, dialog) => {
+    await dialog.locator('.image-captcha__figure svg').waitFor();
+    await dialog.locator('.image-captcha__input').fill('TESTS');
   };
   const login = async (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key, captcha: await solveCaptcha(base) }) });
   const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
@@ -348,8 +338,8 @@ test('administrator account migration, account/password changes, invalidation an
         const dialog = page.locator('#admin-login-dialog');
         await dialog.locator('input[name=username]').fill('operator2');
         await dialog.locator('input[type=password]').fill(newPassword);
-        // 密码模式登录对话框内嵌滑块验证码：真实拖拽对齐固定目标后才能提交
-        await dragCaptchaToTestTarget(page, dialog);
+        // 密码模式登录对话框内嵌图片验证码：填固定答案后才能提交
+        await fillCaptchaTestAnswer(page, dialog);
         await dialog.locator('.auth-challenge-dialog__button--submit').click();
         // 登录成功 → reload 进入用户空间；账号设置入口在左侧导航栏常驻展示
         await page.locator('#user-space-section').waitFor({ state: 'visible' });

@@ -6,7 +6,7 @@ import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { loadKnownFingerprint } from './known-hosts';
 import { parsePort } from './port';
-import { createSliderCaptcha, type SliderCaptchaWidget } from './slider-captcha';
+import { createImageCaptcha, type ImageCaptchaWidget } from './image-captcha';
 import { stretchAdminPassword } from './password-stretch';
 import { populateRegionSelect } from './regions';
 import type { TabManager } from './tab-manager';
@@ -72,13 +72,13 @@ export interface ConnectionFormOptions {
 
 export class ConnectionForm {
   private options: ConnectionFormOptions;
-  /** 滑块验证码是否参与管理员密码登录（/api/config 下发） */
+  /** 图片验证码是否参与管理员密码登录（/api/config 下发） */
   private captchaEnabled = false;
   /** 密码模式下的浏览器预拉伸参数（/api/config 公开下发）；null = 非密码模式 */
   private adminUsernameRequired = false;
   private passwordAuthParams: { iterations: number; salt: string } | null = null;
-  /** 管理员登录对话框内的滑块组件实例（随对话框销毁） */
-  private adminDialogCaptcha: SliderCaptchaWidget | null = null;
+  /** 管理员登录对话框内的验证码组件实例（随对话框销毁） */
+  private adminDialogCaptcha: ImageCaptchaWidget | null = null;
 
   constructor(options: ConnectionFormOptions) {
     this.options = options;
@@ -271,7 +271,7 @@ export class ConnectionForm {
     row.appendChild(entry);
   }
 
-  /** 管理员登录对话框：密码输入 + 滑块验证码，本地 PBKDF2 预拉伸后提交 */
+  /** 管理员登录对话框：密码输入 + 图片验证码，本地 PBKDF2 预拉伸后提交 */
   private async openAdminLoginDialog(): Promise<void> {
     if (!this.passwordAuthParams) return;
 
@@ -327,11 +327,11 @@ export class ConnectionForm {
     passwordInput.setAttribute('data-i18n-aria-label', 'auth.adminPasswordLabel');
     passwordInput.setAttribute('aria-label', t('auth.adminPasswordLabel'));
 
-    // 滑块验证码（captchaEnabled 时必验；目标 X 不回显，对齐由服务端登录时裁决）
+    // 图片字符验证码（captchaEnabled 时必验；答案对错由服务端登录时裁决）
     const captchaContainer = document.createElement('div');
     captchaContainer.className = 'flex justify-center';
     if (this.captchaEnabled) {
-      const widget = await createSliderCaptcha();
+      const widget = await createImageCaptcha();
       this.adminDialogCaptcha = widget;
       captchaContainer.appendChild(widget.element);
     }
@@ -380,7 +380,7 @@ export class ConnectionForm {
         passwordInput.focus();
         return;
       }
-      // 密码模式下登录必验滑块（与后端 handlePasswordLogin 的必验分支对齐）
+      // 密码模式下登录必验验证码（与后端 handlePasswordLogin 的必验分支对齐）
       const captchaProof = this.captchaEnabled ? this.adminDialogCaptcha?.getProof() ?? null : null;
       if (this.captchaEnabled && !captchaProof) {
         showError(t('auth.captchaRequired'));
@@ -417,7 +417,7 @@ export class ConnectionForm {
           return;
         }
 
-        // 失败时重置滑块（挑战单次使用，旧挑战二次提交必被拒）
+        // 失败时重置换新图（挑战对错都单次使用，旧挑战二次提交必被拒）
         if (this.adminDialogCaptcha) {
           void this.adminDialogCaptcha.reset();
         }
@@ -431,6 +431,7 @@ export class ConnectionForm {
           showError(t('auth.adminLoginLocked', { seconds: data.retryAfterSec ?? 60 }));
         } else if (response.status === 403) {
           showError(t('auth.adminLoginCaptchaFailed'));
+          this.adminDialogCaptcha?.focus();
         } else if (response.status === 500) {
           showError(t('auth.adminHashInvalid'));
         } else if (response.status === 501) {
@@ -468,7 +469,7 @@ export class ConnectionForm {
     passwordInput.focus();
   }
 
-  /** 关闭并销毁管理员登录对话框（含滑块组件与密码字段残留清理） */
+  /** 关闭并销毁管理员登录对话框（含验证码组件与密码字段残留清理） */
   private closeAdminLoginDialog(): void {
     this.adminDialogCaptcha?.destroy();
     this.adminDialogCaptcha = null;

@@ -83,7 +83,7 @@ pnpm run verify
 
 ### Worker 与安全边界
 
-- 滑块验证码：挑战 HMAC 签名、TTL/单次使用、轨迹校验与登录门控顺序
+- 图片验证码：挑战 HMAC 签名、答案摘要恒时比对、TTL/单次使用与登录门控顺序
 - Origin 检查、端口范围、连接令牌和错误信息边界
 - IPv4/IPv6 保留地址、DoH 解析与 DNS rebinding 防护
 - Agent 危险命令拦截、确认规则和 SSRF URL 校验

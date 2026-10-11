@@ -160,7 +160,7 @@ test('AI 模型选择下拉框：免重复输入 token 获取模型列表，且�
   await expect(menu).toBeHidden();
 });
 
-test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交载荷', async ({ page }) => {
+test('管理员登录对话框图片验证码：渲染、输入与提交载荷', async ({ page }) => {
   await blockOptionalThirdPartyAssets(page);
   await page.addInitScript(() => {
     localStorage.setItem('cloudssh_theme_selection', 'standard-light');
@@ -183,10 +183,8 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
     })
   );
 
-  const background =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="140" viewBox="0 0 300 140"><rect width="300" height="140" fill="#141b26"/><circle cx="120" cy="70" r="20" fill="rgba(0,0,0,0.48)" stroke="rgba(255,255,255,0.28)" stroke-width="1.5"/></svg>';
-  const pieceSvg =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44"><path d="M9 0 H35 A9 9 0 0 1 44 9 V13 A9 9 0 0 1 44 31 V35 A9 9 0 0 1 35 44 H9 A9 9 0 0 1 0 35 V9 A9 9 0 0 1 9 0 Z" fill="rgba(255,255,255,0.82)" stroke="#e2e8f0" stroke-width="1.5"/></svg>';
+  const image =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="48" viewBox="0 0 160 48"><rect width="160" height="48" fill="#141b26"/><text x="16" y="30" font-size="28" fill="#7dd3fc">T</text><text x="48" y="28" font-size="28" fill="#c4b5fd">E</text><text x="80" y="31" font-size="28" fill="#6ee7b7">S</text><text x="112" y="27" font-size="28" fill="#fcd34d">T</text><text x="144" y="29" font-size="28" fill="#f9a8d4">S</text></svg>';
   let challengeFetches = 0;
   await page.route('**/api/captcha/challenge', (route) => {
     challengeFetches += 1;
@@ -194,19 +192,15 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        challenge: 'dmExfDEyMHw0OHwxNzAwMDAwMDAwfDAwMTEyMjMzNDQ1NTY2Nzc.A'.repeat(1) + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-        background,
-        piece: pieceSvg,
-        width: 300,
-        height: 140,
-        pieceSize: 44,
-        startX: 10,
-        y: 48,
+        challenge: `dmVydHktbG9uZy1jaGFsbGVuZ2Utc3RyaW5nLSR7aXRlcmF0aW9ufQ==.${'A'.repeat(43)}`,
+        image,
+        width: 160,
+        height: 48,
       }),
     });
   });
 
-  const loginRequests: Array<{ captcha?: { x: number; samples: Array<{ x: number }> } }> = [];
+  const loginRequests: Array<{ captcha?: { challenge: string; answer: string } }> = [];
   await page.route('**/api/auth/password/login', async (route) => {
     const body = route.request().postDataJSON();
     loginRequests.push(body);
@@ -223,81 +217,53 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
   const dialog = page.locator('#admin-login-dialog');
   await expect(dialog).toBeVisible();
 
-  // 滑块组件：背景 SVG 注入 + 拼图块定位 + 轨道出现
-  const canvas = dialog.locator('.slider-captcha__canvas');
-  await expect(canvas.locator('> svg')).toHaveCount(1);
-  const piece = dialog.locator('.slider-captcha__piece');
-  await expect(piece).toBeVisible();
-  await expect(dialog.locator('.slider-captcha__track')).toBeVisible();
-  await expect(dialog.locator('.slider-captcha__hint')).toContainText('drag the piece');
+  // 验证码组件：SVG 图片注入 + 答案输入框 + 换一张按钮
+  const figure = dialog.locator('.image-captcha__figure');
+  const input = dialog.locator('.image-captcha__input');
+  await expect(figure.locator('> svg')).toHaveCount(1);
+  await expect(input).toBeVisible();
+  await expect(dialog.locator('.image-captcha__refresh')).toBeVisible();
 
-  // 未拖拽直接提交 → captchaRequired 错误提示，且不发登录请求
-  await dialog.locator('input[type="text"]').fill('admin');
+  // 未填答案直接提交 → captchaRequired 错误提示，且不发登录请求
+  await dialog.locator('input[name="username"]').fill('admin');
   await dialog.locator('input[type="password"]').fill('secret-password');
   await dialog.locator('.auth-challenge-dialog__button--submit').click();
-  await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('slider verification');
+  await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('captcha');
   expect(loginRequests).toHaveLength(0);
 
-  // 真实拖拽：拖拽距离 = (targetX - startX) * scale（画布 CSS 宽 / 300），
-  // 模拟对齐固定目标 120；多步 + 间隔确保轨迹时长
-  const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
-  const thumb = dialog.locator('.slider-captcha__thumb');
-  const box = await thumb.boundingBox();
-  if (!box) throw new Error('thumb not measurable');
-  const dx = (120 - 10) * scale;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  for (let i = 1; i <= 8; i++) {
-    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
-    await page.waitForTimeout(35);
-  }
-  await page.mouse.up();
-
-  // 轨道进入完成态
-  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
-
-  // 提交 → 登录请求体携带 captcha 载荷（challenge + x + samples）
+  // 填入答案提交 → 登录请求体携带 { challenge, answer } 载荷
+  await input.fill('TESTS');
   await dialog.locator('.auth-challenge-dialog__button--submit').click();
   await expect
     .poll(() => loginRequests.length)
     .toBe(1);
   const captcha = loginRequests[0]?.captcha;
   expect(captcha).toBeTruthy();
-  // 坐标契约：x 为拼图块绝对左缘（对齐目标 120，容差内），首样本 ≈ startX(10)
-  expect(captcha?.x).toBeGreaterThanOrEqual(115);
-  expect(captcha?.x).toBeLessThanOrEqual(125);
-  expect(captcha?.samples.length).toBeGreaterThanOrEqual(3);
-  expect(captcha?.samples[0]?.x).toBeLessThanOrEqual(15);
+  expect(captcha?.answer).toBe('TESTS');
+  expect(captcha?.challenge).toContain('.');
+  // 不再携带旧滑块坐标/轨迹字段
+  expect((captcha as Record<string, unknown>)?.x).toBeUndefined();
+  expect((captcha as Record<string, unknown>)?.samples).toBeUndefined();
 
-  // 登录失败后滑块自动重置（新挑战）
+  // 登录失败后自动换新图（新挑战请求）并清空输入框
   await expect
     .poll(() => challengeFetches)
     .toBe(2);
-  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+  await expect(input).toHaveValue('');
 
-  // —— 高频轨迹节流：高刷屏画像（4 秒 400+ move 事件）下样本数必须被节流/抽稀
-  // 在服务端上限内，且终点仍对齐目标（真实用户反馈“越认真拖拽越无法通过”）
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  for (let i = 1; i <= 200; i++) {
-    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 200, box.y + box.height / 2, { steps: 2 });
-    await page.waitForTimeout(20);
-  }
-  await page.mouse.up();
-  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
-  await dialog.locator('.auth-challenge-dialog__button--submit').click();
+  // 点击“换一张”手动刷新（不额外发登录请求）
+  await dialog.locator('.image-captcha__refresh').click();
   await expect
-    .poll(() => loginRequests.length)
-    .toBe(2);
-  const throttled = loginRequests[1]?.captcha;
-  expect(throttled).toBeTruthy();
-  // 200 步 × 20ms 节流后约 200 样本 → 抽稀硬上限 160；服务端上限 512
-  expect(throttled?.samples.length).toBeLessThanOrEqual(160);
-  expect(throttled?.samples.length).toBeGreaterThanOrEqual(3);
-  // 终点仍为最终视觉位置（pointerup 补记末样本）
-  expect(throttled?.x).toBeGreaterThanOrEqual(115);
-  expect(throttled?.x).toBeLessThanOrEqual(125);
-  expect(throttled?.samples[throttled!.samples.length - 1]?.x).toBeGreaterThanOrEqual(115);
+    .poll(() => challengeFetches)
+    .toBe(3);
+  expect(loginRequests).toHaveLength(1);
+  // SVG 移除 width/height 后按容器等比缩放
+  const svgSize = await figure.locator('> svg').evaluate((svg) => ({
+    w: svg.getAttribute('width'),
+    cw: svg.getBoundingClientRect().width,
+  }));
+  expect(svgSize.w).toBeNull();
+  expect(svgSize.cw).toBeGreaterThan(100);
 });
 
 /**

@@ -508,10 +508,10 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const stub = getUserDBStub(env, LOCAL_ADMIN_GITHUB_ID);
 
-  // 滑块验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
+  // 图片字符验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
   // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
   if (captchaActiveFor(env)) {
-    const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; x?: unknown; samples?: unknown });
+    const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; answer?: unknown });
     if (!captcha.ok) {
       console.warn(`[Auth] password_login result=denied reason=captcha:${captcha.reason} ip=${clientIP}`);
       return Response.json({ error: 'Captcha verification failed' }, { status: 403 });

@@ -1,11 +1,11 @@
 /**
- * 真实服务器滑块验证码回归测试（standalone 服务器 + 真实浏览器，非 mock）。
+ * 真实服务器图片验证码回归测试（standalone 服务器 + 真实浏览器，非 mock）。
  *
- * 背景：v2.6.3 之前的实现中，前端提交的 x 是「拖拽距离」而服务端 targetX 是
- * 「拼图块绝对左缘」，系统性偏差 startX=10px 超出 ±5px 容差，导致真实浏览器
- * 每次登录必 403（mock e2e 与 solveCaptcha 均绕过前端数学而未覆盖）。
- * 本测试用 CAPTCHA_MODE=test（固定目标 120,48）驱动完整链路：
- * 前端采样换算 → 登录载荷 → 服务端 HMAC/轨迹/对齐校验 → 会话建立。
+ * 用 CAPTCHA_MODE=test（固定答案 TESTS）驱动完整链路：挑战下发 SVG →
+ * 输入框提交 → 服务端 HMAC/摘要/单次使用校验 → 会话建立。
+ *
+ * 历史注记：v2.6.3–v2.6.4 为滑块拼图形态，多轮真实用户拖拽画像返工后按用户
+ * 决策改为图片字符验证码（输入框无坐标歧义、移动端零手势依赖）。
  *
  * 依赖 dist/worker.mjs（standalone 服务器入口）；缺失时自动构建。
  */
@@ -18,8 +18,7 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const PASSWORD = 'live-captcha-password-123';
-const TARGET_X = 120; // CAPTCHA_MODE=test 固定目标
-const START_X = 10; // 服务端下发的拼图起始偏移
+const TEST_ANSWER = 'TESTS'; // CAPTCHA_MODE=test 固定答案
 
 function freePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
@@ -37,37 +36,7 @@ function freePort(): Promise<number> {
   });
 }
 
-/** 按服务端契约拖拽：目标绝对 X → 拖拽距离 = (targetX - startX) * scale（CSS 像素） */
-async function dragTo(page: import('@playwright/test').Page, dialog: import('@playwright/test').Locator, targetX: number) {
-  await dragProfile(page, dialog, targetX, { moves: 8, intervalMs: 35, stepsPerMove: 2 });
-}
-
-/** 可画像拖拽：moves 次 move 事件、每次间隔 intervalMs 毫秒。
- *  模拟真实用户行为画像（高刷屏慢速精细对齐 / 快速甩动），修复前这些画像
- *  会因轨迹样本数/时长下限被服务端整单拒绝（真实用户反馈“一直无法通过”） */
-async function dragProfile(
-  page: import('@playwright/test').Page,
-  dialog: import('@playwright/test').Locator,
-  targetX: number,
-  opts: { moves: number; intervalMs: number; stepsPerMove?: number }
-) {
-  const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
-  const thumb = dialog.locator('.slider-captcha__thumb');
-  const box = await thumb.boundingBox();
-  if (!box) throw new Error('thumb not measurable');
-  const dx = (targetX - START_X) * scale;
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  await page.mouse.move(cx, cy);
-  await page.mouse.down();
-  for (let i = 1; i <= opts.moves; i++) {
-    await page.mouse.move(cx + (dx * i) / opts.moves, cy, { steps: opts.stepsPerMove ?? 1 });
-    await page.waitForTimeout(opts.intervalMs);
-  }
-  await page.mouse.up();
-}
-
-test('真实滑块验证码：未对齐 403 并重置，对齐后密码登录成功', async ({ page }) => {
+test('真实图片验证码：答错 403 并自动换图，答对后密码登录成功', async ({ page }) => {
   test.setTimeout(120_000);
   if (!existsSync('dist/worker.mjs')) {
     const build = spawnSync('node', ['scripts/build-standalone.mjs'], { stdio: 'inherit' });
@@ -104,50 +73,51 @@ test('真实滑块验证码：未对齐 403 并重置，对齐后密码登录成
     await page.locator('#admin-login-btn').click();
     const dialog = page.locator('#admin-login-dialog');
     await expect(dialog).toBeVisible();
-    await expect(dialog.locator('.slider-captcha__piece')).toBeVisible();
 
-    await dialog.locator('input[type="text"]').fill('admin');
+    const input = dialog.locator('.image-captcha__input');
+    const figure = dialog.locator('.image-captcha__figure');
+
+    // 挑战加载：SVG 图片渲染
+    await expect(figure.locator('svg')).toBeVisible();
+    await expect(input).toBeVisible();
+
+    await dialog.locator('input[name="username"]').fill('admin');
     await dialog.locator('input[type="password"]').fill(PASSWORD);
 
-    // —— 失败路径：拖到错误位置（70，远离目标 120）→ 403，滑块自动重置换新挑战
-    await dragTo(page, dialog, 70);
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+    // —— 失败路径 1：错误答案 → 403，自动换新图 + 清空输入框
+    const loginChallenges: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/auth/password/login')) {
+        const body = request.postDataJSON() as { captcha?: { challenge?: string } };
+        if (body.captcha?.challenge) loginChallenges.push(body.captcha.challenge);
+      }
+    });
+    await input.fill('WRONG');
     const [rejected] = await Promise.all([
       page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
       dialog.locator('.auth-challenge-dialog__button--submit').click(),
     ]);
     expect(rejected.status()).toBe(403);
-    await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('Slider verification failed');
-    // 重置：完成态消失、回到可拖拽提示
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
-    await expect(dialog.locator('.slider-captcha__hint')).toContainText('Hold and drag');
+    await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('Incorrect captcha');
+    // 自动换图：输入框清空
+    await expect(input).toHaveValue('');
 
-    // —— 人类画像 A：慢速精细对齐（高刷屏 4 秒 400+ move 事件，旧 256 样本上限必拒）。
-    // 用错误密码断言 401：滑块已通过（密码错误），证明轨迹未被样本数误拒
+    // —— 失败路径 2：验证码对但密码错 → 401（验证码通过，防线在密码）
+    await input.fill(TEST_ANSWER.toLowerCase()); // 顺带覆盖大小写不敏感
     await dialog.locator('input[type="password"]').fill('definitely-wrong-password');
-    await dragProfile(page, dialog, TARGET_X, { moves: 200, intervalMs: 20, stepsPerMove: 2 });
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
-    const [slowProfile] = await Promise.all([
+    const [badPassword] = await Promise.all([
       page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
       dialog.locator('.auth-challenge-dialog__button--submit').click(),
     ]);
-    expect(slowProfile.status()).toBe(401);
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+    expect(badPassword.status()).toBe(401);
+    // 401 同样换新图：输入框清空，且提交的是新挑战串（≠ 首次登录请求）
+    await expect(input).toHaveValue('');
+    expect(loginChallenges.length).toBeGreaterThanOrEqual(2);
+    expect(loginChallenges[1]).not.toBe(loginChallenges[0]);
 
-    // —— 人类画像 B：快速甩动（全程 ~90ms，旧 120ms 时长下限必拒）
-    await dragProfile(page, dialog, TARGET_X, { moves: 5, intervalMs: 18 });
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
-    const [fastProfile] = await Promise.all([
-      page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
-      dialog.locator('.auth-challenge-dialog__button--submit').click(),
-    ]);
-    expect(fastProfile.status()).toBe(401);
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
-
-    // —— 成功路径：对齐固定目标 120 → 200 → reload 进入用户空间
+    // —— 成功路径：正确答案 + 正确密码 → 200 → reload 进入用户空间
     await dialog.locator('input[type="password"]').fill(PASSWORD);
-    await dragTo(page, dialog, TARGET_X);
-    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+    await input.fill(TEST_ANSWER);
     const [accepted] = await Promise.all([
       page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
       dialog.locator('.auth-challenge-dialog__button--submit').click(),
