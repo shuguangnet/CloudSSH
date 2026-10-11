@@ -5,6 +5,7 @@ import test from 'node:test';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
+import { request } from 'node:http';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -174,6 +175,38 @@ test('docker API enforces auth and ownership', { timeout: 60000 }, async () => {
     assert.equal((await api(`/api/docker/${id}/logs`, 'POST', { container: 'caddy', tail: 99999 })).status, 400);
     // Cross-origin POST is rejected.
     assert.equal((await fetch(`${base}/api/docker/${id}/action`, { method: 'POST', headers: { Cookie: cookie, Origin: 'http://evil.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ container: 'caddy', action: 'start' }) })).status, 403);
+
+    // SSH-tunnel / reverse-proxy access: Origin differs from BASE_URL but matches
+    // the request Host (or X-Forwarded-Host). Must stay allowed like the main
+    // routes, or docker logs POSTs fail with "Invalid origin" over the tunnel.
+    // fetch() cannot override Host, so issue a raw request instead.
+    const tunneled = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'localhost:8788', Origin: 'http://localhost:8788', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: raw }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    // 400: input validation reached (container name passes regex, but the server
+    // entry's port is unreachable — validation precedes SSH). The point: NOT 403.
+    assert.notEqual(tunneled.status, 403, `tunnel POST must not be rejected as CSRF: ${tunneled.body}`);
+    const forwarded = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'proxy.internal', 'X-Forwarded-Host': 'panel.example.com', Origin: 'https://panel.example.com', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: raw }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    assert.notEqual(forwarded.status, 403, `X-Forwarded-Host POST must not be rejected as CSRF: ${forwarded.body}`);
+    // But an Origin that matches neither BASE_URL nor Host nor XFH stays forbidden.
+    const spoofed = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'localhost:8788', Origin: 'http://evil.example', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    assert.equal(spoofed.status, 403);
 
     // A saved server without a trusted fingerprint fails politely (502, not a crash).
     const blocked = await api(`/api/docker/${id}/containers`);

@@ -7,6 +7,7 @@ import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from 
 import { collectServerStatus } from './status.mjs';
 import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from './docker.mjs';
 import { generateVapidKeys } from './webpush.mjs';
+import { originAllowed } from './origin.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -39,7 +40,7 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, dashboa
   async function requireUser(request) {
     const user = await getAuthenticatedUser(request, env);
     if (!user) return { error: Response.json({ error: 'Authentication required' }, { status: 401 }) };
-    if (request.method !== 'GET' && request.headers.get('Origin') !== env.BASE_URL) {
+    if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'), request.headers.get('X-Forwarded-Host'), env.BASE_URL)) {
       return { error: Response.json({ error: 'Invalid origin' }, { status: 403 }) };
     }
     return { user };

@@ -20,6 +20,7 @@ process.umask(0o077);
 installWorkerGlobals();
 const { worker, SSHSessionDO, UserDBDO, SSHShareDO, SSHSession,
   getAuthenticatedUser, parseAdminPasswordHash, isBlockedCommand } = await import('../dist/worker.mjs');
+import { originAllowed as originAllowedFor } from './origin.mjs';
 
 const dataDir = resolve(process.env.DATA_DIR || './data');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -178,15 +179,8 @@ function sendJson(res, status, body) {
  * 或与 X-Forwarded-Host（链首，中转反代改写 Host 时的标准转发头）一致。
  * 浏览器 CSRF 请求的 Origin 是攻击者站点而 Host/转发头是面板地址，仍被拒。
  */
-function originAllowed(originHeader, hostHeader, forwardedHostHeader) {
-  if (!originHeader) return false;
-  if (originHeader === env.BASE_URL) return true;
-  let originHost;
-  try { originHost = new URL(originHeader).host.toLowerCase(); } catch { return false; }
-  if (originHost === String(hostHeader || '').toLowerCase()) return true;
-  const first = String(forwardedHostHeader || '').split(',')[0].trim().toLowerCase();
-  return !!first && originHost === first;
-}
+const originAllowed = (originHeader, hostHeader, forwardedHostHeader) =>
+  originAllowedFor(originHeader, hostHeader, forwardedHostHeader, env.BASE_URL);
 async function sendResponse(res, response) {
   const headers = Object.fromEntries(response.headers);
   const cookies = response.headers.getSetCookie();
