@@ -14,10 +14,11 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand } from '../../standalone/docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines } from '../../standalone/docker.mjs';
 
 test('docker command builders validate names, actions and tails', () => {
   assert.equal(listContainersScript(), "docker ps -a --no-trunc --format '{{json .}}'");
+  assert.equal(statsScript(), "docker stats --no-stream --format '{{json .}}'");
 
   assert.equal(buildDockerAction('caddy', 'restart').command, "docker restart 'caddy'");
   assert.equal(buildDockerAction('filebrowser', 'remove').command, "docker rm -f 'filebrowser'");
@@ -38,6 +39,25 @@ test('docker command builders validate names, actions and tails', () => {
   // undefined falls back to the 200-line default.
   assert.equal(buildDockerLogsCommand('caddy').command, "docker logs --timestamps --tail 200 'caddy' 2>&1");
   assert.equal(buildDockerLogsCommand('caddy', '500').command, "docker logs --timestamps --tail 500 'caddy' 2>&1");
+});
+
+test('parseStatsLines maps docker stats JSON, strips name prefixes and tolerates junk lines', () => {
+  const stdout = [
+    '{"BlockIO":"1.2kB / 3.4MB","CPUPerc":"0.12%","MemUsage":"1.5GiB / 3.8GiB","MemPerc":"39.4%","NetIO":"5MB / 2MB","PIDs":"7","ID":"26c57eb76210","Name":"/caddy"}',
+    'WARNING: some notice line',
+    '{"BlockIO":"0B / 0B","CPUPerc":"0.00%","MemUsage":"0B / 0B","MemPerc":"0.00%","NetIO":"0B / 0B","ID":"e16e50103cf4","Name":"second,alias"}',
+    'not json at all',
+    '',
+  ].join('\n');
+  const stats = parseStatsLines(stdout);
+  assert.equal(stats.size, 2);
+  assert.deepEqual(stats.get('caddy'), {
+    cpu_percent: '0.12%', mem_usage: '1.5GiB / 3.8GiB', mem_percent: '39.4%',
+    net_io: '5MB / 2MB', block_io: '1.2kB / 3.4MB',
+  });
+  assert.equal(stats.get('second').mem_usage, '0B / 0B');
+  assert.equal(parseStatsLines('').size, 0);
+  assert.equal(parseStatsLines(null).size, 0);
 });
 
 test('parseContainerLines maps docker ps JSON and tolerates junk lines', () => {
@@ -152,6 +172,10 @@ test('docker API manages containers over a real SSH connection with a stub docke
     `  printf '%s\\n' '{"Names":"filebrowser","ID":"e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789","Image":"filebrowser/filebrowser:latest","State":"exited","Status":"Exited (0) 2 minutes ago","RunningFor":"2 minutes ago","Ports":"0.0.0.0:8060->80/tcp, [::]:8060->80/tcp","CreatedAt":"2026-10-11 07:00:00 +0000 UTC"}'`,
     '  exit 0',
     'fi',
+    'if [ "$1" = "stats" ]; then',
+    `  printf '%s\n' '{"BlockIO":"1.2kB / 3.4MB","CPUPerc":"0.12%","MemUsage":"1.5GiB / 3.8GiB","MemPerc":"39.4%","NetIO":"5MB / 2MB","PIDs":"7","ID":"26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Name":"caddy"}'`,
+    '  exit 0',
+    'fi',
     'if [ "$1" = "logs" ]; then',
     '  echo "2026-10-11T08:00:01.000000000Z stub log line 1"',
     '  echo "2026-10-11T08:00:02.000000000Z stub log line 2"',
@@ -213,6 +237,12 @@ test('docker API manages containers over a real SSH connection with a stub docke
     assert.equal(containers[0].name, 'caddy');
     assert.equal(containers[0].state, 'running');
     assert.equal(containers[0].running_for, '13 hours');
+    // Stats from the stub merge into running containers only.
+    assert.equal(containers[0].cpu_percent, '0.12%');
+    assert.equal(containers[0].mem_usage, '1.5GiB / 3.8GiB');
+    assert.equal(containers[0].mem_percent, '39.4%');
+    assert.equal(containers[1].name, 'filebrowser');
+    assert.equal(containers[1].cpu_percent, undefined, 'stopped containers have no stats');
     assert.equal(containers[1].name, 'filebrowser');
     assert.equal(containers[1].state, 'exited');
 
@@ -237,6 +267,27 @@ test('docker API manages containers over a real SSH connection with a stub docke
     assert.equal(logs.status, 200);
     const logsBody = await logs.json();
     assert.match(logsBody.logs, /stub log line 1\n.*stub log line 2/);
+
+    // Regression (db069fc): aborting an in-flight docker listing (client
+    // disconnect) must not poison the cooldown for the replacement request.
+    // Slow the ps stub down so the abort lands while SSH is still running.
+    await delay(1600);
+    writeFileSync(join(binDir, 'docker'), stubLines.join('\n').replace('if [ "$1" = "ps" ]; then', 'if [ "$1" = "ps" ]; then\n  sleep 2') + '\n');
+    let aborting = true;
+    try {
+      const aborter = new AbortController();
+      const inflight = fetch(`${base}/api/docker/${id}/containers`, { signal: aborter.signal, headers: { Cookie: cookie, Origin: base } });
+      await delay(400);
+      aborter.abort();
+      await inflight.catch(() => {});
+      const replacement = await api(`/api/docker/${id}/containers`);
+      if (replacement.status !== 200) throw new Error(`replacement after abort got ${replacement.status}: ${JSON.stringify(await replacement.json().catch(() => ({})))}`);
+      assert.equal(replacement.status, 200);
+      aborting = false;
+    } finally {
+      if (aborting) writeFileSync(join(binDir, 'docker'), stubLines.join('\n') + '\n');
+    }
+    writeFileSync(join(binDir, 'docker'), stubLines.join('\n') + '\n');
 
     // After the throttle window the list works again.
     await delay(1600);

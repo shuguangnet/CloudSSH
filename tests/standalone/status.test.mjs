@@ -249,6 +249,20 @@ test('status API collects live metrics over a real SSH connection', {
     assert.equal(second.status, 200);
     assert.ok((await second.json()).collected_at >= status.collected_at);
 
+    // Regression (db069fc): a client that aborts mid-collection (the exact
+    // behaviour of the 5s poller replacing an in-flight request) must not
+    // poison the cooldown — the immediate replacement request succeeds
+    // instead of tripping "Too many status requests".
+    await delay(1600);
+    const aborter = new AbortController();
+    const inflight = fetch(`${base}/api/automation/status/${id}`, { signal: aborter.signal, headers: { Cookie: cookie, Origin: base } });
+    await delay(400); // SSH collection is underway (handshake + sleep-1 sampling)
+    aborter.abort();
+    await inflight.catch(() => {}); // client disconnected mid-flight
+    const replacement = await api(`/api/automation/status/${id}`);
+    if (replacement.status !== 200) throw new Error(`replacement after abort got ${replacement.status}: ${JSON.stringify(await replacement.json().catch(() => ({})))}`);
+    assert.equal(replacement.status, 200);
+
     // Regression (real SSH): cron exec timeout must convert seconds → ms.
     const task = await api('/api/automation/cron', 'POST', { name: 'st', server_id: id, command: 'printf status-cron-ok', cron_expr: '0 4 * * *', timeout_seconds: 30, notify_on_failure: false, enabled: false });
     assert.equal(task.status, 201);
