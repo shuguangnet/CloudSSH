@@ -67,7 +67,36 @@ const PUBLIC_FILES = {
   '/icons/icon-192.png': { file: 'icons/icon-192.png', type: 'image/png', cache: 'public, max-age=604800' },
   '/icons/icon-512.png': { file: 'icons/icon-512.png', type: 'image/png', cache: 'public, max-age=604800' },
   '/icons/apple-touch-icon.png': { file: 'icons/apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=604800' },
+  '/favicon.svg': { file: 'favicon.svg', type: 'image/svg+xml', cache: 'public, max-age=3600' },
 };
+
+// Split app shell (dist/public/index.html plus hashed /assets/* files, copied by
+// scripts/build-standalone.mjs). Served only when every referenced asset exists;
+// otherwise the inlined worker shell remains the fallback. Hashed filenames make
+// the assets immutable across deploys, so only index.html revalidates.
+const SPLIT_SHELL = (() => {
+  try {
+    const publicDir = new URL('../dist/public/', import.meta.url);
+    const html = readFileSync(new URL('index.html', publicDir), 'utf8');
+    const assets = [...html.matchAll(/(?:src|href)=["']\/assets\/([\w.-]+)["']/g)].map((match) => match[1]);
+    if (assets.length === 0 || !assets.every((name) => existsSync(new URL(`assets/${name}`, publicDir)))) return null;
+    return html;
+  } catch { return null; }
+})();
+const ASSET_TYPES = {
+  js: 'text/javascript; charset=utf-8', css: 'text/css', svg: 'image/svg+xml', png: 'image/png',
+  map: 'application/json', woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/ttf',
+};
+function serveAsset(name) {
+  if (!/^[\w.-]+$/.test(name)) return new Response('Not found', { status: 404 });
+  const type = ASSET_TYPES[name.split('.').pop()];
+  if (!type) return new Response('Not found', { status: 404 });
+  try {
+    return new Response(readFileSync(new URL(`../dist/public/assets/${name}`, import.meta.url)), {
+      headers: { 'Content-Type': type, 'Cache-Control': 'public, max-age=31536000, immutable' },
+    });
+  } catch { return new Response('Not found', { status: 404 }); }
+}
 let authGeneration = env.ADMIN_PASSWORD_HASH ? tokenHash(env.ADMIN_PASSWORD_HASH) : 'github';
 
 // Support Cloudflare's outbound WebSocket fetch for existing Tunnel connections.
@@ -394,6 +423,20 @@ const server = createServer(async (req, res) => {
       const extension = pathname.endsWith('.js') ? 'js' : 'css';
       return sendResponse(res, new Response(readFileSync(new URL(`./page.${extension}`, import.meta.url)), {
         headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css', 'Cache-Control': 'no-cache' },
+      }));
+    }
+    if (req.method === 'GET' && pathname.startsWith('/assets/') && pathname.length > '/assets/'.length) {
+      return sendResponse(res, serveAsset(pathname.slice('/assets/'.length)));
+    }
+    if (req.method === 'GET' && SPLIT_SHELL && pathname === '/') {
+      return sendResponse(res, new Response(SPLIT_SHELL, {
+        headers: {
+          'Content-Type': 'text/html;charset=UTF-8',
+          'Cache-Control': 'no-cache',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'strict-origin-when-cross-origin',
+        },
       }));
     }
     if (req.method === 'GET' && PUBLIC_FILES[pathname]) {

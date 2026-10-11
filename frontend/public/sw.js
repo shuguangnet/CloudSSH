@@ -1,6 +1,8 @@
 // CloudSSH service worker: network-first with offline fallback for the app shell.
-// Never intercepts API, MCP, SFTP or settings routes.
-const CACHE = 'cloudssh-v1';
+// Never intercepts API, MCP, SFTP or settings routes. Hashed /assets/* files are
+// immutable and therefore cache-first, which keeps offline start-up working with
+// the split standalone shell.
+const CACHE = 'cloudssh-v2';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -27,11 +29,17 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
+    // Immutable hashed asset: cache-first, fill the cache on the first fetch.
+    const immutableAsset = url.pathname.startsWith('/assets/');
+    if (immutableAsset) {
+      const cachedAsset = await cache.match(request);
+      if (cachedAsset) return cachedAsset;
+    }
     try {
       const response = await fetch(request);
       // Cache the app shell for offline start-up.
-      if (response.ok && (request.mode === 'navigate' || url.pathname === '/')) {
-        cache.put(new Request('/', { cache: 'reload' }), response.clone());
+      if (response.ok && (request.mode === 'navigate' || url.pathname === '/' || immutableAsset)) {
+        cache.put(immutableAsset ? request : new Request('/', { cache: 'reload' }), response.clone());
       }
       return response;
     } catch {

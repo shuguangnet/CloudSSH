@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { resolve } from 'node:path';
-import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 await build({
@@ -37,4 +37,21 @@ for (const file of ['manifest.webmanifest', 'sw.js', 'favicon.svg']) {
 }
 for (const file of readdirSync(join(publicSource, 'icons'))) {
   if (file.endsWith('.png')) copyFileSync(join(publicSource, 'icons', file), join(publicTarget, 'icons', file));
+}
+
+// Split app shell for standalone: hashed /assets/* files are served from disk
+// with immutable caching by standalone/server.mjs, so browsers only re-download
+// the small no-cache index.html on deploys. The Cloudflare Worker keeps its own
+// fully inlined copy (src/worker/html.ts) and does not need these files.
+const frontendDist = resolve('frontend/dist');
+if (existsSync(join(frontendDist, 'index.html'))) {
+  copyFileSync(join(frontendDist, 'index.html'), join(publicTarget, 'index.html'));
+  const assetsTarget = join(publicTarget, 'assets');
+  rmSync(assetsTarget, { recursive: true, force: true });
+  mkdirSync(assetsTarget, { recursive: true });
+  for (const file of readdirSync(join(frontendDist, 'assets'))) {
+    copyFileSync(join(frontendDist, 'assets', file), join(assetsTarget, file));
+  }
+} else {
+  console.warn('frontend/dist/index.html not found; standalone will fall back to the inlined shell. Run `pnpm run build:frontend` first.');
 }
