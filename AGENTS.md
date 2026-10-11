@@ -27,6 +27,10 @@ CloudSSH is a serverless Web SSH terminal built on Cloudflare Workers. Users con
 - **Private key file selection**: Saved-server add/edit/clone dialogs allow manual key input or local file selection, including extensionless `id_rsa` / `id_ed25519`. Files are read into the existing credential textarea locally (maximum 1 MiB), with no file upload before Save. Discard stale asynchronous reads when editing manually or reopening/closing the dialog. Anonymous connection file selection also permits extensionless keys.
 - **Deployment-server key browsing (self-hosted only)**: `standalone/server.mjs` exposes authenticated `GET /api/host-files` (directory listing, directories first, at most 500 entries) and `GET /api/host-file` (regular-file reads up to 1 MiB) so keys already on the deployment machine (`~/.ssh/id_ed25519`) can be picked instead of uploading client files. `frontend/src/host-file-browser.ts` renders the shared file-browser dialog; both the saved-server dialogs and the anonymous connection form feature-detect the API and keep the entry hidden on Cloudflare Workers where the routes do not exist.
 
+- **Automation (self-hosted only)**: `/automation` page + `standalone/automation-*.mjs` deliver cron tasks, availability monitors, push channels and in-panel keypair generation. Key modules: `cron-expr.mjs` (Vixie-style 5-field parser, no deps), `automation-store.mjs` (SQLite WAL, per-task run history pruned to 50), `scheduler.mjs` (at-most-once dispatch: advance `next_run_at` before executing; monitor state machine up→down by threshold→recovered, notify once per transition), `notify.mjs` (Bark/Telegram/Webhook/SMTP, never throws), `keys.mjs` (ed25519 OpenSSH keypair via `node:crypto`; deploy command appends to `authorized_keys` idempotently with a shell-quoted `printf`), `automation-api.mjs` (admin-session routes, non-GET requires same-origin Origin). Frontend gating: `/api/config` returns `automationEnabled: true` only for the self-hosted runtime; Workers responses lack the field so the generate-key button and the automation link stay hidden. Monitors probe direct servers only (TCP + SSH banner read, never authenticate). All new modules are plain `.mjs` (not typechecked by tsc) and covered by `tests/standalone/automation.test.mjs` (node:test).
+
+- **PWA (self-hosted build)**: `frontend/public/` ships `manifest.webmanifest`, `sw.js` (network-first shell cache; skips /api, /mcp, /account, /automation and non-GET) and generated icons (`scripts/generate-pwa-icons.mjs`, dependency-free PNG encoder). `scripts/build-standalone.mjs` copies them into `dist/public`, and `standalone/server.mjs` serves them via the exact-path `PUBLIC_FILES` map with differentiated cache headers (sw.js no-store, icons 7d, manifest 1h). SW registration happens only in secure contexts. Playwright e2e runs with `serviceWorkers: 'block'` (see Testing).
+
 - **Frontend** (`frontend/`): TypeScript + Vite + xterm.js + Tailwind CSS（通过 PostCSS 本地构建）
 - **Backend** (`src/`): Cloudflare Workers + Durable Objects
 - **SSH Protocol**: Pure TypeScript implementation in `src/ssh/` (no external SSH library)
@@ -284,7 +288,23 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/ssh` | WebSocket | Conditional | SSH terminal WebSocket connection |
 | `/api/ssh/sftp` | WebSocket | Token | SFTP data WebSocket (attaches to existing session) |
 | `/api/health` | GET | No | Health check |
-| `/api/config` | GET | No | Feature flags (turnstile, GitHub auth enabled) |
+| `/api/config` | GET | No | Feature flags (turnstile, GitHub auth enabled, self-hosted adds automationEnabled) |
+
+### 自托管专属路由（standalone/server.mjs）
+
+| Route | Method | Auth | Description |
+| ------- | -------- | ------ | ------------- |
+| `/api/host-files?path=` / `/api/host-file?path=` | GET | Admin session | 只读浏览部署服务器文件（目录列表最多 500 项 / 读取 ≤1 MiB 文件） |
+| `/api/ssh/keys/generate` | POST | Admin session | 生成 ed25519 OpenSSH 密钥对（私钥仅返回一次，不落盘） |
+| `/api/ssh/keys/deploy` | POST | Admin session | 把公钥幂等追加到目标服务器 authorized_keys（ssh-copy-id 逻辑） |
+| `/api/automation/cron` | GET/POST | Admin session | 定时任务列表/创建（快照服务器连接参数，标准 5 字段 cron） |
+| `/api/automation/cron/:id` | PUT/DELETE | Admin session | 更新/删除定时任务 |
+| `/api/automation/cron/:id/run` | POST | Admin session | 立即手动执行一次（失败返回 500 + 错误详情，同样推送通知） |
+| `/api/automation/cron/:id/runs` | GET | Admin session | 任务执行历史（每任务保留最近 50 条） |
+| `/api/automation/notifications` | GET/PUT/DELETE | Admin session | 通知渠道 CRUD（Bark/Telegram/Webhook/SMTP） |
+| `/api/automation/notifications/test` | POST | Admin session | 向指定渠道发送测试消息 |
+| `/api/automation/monitors` | GET/PUT/DELETE | Admin session | 可用性监控 CRUD（仅直连服务器；PUT 拒绝非 direct 或带跳板的记录） |
+| `/api/automation/monitors/:id/history` | GET | Admin session | 探测历史（延迟序列，前端绘制 24 小时图表） |
 
 ## Testing
 
@@ -300,6 +320,7 @@ pnpm run verify      # typecheck + test + build:frontend + test:e2e 完整门禁
 - 测试文件位于 `tests/` 目录，`.test.ts` 后缀（详见 Key Directories 中的 `tests/` 结构）。
 - `tests/ssh/fixtures/` 中的私钥只用于公开协议测试，绝不可用于真实服务器。
 - E2E 首次运行需安装浏览器：`pnpm exec playwright install chromium`。
+- E2E 统一屏蔽 Service Worker（`playwright.config.ts` 的 `serviceWorkers: 'block'`）：WebKit 下被 SW 控制的页面里未调用 `respondWith` 的 pass-through 请求会绕过 `page.route` 拦截并返回空响应，破坏 API mock；PWA 资产路由由 standalone 测试覆盖。
 - 新增前端文案必须同时提供 zh-CN/zh-TW/en-US 词条，`i18n.test.ts` 会校验多端词条对齐。
 
 ## Git 工作流规范
