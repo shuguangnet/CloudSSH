@@ -5,7 +5,7 @@ import { validateChannel, sendToChannels } from './notify.mjs';
 import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
 import { collectServerStatus } from './status.mjs';
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines } from './docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from './docker.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -316,6 +316,55 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
         return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 502 });
       } finally {
         slot.release();
+      }
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/images$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker-images:${serverId}`, request.signal);
+      if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker query already in progress' : 'Too many requests' }, { status: slot.conflict });
+      try {
+        const { identity } = ownerUser(user);
+        const output = await executeSaved(env, identity, serverId, imagesScript(), 20000, SSHSession, undefined, request.signal);
+        if (output.exitCode !== 0) {
+          return Response.json({ error: (output.stderr || output.stdout || `docker images exited with ${output.exitCode}`).trim().slice(0, 300) }, { status: 502 });
+        }
+        return Response.json({ images: parseImageLines(output.stdout) });
+      } catch (caught) {
+        return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 502 });
+      } finally {
+        slot.release();
+      }
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/image-action$/);
+    if (match && request.method === 'POST') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      let body;
+      try { body = await request.json(); } catch { return BAD_REQUEST('Invalid JSON body'); }
+      let spec;
+      try {
+        spec = buildImageAction(body?.ref, body?.action);
+      } catch (caught) {
+        return BAD_REQUEST(caught.message);
+      }
+      try {
+        const { identity } = ownerUser(user);
+        const output = await executeSaved(env, identity, serverId, spec.command, spec.timeout, SSHSession);
+        return Response.json({ ok: output.exitCode === 0, exit_code: output.exitCode, stdout: output.stdout, stderr: output.stderr });
+      } catch (caught) {
+        return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
       }
     }
 

@@ -85,6 +85,61 @@ export function statsScript() {
   return `docker stats --no-stream --format '{{json .}}'`;
 }
 
+export function imagesScript() {
+  return `docker images --no-trunc --format '{{json .}}'`;
+}
+
+export function parseImageLines(stdout) {
+  const images = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let raw;
+    try { raw = JSON.parse(trimmed); } catch { continue; }
+    if (!raw || typeof raw !== 'object' || !raw.ID) continue;
+    const repository = String(raw.Repository || '');
+    const tag = String(raw.Tag || '');
+    images.push({
+      id: String(raw.ID),
+      short_id: String(raw.ID).replace(/^sha256:/, '').slice(0, 12),
+      repository,
+      tag,
+      dangling: repository === '<none>' || tag === '<none>',
+      size: String(raw.Size || ''),
+      created_since: String(raw.CreatedSince || '').replace(/ ago$/, ''),
+      created_at: String(raw.CreatedAt || ''),
+      containers: Number(raw.Containers || 0) || 0,
+      digest: String(raw.Digest || ''),
+    });
+  }
+  return images;
+}
+
+// Image references: registry:port/name:tag or repo@sha256:… — docker's own
+// charset, re-validated here so the remote shell never sees metacharacters.
+const IMAGE_REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9./:@_-]{0,300}$/;
+
+const IMAGE_ACTION_COMMANDS = {
+  pull: (ref) => `docker pull ${shellQuote(ref)}`,
+  remove: (ref) => `docker rmi -f ${shellQuote(ref)}`,
+};
+
+export const IMAGE_PRUNE_ACTIONS = { 'prune-dangling': 'docker image prune -f', 'prune-all': 'docker image prune -a -f' };
+
+export function buildImageAction(ref, action) {
+  if (Object.prototype.hasOwnProperty.call(IMAGE_PRUNE_ACTIONS, action)) {
+    return { command: IMAGE_PRUNE_ACTIONS[action], timeout: 120000 };
+  }
+  if (!Object.prototype.hasOwnProperty.call(IMAGE_ACTION_COMMANDS, action)) {
+    throw new Error(`Unsupported action: ${action}`);
+  }
+  if (typeof ref !== 'string' || !IMAGE_REF_RE.test(ref) || ref.includes('..')) {
+    throw new Error('Invalid image reference');
+  }
+  // Pulls stream layer progress for large images; removal resolves quickly.
+  return { command: IMAGE_ACTION_COMMANDS[action](ref), timeout: action === 'pull' ? 300000 : 60000 };
+}
+
 export function parseStatsLines(stdout) {
   // docker stats reports one JSON object per running container; keyed by the
   // primary name with full container ID as fallback.

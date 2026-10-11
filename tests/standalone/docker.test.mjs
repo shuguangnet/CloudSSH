@@ -14,11 +14,12 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines } from '../../standalone/docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from '../../standalone/docker.mjs';
 
 test('docker command builders validate names, actions and tails', () => {
   assert.equal(listContainersScript(), "docker ps -a --no-trunc --format '{{json .}}'");
   assert.equal(statsScript(), "docker stats --no-stream --format '{{json .}}'");
+  assert.equal(imagesScript(), "docker images --no-trunc --format '{{json .}}'");
 
   assert.equal(buildDockerAction('caddy', 'restart').command, "docker restart 'caddy'");
   assert.equal(buildDockerAction('filebrowser', 'remove').command, "docker rm -f 'filebrowser'");
@@ -39,6 +40,37 @@ test('docker command builders validate names, actions and tails', () => {
   // undefined falls back to the 200-line default.
   assert.equal(buildDockerLogsCommand('caddy').command, "docker logs --timestamps --tail 200 'caddy' 2>&1");
   assert.equal(buildDockerLogsCommand('caddy', '500').command, "docker logs --timestamps --tail 500 'caddy' 2>&1");
+});
+
+test('parseImageLines maps docker images JSON and flags dangling/unreferenced images', () => {
+  const stdout = [
+    '{"Containers":"1","CreatedAt":"2026-10-11 08:05:08 +0200 CEST","CreatedSince":"13 hours ago","Digest":"\u003cnone\u003e","ID":"sha256:26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"caddy","SharedSize":"0B","Size":"52.4MB","UniqueSize":"52.4MB","VirtualSize":"52.4MB"}',
+    '{"Containers":"0","CreatedAt":"2026-10-11 07:00:00 +0000 UTC","CreatedSince":"2 days ago","ID":"sha256:e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789","Repository":"\u003cnone\u003e","Tag":"\u003cnone\u003e","Size":"12MB"}',
+    'junk line',
+    '{"ID":""}',
+  ].join('\n');
+  const images = parseImageLines(stdout);
+  assert.equal(images.length, 2, 'junk and empty-ID lines dropped');
+  assert.equal(images[0].repository, 'caddy');
+  assert.equal(images[0].tag, ''); // absent Tag → empty string
+  assert.equal(images[0].short_id, '26c57eb76210');
+  assert.equal(images[0].containers, 1);
+  assert.equal(images[0].size, '52.4MB');
+  assert.equal(images[0].created_since, '13 hours', 'trailing " ago" stripped');
+  assert.equal(images[1].dangling, true);
+  assert.equal(images[1].containers, 0);
+});
+
+test('buildImageAction validates refs and maps prune variants', () => {
+  assert.deepEqual(buildImageAction('nginx:alpine', 'pull'), { command: "docker pull 'nginx:alpine'", timeout: 300000 });
+  assert.deepEqual(buildImageAction('ghcr.io/a/b:v1.2', 'remove'), { command: "docker rmi -f 'ghcr.io/a/b:v1.2'", timeout: 60000 });
+  assert.equal(buildImageAction(null, 'prune-dangling').command, 'docker image prune -f');
+  assert.equal(buildImageAction(null, 'prune-all').command, 'docker image prune -a -f');
+  for (const bad of ['nginx:alpine; rm -rf /', '', 'a b', '$(x)', '-leadingdash', 'a..b', 'with$var']) {
+    assert.throws(() => buildImageAction(bad, 'pull'), /Invalid image reference/);
+    assert.throws(() => buildImageAction(bad, 'remove'), /Invalid image reference/);
+  }
+  assert.throws(() => buildImageAction('nginx', 'explode'), /Unsupported action/);
 });
 
 test('parseStatsLines maps docker stats JSON, strips name prefixes and tolerates junk lines', () => {
@@ -176,6 +208,19 @@ test('docker API manages containers over a real SSH connection with a stub docke
     `  printf '%s\n' '{"BlockIO":"1.2kB / 3.4MB","CPUPerc":"0.12%","MemUsage":"1.5GiB / 3.8GiB","MemPerc":"39.4%","NetIO":"5MB / 2MB","PIDs":"7","ID":"26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Name":"caddy"}'`,
     '  exit 0',
     'fi',
+    'if [ "$1" = "images" ]; then',
+    `  printf '%s\n' '{"Containers":"1","CreatedAt":"2026-10-11 08:05:08 +0200 CEST","CreatedSince":"13 hours ago","Digest":"\u003cnone\u003e","ID":"sha256:26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"caddy","SharedSize":"0B","Size":"52.4MB","UniqueSize":"52.4MB"}'`,
+    `  printf '%s\n' '{"Containers":"0","CreatedAt":"2026-10-11 07:00:00 +0000 UTC","CreatedSince":"2 days ago","ID":"sha256:e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"\u003cnone\u003e","Tag":"\u003cnone\u003e","Size":"12MB"}'`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "pull" ]; then',
+    '  echo "IMAGE:$*"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "rmi" ] || [ "$1" = "image" ]; then',
+    '  echo "IMAGE:$*"',
+    '  exit 0',
+    'fi',
     'if [ "$1" = "logs" ]; then',
     '  echo "2026-10-11T08:00:01.000000000Z stub log line 1"',
     '  echo "2026-10-11T08:00:02.000000000Z stub log line 2"',
@@ -243,6 +288,21 @@ test('docker API manages containers over a real SSH connection with a stub docke
     assert.equal(containers[0].mem_percent, '39.4%');
     assert.equal(containers[1].name, 'filebrowser');
     assert.equal(containers[1].cpu_percent, undefined, 'stopped containers have no stats');
+
+    // Image list and image actions share the same exec pipeline.
+    const listedImages = await api(`/api/docker/${id}/images`);
+    assert.equal(listedImages.status, 200);
+    const { images } = await listedImages.json();
+    assert.equal(images.length, 2);
+    assert.equal(images[0].repository, 'caddy');
+    assert.equal(images[1].dangling, true);
+    const pulled = await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx:alpine', action: 'pull' });
+    assert.equal(pulled.status, 200);
+    assert.match((await pulled.json()).stdout, /IMAGE:pull nginx:alpine/);
+    const pruned = await api(`/api/docker/${id}/image-action`, 'POST', { action: 'prune-dangling' });
+    assert.match((await pruned.json()).stdout, /IMAGE:image prune -f/);
+    assert.equal((await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx; rm -rf /', action: 'pull' })).status, 400, 'dangerous refs rejected');
+    assert.equal((await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx', action: 'explode' })).status, 400);
     assert.equal(containers[1].name, 'filebrowser');
     assert.equal(containers[1].state, 'exited');
 

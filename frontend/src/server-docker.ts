@@ -25,6 +25,49 @@ interface DockerContainer {
 /** 与后端 CONTAINER_NAME_RE 一致，拼接终端命令前再次校验。 */
 const CONTAINER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
+interface DockerImage {
+  id: string;
+  short_id: string;
+  repository: string;
+  tag: string;
+  dangling: boolean;
+  size: string;
+  created_since: string;
+  created_at: string;
+  containers: number;
+  digest: string;
+}
+
+type DockerView = 'containers' | 'images';
+
+function imageCard(image: DockerImage): string {
+  const ref = image.dangling ? image.id : `${image.repository}:${image.tag}`;
+  const title = image.dangling ? `<span class="font-mono">${escapeHtml(image.id.slice(0, 19))}…</span>`
+    : `${escapeHtml(image.repository)}<span class="text-dim">:${escapeHtml(image.tag)}</span>`;
+  return `
+    <div class="panel px-3 py-2.5 space-y-2">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0 text-xs">
+          <span class="material-symbols-outlined text-primary shrink-0" style="font-size: 16px">layers</span>
+          <span class="truncate font-bold">${title}</span>
+          ${image.dangling ? `<span class="px-1.5 py-0.5 text-[9px] rounded bg-[var(--warn)]/15 text-[var(--warn)]">${escapeHtml(t('docker.dangling'))}</span>` : ''}
+          ${image.containers > 0 ? `<span class="px-1.5 py-0.5 text-[9px] rounded bg-primary/15 text-primary">${escapeHtml(t('docker.imageInUse'))} ${image.containers}</span>` : ''}
+        </div>
+        <button data-docker-image-ref="${escapeHtml(ref)}" class="cyber-button py-1 px-2 text-[10px] font-bold tracking-[0.05em] text-[var(--error)] flex items-center gap-1">
+          <span class="material-symbols-outlined" style="font-size: 13px">delete</span>${escapeHtml(t('docker.removeImage'))}
+        </button>
+      </div>
+      <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[10px]">
+        <span class="text-dim">${escapeHtml(t('docker.size'))}</span>
+        <span class="font-mono">${escapeHtml(image.size)}</span>
+        <span class="text-dim">${escapeHtml(t('docker.created'))}</span>
+        <span class="text-on-surface">${escapeHtml(image.created_since)}</span>
+        <span class="text-dim">ID</span>
+        <span class="font-mono">${escapeHtml(image.short_id)}</span>
+      </div>
+    </div>`;
+}
+
 const REFRESH_INTERVAL_MS = 5000;
 
 const STATE_BADGES: Record<string, { label: string; color: string }> = {
@@ -107,10 +150,14 @@ function containerCard(container: DockerContainer, supportsExec: boolean): strin
 export class DockerPanel {
   private serverId: number | null = null;
   private serverName = '';
+  private view: DockerView = 'containers';
+  private images: DockerImage[] = [];
+  private imagesLoaded = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private controller: AbortController | null = null;
   private busy = false;
   private pending = false;
+  private pendingImages = false;
   /** 终端页打开时可注入命令的活动终端；服务器列表页无终端则为 null。 */
   private getTerminal: (() => { insertSnippet(command: string, run: boolean): boolean } | null) | null = null;
 
@@ -118,6 +165,9 @@ export class DockerPanel {
     this.serverId = serverId;
     this.serverName = serverName;
     this.getTerminal = getTerminal ?? null;
+    this.view = 'containers';
+    this.images = [];
+    this.imagesLoaded = false;
     const modal = document.getElementById('docker-modal');
     const body = document.getElementById('docker-modal-body');
     if (!modal || !body) return;
@@ -132,9 +182,9 @@ export class DockerPanel {
     void this.collect();
     this.stopTimer();
     this.timer = setInterval(() => {
-      if ((document.getElementById('docker-auto-refresh') as HTMLInputElement | null)?.checked) {
-        void this.collect();
-      }
+      if (!(document.getElementById('docker-auto-refresh') as HTMLInputElement | null)?.checked) return;
+      if (this.view === 'images') void this.collectImages();
+      else void this.collect();
     }, REFRESH_INTERVAL_MS);
   }
 
@@ -224,6 +274,155 @@ export class DockerPanel {
     });
   }
 
+  private async collectImages(): Promise<void> {
+    if (this.serverId === null || this.pendingImages) return;
+    this.pendingImages = true;
+    const controller = new AbortController();
+    this.controller = controller;
+    const serverId = this.serverId;
+    try {
+      const response = await fetch(`/api/docker/${serverId}/images`, { signal: controller.signal });
+      if (!response.ok) {
+        const message = (await response.json().catch(() => ({}))).error || `HTTP ${response.status}`;
+        throw Object.assign(new Error(message), { status: response.status });
+      }
+      const payload = (await response.json()) as { images: DockerImage[] };
+      if (this.serverId !== serverId || controller.signal.aborted) return;
+      this.images = payload.images;
+      this.imagesLoaded = true;
+      this.renderImages();
+    } catch (error) {
+      if (controller.signal.aborted || this.serverId !== serverId) return;
+      if ((error as { status?: number }).status === 429 || (error as { status?: number }).status === 409) return;
+      this.renderError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (this.controller === controller) this.controller = null;
+      this.pendingImages = false;
+    }
+  }
+
+  /** 面板顶部的容器/镜像视图切换。 */
+  private viewBar(): string {
+    const tab = (view: DockerView, icon: string, label: string) => `
+      <button data-docker-view="${view}" class="cyber-button py-1 px-2.5 text-[10px] font-bold tracking-[0.05em] flex items-center gap-1
+        ${this.view === view ? 'text-primary' : 'text-muted'}">
+        <span class="material-symbols-outlined" style="font-size: 13px">${icon}</span>${escapeHtml(label)}
+      </button>`;
+    const actions = this.view === 'images' ? `
+      <button id="docker-prune-dangling-btn" class="cyber-button py-1 px-2 text-[10px] font-bold text-muted flex items-center gap-1">
+        <span class="material-symbols-outlined" style="font-size: 13px">mop</span>${escapeHtml(t('docker.pruneDangling'))}
+      </button>
+      <button id="docker-prune-all-btn" class="cyber-button py-1 px-2 text-[10px] font-bold text-[var(--error)] flex items-center gap-1">
+        <span class="material-symbols-outlined" style="font-size: 13px">delete_sweep</span>${escapeHtml(t('docker.pruneAll'))}
+      </button>` : '';
+    return `
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="flex gap-1">
+          ${tab('containers', 'view_in_ar', t('docker.tabContainers'))}
+          ${tab('images', 'layers', t('docker.images'))}
+        </div>
+        <div class="flex gap-1">${actions}</div>
+      </div>`;
+  }
+
+  private bindViewBar(): void {
+    const body = document.getElementById('docker-modal-body');
+    body?.querySelectorAll<HTMLButtonElement>('button[data-docker-view]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const view = button.dataset.dockerView as DockerView;
+        if (!view || view === this.view) return;
+        this.view = view;
+        if (view === 'images') {
+          this.renderImages();
+          void this.collectImages();
+        } else {
+          this.refresh();
+        }
+      });
+    });
+    document.getElementById('docker-pull-btn')?.addEventListener('click', () => {
+      const input = document.getElementById('docker-pull-input') as HTMLInputElement | null;
+      const ref = input?.value.trim();
+      if (ref) void this.handleImageAction(ref, 'pull');
+    });
+    document.getElementById('docker-prune-dangling-btn')?.addEventListener('click', () => void this.confirmImageAction('prune-dangling', t('docker.pruneDanglingConfirm')));
+    document.getElementById('docker-prune-all-btn')?.addEventListener('click', () => void this.confirmImageAction('prune-all', t('docker.pruneAllConfirm')));
+    body?.querySelectorAll<HTMLButtonElement>('button[data-docker-image-ref]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const ref = button.dataset.dockerImageRef;
+        if (ref) void this.confirmImageAction('remove', t('docker.removeImageConfirm', { ref }), ref);
+      });
+    });
+  }
+
+  private async confirmImageAction(action: string, message: string, ref?: string): Promise<void> {
+    const confirmed = await confirmAction({
+      title: t(action === 'prune-all' ? 'docker.pruneAll' : action === 'prune-dangling' ? 'docker.pruneDangling' : 'docker.removeImage'),
+      message,
+      confirmText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      variant: 'danger',
+    });
+    if (confirmed) await this.handleImageAction(ref ?? '', action);
+  }
+
+  private async handleImageAction(ref: string, action: string): Promise<void> {
+    if (this.serverId === null || this.busy) return;
+    this.busy = true;
+    const modalBody = document.getElementById('docker-modal-body');
+    modalBody?.setAttribute('inert', '');
+    const actionLabel = t(`docker.${action === 'pull' ? 'pull' : action === 'remove' ? 'removeImage' : action === 'prune-all' ? 'pruneAll' : 'pruneDangling'}` as TranslationKey);
+    try {
+      const response = await fetch(`/api/docker/${this.serverId}/image-action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref, action }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; stderr?: string; stdout?: string };
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || payload.stderr?.trim() || payload.stdout?.trim() || `HTTP ${response.status}`);
+      }
+      notify(t('docker.actionDone', { action: actionLabel, name: ref || this.serverName }), { variant: 'success' });
+      const input = document.getElementById('docker-pull-input') as HTMLInputElement | null;
+      if (input && action === 'pull') input.value = '';
+    } catch (error) {
+      notify(t('docker.actionFailed', { message: error instanceof Error ? error.message : String(error) }), { variant: 'danger' });
+    } finally {
+      this.busy = false;
+      modalBody?.removeAttribute('inert');
+      void this.collectImages();
+    }
+  }
+
+  private renderImages(): void {
+    const body = document.getElementById('docker-modal-body');
+    if (!body) return;
+    const content = !this.imagesLoaded
+      ? `<div class="flex items-center justify-center gap-2 py-8 text-xs text-muted">
+          <span class="material-symbols-outlined animate-spin" style="font-size: 16px">progress_activity</span>
+          <span>${escapeHtml(t('docker.loading'))}</span>
+        </div>`
+      : this.images.length
+        ? this.images.map(imageCard).join('')
+        : `<div class="py-8 text-center text-xs text-muted">${escapeHtml(t('docker.imageNone'))}</div>`;
+    const danglingCount = this.images.filter((image) => image.dangling).length;
+    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
+    body.innerHTML = `
+      <div class="space-y-2.5">
+        ${this.viewBar()}
+        <div class="text-[10px] text-dim">${escapeHtml(this.serverName)} · ${escapeHtml(t('docker.imageCount', { n: this.images.length }))}${danglingCount ? ` · ${escapeHtml(t('docker.dangling'))} ${danglingCount}` : ''}</div>
+        <div class="flex gap-1.5">
+          <input id="docker-pull-input" type="text" placeholder="${escapeHtml(t('docker.pullPlaceholder'))}"
+            class="flex-1 min-w-0 bg-surface-2 border border-outline px-2 py-1.5 text-[11px] rounded focus:border-primary outline-none" />
+          <button id="docker-pull-btn" class="cyber-button py-1 px-2.5 text-[10px] font-bold text-primary flex items-center gap-1 shrink-0">
+            <span class="material-symbols-outlined" style="font-size: 13px">download</span>${escapeHtml(t('docker.pull'))}
+          </button>
+        </div>
+        ${content}
+      </div>`;
+    this.bindViewBar();
+  }
+
   private render(containers: DockerContainer[]): void {
     const body = document.getElementById('docker-modal-body');
     if (!body) return;
@@ -234,9 +433,11 @@ export class DockerPanel {
     // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     body.innerHTML = `
       <div class="space-y-2.5">
+        ${this.viewBar()}
         <div class="text-[10px] text-dim">${escapeHtml(this.serverName)} · ${escapeHtml(t('docker.containerCount', { n: containers.length }))}</div>
         ${cards}
       </div>`;
+    this.bindViewBar();
     body.querySelectorAll<HTMLButtonElement>('button[data-docker-action]').forEach((button) => {
       button.addEventListener('click', () => {
         const action = button.dataset.dockerAction;
