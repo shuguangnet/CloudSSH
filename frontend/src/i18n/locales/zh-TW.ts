@@ -46,6 +46,7 @@ export const zhTW = {
   'auth.keyPlaceholder':
     '-----BEGIN OPENSSH PRIVATE KEY-----\n...貼上私鑰內容...\n-----END OPENSSH PRIVATE KEY-----',
   'auth.chooseKeyFile': '選擇金鑰檔案',
+  'auth.serverKeyFile': '伺服器檔案',
   'auth.regionHint': '連線區域',
   'auth.regionOptional': '可選；自動模式由 Cloudflare 排程',
   'auth.remember': '記住連線資訊',
@@ -801,4 +802,13 @@ export const zhTW = {
   'snippets.error.limitReached': '片段數量已達上限（{max} 條）。',
   'snippets.error.notFound': '片段不存在或已被刪除。',
   'snippets.error.network': '網路錯誤，請稍後重試。',
+  'hostFiles.title': '瀏覽伺服器檔案',
+  'hostFiles.pathLabel': '路徑',
+  'hostFiles.go': '前往',
+  'hostFiles.up': '上一層目錄',
+  'hostFiles.empty': '空資料夾',
+  'hostFiles.truncated': '項目過多，僅顯示前 500 項',
+  'hostFiles.selectFile': '選擇此檔案',
+  'hostFiles.loadFailed': '無法讀取目錄。',
+  'hostFiles.readFailed': '讀取檔案失敗。',
 } as const;

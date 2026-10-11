@@ -46,6 +46,30 @@ docker compose up -d
 
 账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
 
+## 服务器文件密钥选择（文件浏览器）
+
+自托管部署的保存服务器弹窗（新增／编辑／克隆）和匿名连接表单在「选择密钥文件」旁提供「服务器文件」入口，可浏览部署服务器上已存在的私钥文件（如 `/root/.ssh/id_ed25519`），选中后内容直接填入私钥文本域，无需从手机或电脑上传。后端提供两个需要管理员会话的只读接口：`GET /api/host-files?path=`（目录列表，目录优先、最多 500 项）和 `GET /api/host-file?path=`（读取不超过 1 MiB 的普通文件）；Cloudflare Workers 部署无此路由，前端探测不到时自动隐藏入口。
+
+无 Docker 脚本部署直接生效，可浏览运行用户的整个文件系统。Docker 部署默认只能浏览容器内部文件；如需选择宿主机上的密钥，在同目录创建 `compose.override.yaml`（已被 .gitignore 忽略）挂载对应目录，例如挂载 root 专属的 `~/.ssh`：
+
+```yaml
+services:
+  cloudssh:
+    user: "0:0"
+    volumes:
+      - /root/.ssh:/host/keys:ro
+```
+
+容器默认以 uid 1000（node）运行，无法读取 root 属主且权限为 700 的 `~/.ssh`；上例改用 root 运行并通过属主权限读取，挂载为只读，容器仍保持只读根文件系统、无 capabilities 与 no-new-privileges。已有部署首次从默认用户切换到 root 时，数据卷内文件仍属 uid 1000，需先调整属主再启动：
+
+```bash
+docker compose down
+chown -R 0:0 "$(docker volume inspect cloudssh_cloudssh-data --format '{{.Mountpoint}}')"
+docker compose up -d
+```
+
+多个目录可追加更多 `:ro` 挂载；浏览器中在 `/host/keys` 下选择密钥。
+
 ## 无 Docker 脚本部署
 
 需要 Node.js >=22.13 和 pnpm 11.8.0。建议使用当前维护的 Node.js 22 LTS；本地 SQLite 来自 Node.js 内置模块。

@@ -3,6 +3,7 @@
 // GitHub Actions 质量门禁不含该规则（AGENTS.md #27）。
 import { onLocaleChange, t, translateDocument } from './i18n';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
+import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { loadKnownFingerprint } from './known-hosts';
 import { parsePort } from './port';
 import { stretchAdminPassword } from './password-stretch';
@@ -608,6 +609,10 @@ export class ConnectionForm {
                 <span data-i18n="auth.chooseKeyFile">选择密钥文件</span>
               </label>
               <input type="file" id="private-key-file" class="hidden">
+              <button type="button" id="choose-host-key" class="hidden text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all" data-i18n="auth.serverKeyFile" aria-label="服务器文件" data-i18n-aria-label="auth.serverKeyFile">
+                <span class="material-symbols-outlined" style="font-size: 14px;">dns</span>
+                <span>服务器文件</span>
+              </button>
               <span id="file-name" class="text-[10px] text-muted truncate"></span>
             </div>
           </div>
@@ -689,6 +694,23 @@ export class ConnectionForm {
 
       // Reset file input
       fileInput.value = '';
+    });
+
+    // 浏览部署服务器上已存在的密钥文件（仅自托管部署可用）
+    const hostKeyButton = document.getElementById('choose-host-key');
+    void hostFilesAvailable().then((available) => {
+      if (available) hostKeyButton?.classList.remove('hidden');
+    });
+    hostKeyButton?.addEventListener('click', () => {
+      openHostFileBrowser({
+        onSelected: (path, content) => {
+          const privateKeyTextarea = document.getElementById('private-key') as HTMLTextAreaElement;
+          privateKeyTextarea.value = content;
+          if (fileNameSpan) {
+            fileNameSpan.textContent = path;
+          }
+        },
+      });
     });
   }
 

@@ -5,6 +5,7 @@ import { osDisplayName, osIconSvg } from './os-icons';
 import { parsePort } from './port';
 import { populateRegionSelect, regionLabel } from './regions';
 import { ShareManager } from './share-manager';
+import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import type { SSHHostInfo } from './terminal';
 import { confirmAction, notify } from './ui-feedback';
 import { formatTimestampWithRelative } from '../../src/server-memory-schema';
@@ -379,6 +380,21 @@ export class ServerList {
           title: t('auth.readKeyTitle'), variant: 'danger',
         });
       } finally { keyFileInput.value = ''; }
+    });
+
+    // 浏览部署服务器上已存在的密钥文件（仅自托管部署可用）
+    const hostKeyButton = document.getElementById('server-choose-host-key');
+    void hostFilesAvailable().then((available) => {
+      if (available) hostKeyButton?.classList.remove('hidden');
+    });
+    hostKeyButton?.addEventListener('click', () => {
+      openHostFileBrowser({
+        onSelected: (path, content) => {
+          this.keyFileReadVersion++;
+          keyTextarea.value = content;
+          keyFilename.textContent = path;
+        },
+      });
     });
 
     // Modal 提交

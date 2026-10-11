@@ -78,6 +78,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.keyPlaceholder':
     '-----BEGIN OPENSSH PRIVATE KEY-----\n...paste private key here...\n-----END OPENSSH PRIVATE KEY-----',
   'auth.chooseKeyFile': 'Choose key file',
+  'auth.serverKeyFile': 'Server file',
   'auth.regionHint': 'Connection region',
   'auth.regionOptional': 'Optional; Auto lets Cloudflare choose',
   'auth.remember': 'Remember connection',
@@ -857,4 +858,13 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'snippets.error.limitReached': 'Snippet limit ({max}) reached.',
   'snippets.error.notFound': 'The snippet no longer exists.',
   'snippets.error.network': 'Network error. Please try again later.',
+  'hostFiles.title': 'Browse server files',
+  'hostFiles.pathLabel': 'Path',
+  'hostFiles.go': 'Go',
+  'hostFiles.up': 'Parent directory',
+  'hostFiles.empty': 'Empty directory',
+  'hostFiles.truncated': 'Too many entries; showing the first 500',
+  'hostFiles.selectFile': 'Select this file',
+  'hostFiles.loadFailed': 'Could not read the directory.',
+  'hostFiles.readFailed': 'Could not read the file.',
 };

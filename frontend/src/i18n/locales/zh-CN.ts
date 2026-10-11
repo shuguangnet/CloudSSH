@@ -46,6 +46,7 @@ export const zhCN = {
   'auth.keyPlaceholder':
     '-----BEGIN OPENSSH PRIVATE KEY-----\n...粘贴私钥内容...\n-----END OPENSSH PRIVATE KEY-----',
   'auth.chooseKeyFile': '选择密钥文件',
+  'auth.serverKeyFile': '服务器文件',
   'auth.regionHint': '连接区域',
   'auth.regionOptional': '可选；自动模式由 Cloudflare 调度',
   'auth.remember': '记住连接信息',
@@ -800,4 +801,13 @@ export const zhCN = {
   'snippets.error.limitReached': '片段数量已达上限（{max} 条）。',
   'snippets.error.notFound': '片段不存在或已被删除。',
   'snippets.error.network': '网络错误，请稍后重试。',
+  'hostFiles.title': '浏览服务器文件',
+  'hostFiles.pathLabel': '路径',
+  'hostFiles.go': '前往',
+  'hostFiles.up': '上级目录',
+  'hostFiles.empty': '空目录',
+  'hostFiles.truncated': '条目过多，仅显示前 500 项',
+  'hostFiles.selectFile': '选择此文件',
+  'hostFiles.loadFailed': '无法读取目录。',
+  'hostFiles.readFailed': '读取文件失败。',
 } as const;

@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, mkdirSync, chmodSync, existsSync, readdirSync } from 'node:fs';
+import { readdir, stat, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer, WebSocket as NetworkWebSocket } from 'ws';
 import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
@@ -195,6 +197,67 @@ async function accountManagement(request) {
 
 const inflight = new Map();
 let activeMcp = 0;
+
+// Admin-only file browsing on the self-hosted deployment, so keys already on this
+// machine (for example ~/.ssh/id_ed25519) can be picked for saved servers.
+const HOST_FILE_MAX_BYTES = 1024 * 1024;
+const HOST_LISTING_MAX_ENTRIES = 500;
+function hostFilePath(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.length > 4096 || raw.includes('\0')) return null;
+  return resolve(raw);
+}
+async function listHostFiles(request, url) {
+  if (!await getAuthenticatedUser(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401 });
+  const raw = url.searchParams.get('path');
+  if (raw !== null && hostFilePath(raw) === null) return Response.json({ error: 'Absolute path required' }, { status: 400 });
+  const dirPath = raw === null ? resolve(homedir()) : hostFilePath(raw);
+  let entries;
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return Response.json({ error: 'Directory not found' }, { status: 404 });
+    if (error.code === 'EACCES' || error.code === 'EPERM') return Response.json({ error: 'Access denied' }, { status: 403 });
+    return Response.json({ error: 'Unable to list directory' }, { status: 500 });
+  }
+  let truncated = false;
+  const listed = [];
+  for (const entry of entries) {
+    if (listed.length >= HOST_LISTING_MAX_ENTRIES) { truncated = true; break; }
+    let type = entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : null;
+    let size = null;
+    try {
+      // Follow symlinks so a symlinked .ssh directory still navigates.
+      const stats = await stat(join(dirPath, entry.name));
+      type = stats.isDirectory() ? 'dir' : stats.isFile() ? 'file' : null;
+      if (type === 'file') size = stats.size;
+    } catch { /* Keep the dirent type when stat is not permitted. */ }
+    if (!type) continue;
+    listed.push({ name: entry.name, type, size });
+  }
+  listed.sort((a, b) => (a.type === b.type
+    ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    : a.type === 'dir' ? -1 : 1));
+  return Response.json({ path: dirPath, entries: listed, truncated });
+}
+async function readHostFile(request, url) {
+  if (!await getAuthenticatedUser(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401 });
+  const filePath = hostFilePath(url.searchParams.get('path'));
+  if (!filePath) return Response.json({ error: 'Absolute path required' }, { status: 400 });
+  let stats;
+  try {
+    stats = await stat(filePath);
+  } catch {
+    return Response.json({ error: 'File not found' }, { status: 404 });
+  }
+  if (!stats.isFile()) return Response.json({ error: 'Not a regular file' }, { status: 400 });
+  if (stats.size > HOST_FILE_MAX_BYTES) return Response.json({ error: 'File exceeds 1 MiB limit' }, { status: 413 });
+  try {
+    return Response.json({ path: filePath, size: stats.size, content: await readFile(filePath, 'utf8') });
+  } catch (error) {
+    if (error.code === 'EACCES' || error.code === 'EPERM') return Response.json({ error: 'Access denied' }, { status: 403 });
+    return Response.json({ error: 'Unable to read file' }, { status: 500 });
+  }
+}
 const server = createServer(async (req, res) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) return sendJson(res, 400, { error: 'Invalid request target' });
@@ -254,6 +317,8 @@ const server = createServer(async (req, res) => {
       }));
     }
     if (pathname.startsWith('/api/mcp/')) return sendResponse(res, await management(request, pathname));
+    if (pathname === '/api/host-files' && req.method === 'GET') return sendResponse(res, await listHostFiles(request, requestUrl));
+    if (pathname === '/api/host-file' && req.method === 'GET') return sendResponse(res, await readHostFile(request, requestUrl));
     const response = await worker.fetch(request, env);
     if (pathname === '/api/config' && response.ok) {
       return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
