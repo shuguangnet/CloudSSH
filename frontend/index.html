@@ -7,7 +7,13 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0a0a" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>CloudSSH</title>
     <link
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap"
@@ -755,6 +761,17 @@
                   <input type="file" id="server-private-key-file" class="hidden" aria-label="选择密钥文件" data-i18n-aria-label="auth.chooseKeyFile" />
                   <button
                     type="button"
+                    id="server-generate-key"
+                    class="hidden text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all"
+                    data-i18n="auth.generateKeyPair"
+                    aria-label="生成密钥对"
+                    data-i18n-aria-label="auth.generateKeyPair"
+                  >
+                    <span class="material-symbols-outlined" style="font-size: 14px;" aria-hidden="true">key</span>
+                    <span>生成密钥对</span>
+                  </button>
+                  <button
+                    type="button"
                     id="server-choose-host-key"
                     class="hidden text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all"
                     data-i18n="auth.serverKeyFile"
@@ -765,6 +782,42 @@
                     <span>服务器文件</span>
                   </button>
                   <span id="server-key-file-name" class="text-[10px] text-muted truncate" role="status"></span>
+                </div>
+                <div id="server-generated-key-section" class="hidden mt-2">
+                  <textarea
+                    id="server-generated-public-key"
+                    class="terminal-input text-[11px] w-full"
+                    rows="2"
+                    readonly
+                    data-i18n-aria-label="auth.publicKey"
+                    aria-label="公钥"
+                    style="resize: vertical; border: 1px solid var(--border-strong); padding: 8px;"
+                  ></textarea>
+                  <div class="flex items-center gap-2 mt-1">
+                    <button
+                      type="button"
+                      id="server-copy-public-key"
+                      class="text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all"
+                      data-i18n="auth.copyPublicKey"
+                      aria-label="复制公钥"
+                      data-i18n-aria-label="auth.copyPublicKey"
+                    >
+                      <span class="material-symbols-outlined" style="font-size: 14px;" aria-hidden="true">content_copy</span>
+                      <span>复制公钥</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="server-deploy-key"
+                      class="hidden text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all"
+                      data-i18n="auth.deployPublicKey"
+                      aria-label="部署公钥到该服务器"
+                      data-i18n-aria-label="auth.deployPublicKey"
+                    >
+                      <span class="material-symbols-outlined" style="font-size: 14px;" aria-hidden="true">upload</span>
+                      <span>部署公钥</span>
+                    </button>
+                    <span class="text-[10px] text-muted" data-i18n="auth.generatedKeyHint">私钥已填入上方输入框，公钥需自行添加到服务器的 authorized_keys</span>
+                  </div>
                 </div>
               </div>
             </div>

@@ -9,6 +9,11 @@ export default defineConfig({
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: 'http://127.0.0.1:4173',
+    // Service Worker 会接管页面请求：WebKit 下被 SW 控制的页面里、
+    // 未调用 respondWith 的 pass-through 请求会绕过 page.route 拦截并返回空响应，
+    // 破坏所有 API mock。e2e 不验证 SW 本身（PWA 资产路由由 standalone 测试覆盖），
+    // 因此统一屏蔽 SW 注册保持测试封闭。
+    serviceWorkers: 'block',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
