@@ -24,6 +24,8 @@ CloudSSH is a serverless Web SSH terminal built on Cloudflare Workers. Users con
 
 - **Self-hosted administrator account**: Default username `admin`; optional initial `ADMIN_USERNAME`, required in password-login requests only when set. `standalone/admin-account.mjs` atomically migrates/persists `admin-account.json`, which takes precedence over legacy verifier files/environment after migration. `/account/settings` and authenticated `/api/admin/account` GET/PUT change account/password after same-origin, persistent-throttled current-password verification. New verifiers use PBKDF2 600000 iterations and 16-byte salts; browser plaintext passwords never leave the client. Password changes invalidate old sessions/MCP tokens and close browser SSH sockets without deleting saved server data. Username-only changes preserve sessions/tokens. Build the settings browser bundle through `scripts/build-standalone.mjs`.
 
+- **Private key file selection**: Saved-server add/edit/clone dialogs allow manual key input or local file selection, including extensionless `id_rsa` / `id_ed25519`. Files are read into the existing credential textarea locally (maximum 1 MiB), with no file upload before Save. Discard stale asynchronous reads when editing manually or reopening/closing the dialog. Anonymous connection file selection also permits extensionless keys.
+
 - **Frontend** (`frontend/`): TypeScript + Vite + xterm.js + Tailwind CSS（通过 PostCSS 本地构建）
 - **Backend** (`src/`): Cloudflare Workers + Durable Objects
 - **SSH Protocol**: Pure TypeScript implementation in `src/ssh/` (no external SSH library)

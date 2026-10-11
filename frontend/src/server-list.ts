@@ -184,6 +184,7 @@ export class ServerList {
   private onConnect: (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => void;
   private editingServerId: number | null = null;
   private editingOriginalAuthMethod: ServerConfig['auth_method'] | null = null;
+  private keyFileReadVersion = 0;
   private modalAuthMode: 'password' | 'key' = 'password';
   private modalTransportMode: 'direct' | 'cf_tunnel' = 'direct';
   private clearCfAccessClientSecret = false;
@@ -354,6 +355,30 @@ export class ServerList {
         event.preventDefault();
         this.hideModal();
       }
+    });
+
+    const keyFileInput = document.getElementById('server-private-key-file') as HTMLInputElement;
+    const keyTextarea = document.getElementById('server-private-key') as HTMLTextAreaElement;
+    const keyFilename = document.getElementById('server-key-file-name')!;
+    keyTextarea.addEventListener('input', () => {
+      this.keyFileReadVersion++;
+      keyFilename.textContent = '';
+    });
+    keyFileInput.addEventListener('change', async () => {
+      const file = keyFileInput.files?.[0];
+      if (!file) return;
+      const version = ++this.keyFileReadVersion;
+      try {
+        if (!file.size || file.size > 1024 * 1024) throw new Error('Invalid key file size');
+        const content = await file.text();
+        if (version !== this.keyFileReadVersion) return;
+        keyTextarea.value = content;
+        keyFilename.textContent = file.name;
+      } catch {
+        if (version === this.keyFileReadVersion) notify(t('auth.readKeyFailed'), {
+          title: t('auth.readKeyTitle'), variant: 'danger',
+        });
+      } finally { keyFileInput.value = ''; }
     });
 
     // Modal 提交
@@ -808,6 +833,9 @@ export class ServerList {
     this.editingServerId = mode === 'edit' && server ? server.id : null;
     this.editingOriginalAuthMethod = mode === 'edit' && server ? server.auth_method : null;
 
+    this.keyFileReadVersion++;
+    (document.getElementById('server-private-key-file') as HTMLInputElement).value = '';
+    document.getElementById('server-key-file-name')!.textContent = '';
     const modal = document.getElementById('server-modal');
     const title = document.getElementById('modal-title');
     const submitBtn = document.getElementById('server-submit-btn');
@@ -941,6 +969,9 @@ export class ServerList {
   }
 
   hideModal(): void {
+    this.keyFileReadVersion++;
+    (document.getElementById('server-private-key-file') as HTMLInputElement).value = '';
+    document.getElementById('server-key-file-name')!.textContent = '';
     const modal = document.getElementById('server-modal');
     if (modal) {
       modal.classList.add('hidden');

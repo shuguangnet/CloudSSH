@@ -607,7 +607,7 @@ export class ConnectionForm {
                 <span class="material-symbols-outlined" style="font-size: 14px;">upload_file</span>
                 <span data-i18n="auth.chooseKeyFile">选择密钥文件</span>
               </label>
-              <input type="file" id="private-key-file" accept=".pem,.key,.txt,.pub" class="hidden">
+              <input type="file" id="private-key-file" class="hidden">
               <span id="file-name" class="text-[10px] text-muted truncate"></span>
             </div>
           </div>
