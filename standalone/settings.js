@@ -20,17 +20,24 @@ function translate() {
   renderTokens(); renderAudit();
 }
 function cell(row, value) { const td = document.createElement('td'); td.textContent = String(value ?? ''); row.append(td); return td; }
+function emptyRow(body) { const row = document.createElement('tr'); const td = document.createElement('td'); td.className = 'empty'; td.textContent = text('empty'); row.append(td); body.append(row); }
+function badgeCell(row, label, kind) {
+  const td = cell(row, '');
+  const badge = document.createElement('span'); badge.className = `badge ${kind}`; badge.textContent = label;
+  td.append(badge); return td;
+}
 function renderTokens() {
   $('tokens').replaceChildren();
   for (const token of tokens) {
     const row = document.createElement('tr');
     cell(row, token.name); cell(row, token.server_ids.map((id) => servers.find((server) => server.id === id)?.name || id).join(', '));
-    cell(row, token.scopes.join(', ')); cell(row, new Date(token.expires_at).toLocaleString(locale));
+    const scopes = cell(row, token.scopes.join(', ')); scopes.className = 'mono';
+    cell(row, new Date(token.expires_at).toLocaleString(locale));
     const status = token.revoked_at ? 'revoked' : token.expires_at <= Date.now() ? 'expired' : 'active';
-    cell(row, text(status));
+    badgeCell(row, text(status), { active: 'ok', revoked: 'muted', expired: 'warn' }[status]);
     const action = cell(row, '');
     if (status === 'active') {
-      const button = document.createElement('button'); button.textContent = text('revoke');
+      const button = document.createElement('button'); button.textContent = text('revoke'); button.className = 'danger';
       button.addEventListener('click', async () => {
         button.disabled = true;
         try { await api(`/api/mcp/tokens/${token.id}`, { method: 'DELETE' }); await refreshTokens(); }
@@ -39,18 +46,20 @@ function renderTokens() {
     }
     $('tokens').append(row);
   }
-  if (!tokens.length) { const row = document.createElement('tr'); cell(row, text('empty')); $('tokens').append(row); }
+  if (!tokens.length) emptyRow($('tokens'));
 }
 function renderAudit() {
   $('audit').replaceChildren();
   for (const item of auditRows) {
     const row = document.createElement('tr');
-    cell(row, new Date(item.created_at).toLocaleString(locale));
+    const time = cell(row, new Date(item.created_at).toLocaleString(locale)); time.className = 'mono';
     cell(row, tokens.find((token) => token.id === item.token_id)?.name || item.token_id);
     cell(row, servers.find((server) => server.id === item.server_id)?.name || item.server_id || '');
-    cell(row, item.tool); cell(row, item.status); $('audit').append(row);
+    const tool = cell(row, item.tool); tool.className = 'mono';
+    badgeCell(row, item.status, { succeeded: 'ok', failed: 'err', started: 'muted' }[item.status] || 'warn');
+    $('audit').append(row);
   }
-  if (!auditRows.length) { const row = document.createElement('tr'); cell(row, text('empty')); $('audit').append(row); }
+  if (!auditRows.length) emptyRow($('audit'));
 }
 async function refreshTokens() { tokens = await api('/api/mcp/tokens'); renderTokens(); }
 $('endpoint').textContent = `${location.origin}/mcp`;
