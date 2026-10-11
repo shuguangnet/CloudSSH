@@ -1120,6 +1120,30 @@
               >
             </button>
             <button
+              id="terminal-status-btn"
+              class="desktop-terminal-action hidden hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="server.status.button"
+              title="服务器状态"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                >monitoring</span
+              >
+            </button>
+            <button
+              id="terminal-docker-btn"
+              class="desktop-terminal-action hidden hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="docker.button"
+              title="Docker 容器"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                >deployed_code</span
+              >
+            </button>
+            <button
               id="export-btn"
               class="desktop-terminal-action hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
               data-i18n-title="terminal.export"
@@ -1196,6 +1220,16 @@
               <span class="material-symbols-outlined" aria-hidden="true"
                 >psychology</span
               ><span data-i18n="terminal.agent">AI Agent 助手</span>
+            </button>
+            <button id="mobile-status-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >monitoring</span
+              ><span data-i18n="server.status.title">服务器状态</span>
+            </button>
+            <button id="mobile-docker-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >deployed_code</span
+              ><span data-i18n="docker.title">Docker 容器管理</span>
             </button>
             <button id="mobile-export-btn" type="button">
               <span class="material-symbols-outlined" aria-hidden="true"

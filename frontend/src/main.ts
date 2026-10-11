@@ -13,6 +13,8 @@ import {
 import { SnippetManager } from './snippet-manager';
 import { TabManager } from './tab-manager';
 import type { SSHHostInfo, SSHTerminal } from './terminal';
+import { serverStatusPanel, initServerStatusPanel } from './server-status';
+import { dockerPanel, initDockerPanel } from './server-docker';
 import {
   applyBuiltInTheme,
   applyImportedTheme,
@@ -145,6 +147,7 @@ function activateTerminalView(): void {
   document.getElementById('terminal-section')!.classList.remove('hidden');
   document.getElementById('terminal-section')!.classList.add('flex');
   document.body.classList.add('terminal-active');
+  syncTerminalServerTools();
   requestAnimationFrame(() => {
     terminalDrawerControl?.refresh();
   });
@@ -246,6 +249,7 @@ function initTerminalTab(): void {
 function deactivateTerminalView(): void {
   closeAllDrawers();
   mobileTerminalController.leaveTerminal();
+  syncTerminalServerTools();
   document.getElementById('terminal-section')!.classList.add('hidden');
   document.getElementById('terminal-section')!.classList.remove('flex');
   document.body.classList.remove('terminal-active');
@@ -439,6 +443,42 @@ async function requestSavedServerWebSocket(serverId: number): Promise<WebSocket>
   const socket = new WebSocket(wsUrl);
   socket.binaryType = 'arraybuffer';
   return socket;
+}
+
+// ==================== 终端页服务器工具入口（状态面板 / Docker 管理） ====================
+
+/** /api/config 的 automationEnabled（自托管专属），决定终端页是否展示服务器工具按钮 */
+let automationConfigEnabled = false;
+
+/** 根据当前活跃标签（需为已保存的服务器连接）同步终端页状态/Docker 按钮可见性 */
+function syncTerminalServerTools(): void {
+  const tab = tabManager?.getActiveTab();
+  const eligible = automationConfigEnabled && !!tab?.hostInfo?.serverId;
+  for (const id of ['terminal-status-btn', 'mobile-status-btn', 'terminal-docker-btn', 'mobile-docker-btn']) {
+    document.getElementById(id)?.classList.toggle('hidden', !eligible);
+  }
+}
+
+function openTerminalServerTool(tool: 'status' | 'docker'): void {
+  const tab = tabManager?.getActiveTab();
+  const serverId = tab?.hostInfo?.serverId;
+  if (!serverId) return; // 按钮仅在有已保存服务器连接时可见，此处仅作兑底
+  const serverName = tab.label || tab.hostInfo?.host || '';
+  if (tool === 'status') serverStatusPanel.open(serverId, serverName);
+  else dockerPanel.open(serverId, serverName);
+}
+
+function initTerminalServerTools(): void {
+  document.getElementById('terminal-status-btn')?.addEventListener('click', () => openTerminalServerTool('status'));
+  document.getElementById('terminal-docker-btn')?.addEventListener('click', () => openTerminalServerTool('docker'));
+  document.getElementById('mobile-status-btn')?.addEventListener('click', () => {
+    openTerminalServerTool('status');
+    mobileTerminalController.hideMoreMenu();
+  });
+  document.getElementById('mobile-docker-btn')?.addEventListener('click', () => {
+    openTerminalServerTool('docker');
+    mobileTerminalController.hideMoreMenu();
+  });
 }
 
 // ==================== 断开连接处理 ====================
@@ -983,6 +1023,7 @@ async function init(): Promise<void> {
   document.addEventListener('cloudssh:active-terminal-change', () => {
     snippetManager.close();
     syncDrawerSegmentedControl();
+    syncTerminalServerTools();
   });
 
   document.addEventListener('click', (e) => {
@@ -998,6 +1039,15 @@ async function init(): Promise<void> {
     }
   });
   mobileTerminalController.start();
+  initServerStatusPanel();
+  initDockerPanel();
+  initTerminalServerTools();
+  void fetch('/api/config').then(async (response) => {
+    if (!response.ok) return;
+    const config = (await response.json()) as { automationEnabled?: boolean };
+    automationConfigEnabled = config.automationEnabled === true;
+    syncTerminalServerTools();
+  }).catch(() => {});
   onLocaleChange(() => {
     if (localStorage.getItem('cloudssh_imported_theme')) ensureCustomOption();
     tabManager?.refreshTranslations();

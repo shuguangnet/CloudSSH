@@ -6,8 +6,8 @@ import { parsePort } from './port';
 import { populateRegionSelect, regionLabel } from './regions';
 import { ShareManager } from './share-manager';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
-import { serverStatusPanel, initServerStatusPanel } from './server-status';
-import { dockerPanel, initDockerPanel } from './server-docker';
+import { serverStatusPanel } from './server-status';
+import { dockerPanel } from './server-docker';
 import type { SSHHostInfo } from './terminal';
 import { confirmAction, notify } from './ui-feedback';
 import { formatTimestampWithRelative } from '../../src/server-memory-schema';
@@ -293,8 +293,8 @@ export class ServerList {
     document.getElementById('logout-btn')?.addEventListener('click', () => this.logout());
 
     // 服务器状态弹窗（关闭/背景点击/手动刷新/Escape）
-    initServerStatusPanel();
-    initDockerPanel();
+    // 状态面板与 Docker 弹窗的初始化（关闭/刷新按钮等）统一在 main.ts 的
+    // initServerStatusPanel()/initDockerPanel() 中完成，覆盖终端页直达模式。
 
     // 添加服务器按钮
     document
