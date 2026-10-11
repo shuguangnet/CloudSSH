@@ -17,7 +17,7 @@ function ownerUser(user) {
   return { owner: String(user.github_id), identity: { github_id: String(user.github_id), user_id: user.id } };
 }
 
-export function createAutomationRoutes({ env, SSHSession, store, engine, executeSaved, getAuthenticatedUser }) {
+export function createAutomationRoutes({ env, SSHSession, store, engine, dashboard = null, executeSaved, getAuthenticatedUser }) {
   // On-demand collections open a real SSH exec; keep at most one in flight per
   // server and space requests out so a polling UI cannot hammer it.
   const statusQueries = new Map();
@@ -239,10 +239,12 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
           return BAD_REQUEST('Monitoring requires a direct (non-jump, non-tunnel) connection');
         }
         store.saveMonitor(owner, user, serverId, { interval_seconds: interval, failure_threshold: threshold, enabled: body.enabled !== false });
+        dashboard?.poke?.();
         return Response.json({ ok: true });
       }
       if (request.method === 'DELETE') {
         store.deleteMonitor(owner, serverId);
+        dashboard?.poke?.();
         return Response.json({ ok: true });
       }
     }
@@ -317,6 +319,30 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       } finally {
         slot.release();
       }
+    }
+
+    // ---------- dashboard (standalone deployments only) ----------
+    match = pathname.match(/^\/api\/dashboard\/snapshots$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      if (!dashboard) return Response.json({ error: 'Dashboard requires the self-hosted deployment' }, { status: 404 });
+      return Response.json({ snapshots: dashboard.snapshots(String(user.github_id)), interval_seconds: dashboard.intervalSeconds });
+    }
+
+    match = pathname.match(/^\/api\/dashboard\/history$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      if (!dashboard) return Response.json({ error: 'Dashboard requires the self-hosted deployment' }, { status: 404 });
+      const serverId = Number(url.searchParams.get('server_id'));
+      const minutes = Math.min(24 * 60, Math.max(5, Number(url.searchParams.get('minutes')) || 60));
+      if (!Number.isInteger(serverId) || serverId <= 0) return BAD_REQUEST('server_id is required');
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const owner = String(user.github_id);
+      return Response.json({ samples: store.listSamples(owner, serverId, Date.now() - minutes * 60_000) });
     }
 
     match = pathname.match(/^\/api\/docker\/(\d+)\/images$/);

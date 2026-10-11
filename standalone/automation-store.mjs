@@ -41,12 +41,18 @@ export class AutomationStore {
         PRIMARY KEY (owner, server_id));
       CREATE TABLE IF NOT EXISTS monitor_samples (
         owner TEXT NOT NULL, server_id INTEGER NOT NULL, ts INTEGER NOT NULL,
-        ok INTEGER NOT NULL, latency_ms INTEGER);
+        ok INTEGER NOT NULL, latency_ms INTEGER,
+        cpu_percent REAL, mem_percent REAL, rx_kbps REAL, tx_kbps REAL);
       CREATE INDEX IF NOT EXISTS monitor_samples_idx ON monitor_samples(owner, server_id, ts);
     `);
     // Migrations for databases created before notify-on-change existed.
     for (const column of ['notify_on_change INTEGER NOT NULL DEFAULT 0', 'last_output_sha TEXT']) {
       try { this.db.exec(`ALTER TABLE cron_tasks ADD COLUMN ${column}`); }
+      catch (error) { if (!/duplicate column/i.test(String(error))) throw error; }
+    }
+    // Migrations for databases created before dashboard metrics were sampled.
+    for (const column of ['cpu_percent REAL', 'mem_percent REAL', 'rx_kbps REAL', 'tx_kbps REAL']) {
+      try { this.db.exec(`ALTER TABLE monitor_samples ADD COLUMN ${column}`); }
       catch (error) { if (!/duplicate column/i.test(String(error))) throw error; }
     }
   }
@@ -275,14 +281,19 @@ export class AutomationStore {
         state.last_error ?? null, state.next_probe_at ?? null, state.notified_status ?? null, owner, serverId);
   }
 
-  insertSample(owner, serverId, { ts, ok, latency_ms }) {
-    this.db.prepare('INSERT INTO monitor_samples (owner, server_id, ts, ok, latency_ms) VALUES (?, ?, ?, ?, ?)')
-      .run(owner, serverId, ts, ok ? 1 : 0, latency_ms ?? null);
+  insertSample(owner, serverId, { ts, ok, latency_ms, cpu_percent = null, mem_percent = null, rx_kbps = null, tx_kbps = null }) {
+    this.db.prepare('INSERT INTO monitor_samples (owner, server_id, ts, ok, latency_ms, cpu_percent, mem_percent, rx_kbps, tx_kbps) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(owner, serverId, ts, ok ? 1 : 0, latency_ms ?? null, cpu_percent ?? null, mem_percent ?? null, rx_kbps ?? null, tx_kbps ?? null);
   }
 
   listSamples(owner, serverId, since) {
-    return this.db.prepare('SELECT ts, ok, latency_ms FROM monitor_samples WHERE owner=? AND server_id=? AND ts>=? ORDER BY ts')
+    return this.db.prepare('SELECT ts, ok, latency_ms, cpu_percent, mem_percent, rx_kbps, tx_kbps FROM monitor_samples WHERE owner=? AND server_id=? AND ts>=? ORDER BY ts')
       .all(owner, serverId, since);
+  }
+
+  /** Every monitoring-enabled (owner, identity, server) for the dashboard collector. */
+  listEnabledMonitorIdentities() {
+    return this.db.prepare('SELECT owner, user_id, github_id, server_id FROM monitor_config WHERE enabled=1').all();
   }
 
   pruneSamples(retainMs) {

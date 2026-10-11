@@ -11,6 +11,7 @@ import { AdminAccount, validUsername } from './admin-account.mjs';
 import { savedServers, executeSaved, drainSshChainPool } from './operations.mjs';
 import { AutomationStore } from './automation-store.mjs';
 import { AutomationEngine } from './scheduler.mjs';
+import { DashboardEngine } from './dashboard.mjs';
 import { createAutomationRoutes } from './automation-api.mjs';
 
 process.umask(0o077);
@@ -56,8 +57,14 @@ const automationStore = new AutomationStore(join(dataDir, 'automation.sqlite'));
 const automationEngine = new AutomationEngine({
   store: automationStore, env, SSHSession, executeSaved, log: (message) => console.error(`[automation] ${message}`),
 });
+const dashboardEngine = new DashboardEngine({
+  env, store: automationStore, executeSaved, SSHSession,
+  intervalSeconds: Number(env.DASHBOARD_INTERVAL_SECONDS),
+  log: (message) => console.error(`[dashboard] ${message}`),
+});
+dashboardEngine.start();
 const automationRoutes = createAutomationRoutes({
-  env, SSHSession, store: automationStore, engine: automationEngine, executeSaved, getAuthenticatedUser,
+  env, SSHSession, store: automationStore, engine: automationEngine, dashboard: dashboardEngine, executeSaved, getAuthenticatedUser,
 });
 // PWA assets are copied to dist/public by scripts/build-standalone.mjs; icons are
 // immutable, the service worker must always revalidate.
@@ -445,7 +452,27 @@ const server = createServer(async (req, res) => {
         headers: { 'Content-Type': type, 'Cache-Control': cache },
       }));
     }
-    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/') || pathname.startsWith('/api/docker/')) {
+    // Dashboard SSE: streamed directly on the socket — Response objects cannot
+    // model an open-ended server push, and the worker deployment has no
+    // dashboard engine at all (no scheduler), so this route is standalone-only.
+    if (pathname === '/api/dashboard/stream' && req.method === 'GET') {
+      const user = await getAuthenticatedUser(request, env);
+      if (!user) return sendJson(res, 401, { error: 'Authentication required' });
+      const owner = String(user.github_id);
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      const send = (payload) => { try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ } };
+      send({ type: 'snapshot', snapshots: dashboardEngine.snapshots(owner), interval_seconds: dashboardEngine.intervalSeconds });
+      const unsubscribe = dashboardEngine.subscribe(owner, (snapshot) => send({ type: 'update', snapshot }));
+      const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* client gone */ } }, 15000);
+      req.on('close', () => { clearInterval(heartbeat); unsubscribe(); });
+      return;
+    }
+    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/') || pathname.startsWith('/api/docker/') || pathname.startsWith('/api/dashboard/')) {
       const response = await automationRoutes(request, pathname, requestUrl);
       if (response) return sendResponse(res, response);
     }
@@ -458,6 +485,7 @@ const server = createServer(async (req, res) => {
     }
     return sendResponse(res, response);
   } catch (error) {
+    console.error(`[http] ${req.method} ${req.url} failed:`, error);
     if (res.headersSent) { res.destroy(); return; }
     sendJson(res, error instanceof SyntaxError ? 400 : (error.status || 500), {
       error: error instanceof SyntaxError ? 'Invalid JSON' : error.status === 413 ? error.message : 'Request failed',

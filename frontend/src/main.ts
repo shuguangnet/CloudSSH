@@ -15,6 +15,7 @@ import { TabManager } from './tab-manager';
 import type { SSHHostInfo, SSHTerminal } from './terminal';
 import { serverStatusPanel, initServerStatusPanel } from './server-status';
 import { dockerPanel, initDockerPanel } from './server-docker';
+import { dashboardPanel } from './dashboard';
 import {
   applyBuiltInTheme,
   applyImportedTheme,
@@ -170,6 +171,9 @@ function bindBackToTerminalButtons(): void {
   });
   document.getElementById('back-to-terminal-btn')?.addEventListener('click', () => {
     showTerminalSection();
+  });
+  document.getElementById('dashboard-toggle-btn')?.addEventListener('click', () => {
+    dashboardPanel.toggle();
   });
   document.getElementById('back-to-terminal-from-auth-btn')?.addEventListener('click', () => {
     showTerminalSection();

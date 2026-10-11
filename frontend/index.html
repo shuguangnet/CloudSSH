@@ -282,6 +282,19 @@
                   >
                 </button>
                 <button
+                  id="dashboard-toggle-btn"
+                  class="cyber-button text-muted py-2 px-3 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-1.5"
+                  data-i18n-title="dashboard.title"
+                  title="服务器总览"
+                >
+                  <span
+                    class="material-symbols-outlined"
+                    style="font-size: 16px"
+                    >dashboard</span
+                  >
+                  <span class="hidden sm:inline" data-i18n="dashboard.title">服务器总览</span>
+                </button>
+                <button
                   id="add-server-btn"
                   class="cyber-button text-primary py-2 px-4 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-2"
                 >
@@ -293,6 +306,18 @@
                   <span data-i18n="server.add">添加服务器</span>
                 </button>
               </div>
+            </div>
+            <!-- 总览仪表盘（点击工具栏按钮展开） -->
+            <div id="dashboard-section" class="hidden mb-6">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <h3 class="text-sm font-bold text-primary tracking-[0.08em]" data-i18n="dashboard.title">服务器总览</h3>
+                  <p class="text-[10px] text-muted opacity-60 mt-0.5" data-i18n="dashboard.subtitle">实时指标卡片墙</p>
+                </div>
+                <span class="material-symbols-outlined text-muted animate-pulse" style="font-size: 14px">monitoring</span>
+              </div>
+              <div id="dashboard-notice" class="hidden text-xs text-muted py-2"></div>
+              <div id="dashboard-cards" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div>
             </div>
             <!-- 服务器搜索（仅在存在服务器时显示） -->
             <div id="server-search-wrapper" class="hidden mb-4">
