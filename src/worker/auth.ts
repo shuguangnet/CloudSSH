@@ -28,6 +28,26 @@ function getBaseUrl(env: Env, request: Request): string {
   }
 }
 
+/**
+ * 同源判定（CSRF 防护，支持反代/自定义域名部署）：
+ *  1) Origin 与请求自身 origin 严格一致 —— 标准同源（Workers 部署下的常态）；
+ *  2) 反代部署（如 https://panel.example.com → Caddy/Nginx → 容器）时
+ *     TLS 在代理终止，worker 侧看到的协议不可靠，退化为宿主比较：
+ *     Origin 的 host[:port] === 请求实际的 Host 头。
+ * 浏览器 CSRF 场景下，跨站请求的 Origin 是攻击者站点而 Host 头是面板地址，
+ * 仍被拒绝；非浏览器攻击者本就能伪造任意头，Origin 边界对其从无约束力。
+ */
+export function sameOriginOrHost(request: Request, url: URL): boolean {
+  const origin = request.headers.get('Origin');
+  if (!origin) return false;
+  if (origin === url.origin) return true;
+  try {
+    return new URL(origin).host.toLowerCase() === (request.headers.get('Host') ?? '').toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 // ==================== 获取 UserDBDO stub ====================
 
 function getUserDBStub(env: Env, githubId: string | number): DurableObjectStub {
@@ -481,7 +501,6 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Admin password hash is invalid' }, { status: 500 });
   }
 
-  // 同源 Origin 校验（登录会种会话 cookie，防跨站登录 CSRF；与 WS origin 边界同哲学）
   let url: URL;
   try {
     url = new URL(request.url);
@@ -489,7 +508,9 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Invalid request URL' }, { status: 400 });
   }
   const origin = request.headers.get('Origin');
-  if (!origin || origin !== `${url.protocol}//${url.host}`) {
+  // 同源 Origin 校验（登录会种会话 cookie，防跨站登录 CSRF；反代域名部署下
+  // 按实际 Host 判定，见 sameOriginOrHost）
+  if (!origin || !sameOriginOrHost(request, url)) {
     return Response.json({ error: 'Forbidden origin' }, { status: 403 });
   }
 

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { request } from 'node:http';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
@@ -52,6 +53,20 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
     assert.equal(config.captchaEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
+    // 反代域名部署（如 https://panel.example.com → Caddy → 本服务）：Origin 与请求
+    // 实际 Host 同宿主必须放行；跨站（Origin 与 Host 均不匹配）仍拒。
+    // 注意 fetch 的 Host 头由 Node 按 URL 生成，故经由显式 Host 头直接向 base 发请求。
+    // fetch 规范将 Host 列为 forbidden header（undici 会丢弃自定义 Host），
+    // 故用 node:http 原生请求精确模拟反代转发（Caddy/Nginx 转发时保留上游 Host）。
+    const rawPost = (hostHeader, origin) => new Promise((resolve, reject) => {
+      const payload = JSON.stringify({ key, username: 'admin', captcha: proofForRaw });
+      const target = new URL(base);
+      const req = request({ hostname: target.hostname, port: Number(target.port), path: '/api/auth/password/login', method: 'POST', headers: { Host: hostHeader, Origin: origin, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject); req.end(payload);
+    });
+    const proofForRaw = await solveCaptcha(base);
+    assert.equal(await rawPost('panel-proxy.example', 'https://panel-proxy.example'), 200, '反代同宿主：同源判定放行，正确凭据可完整登录（设置会话）');
+    assert.equal(await rawPost('panel-proxy.example', 'https://evil.example'), 403, '跨站 Origin：Host 是面板地址但 Origin 是攻击者域 → 拒');
     // 验证码负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
     const noCaptcha = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
     assert.equal(noCaptcha.status, 403);

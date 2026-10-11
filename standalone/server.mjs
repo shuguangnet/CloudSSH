@@ -127,6 +127,17 @@ function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
+/**
+ * Origin 允许判定（CSRF 防护，支持反代/自定义域名部署）：
+ * BASE_URL 严格匹配，或 Origin 的 host[:port] 与请求实际 Host 头一致
+ * （TLS 在反代终止后协议不可比，退化为宿主比较；浏览器 CSRF 请求的
+ * Origin 是攻击者站点而 Host 是面板地址，仍被拒绝）。
+ */
+function originAllowed(originHeader, hostHeader) {
+  if (!originHeader) return false;
+  if (originHeader === env.BASE_URL) return true;
+  try { return new URL(originHeader).host.toLowerCase() === String(hostHeader || '').toLowerCase(); } catch { return false; }
+}
 async function sendResponse(res, response) {
   const headers = Object.fromEntries(response.headers);
   const cookies = response.headers.getSetCookie();
@@ -149,7 +160,7 @@ async function sendResponse(res, response) {
 async function management(request, pathname) {
   const user = await getAuthenticatedUser(request, env);
   if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
-  if (request.method !== 'GET' && request.headers.get('Origin') !== env.BASE_URL) {
+  if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'))) {
     return Response.json({ error: 'Invalid origin' }, { status: 403 });
   }
   if (pathname === '/api/mcp/tokens' && request.method === 'GET') return Response.json(store.list(user));
@@ -182,7 +193,7 @@ async function accountManagement(request) {
   if (!user || String(user.github_id) !== '-1') return Response.json({ error: 'Unauthorized' }, { status: 401 });
   if (request.method === 'GET') return Response.json({ username: env.ADMIN_USERNAME });
   if (request.method !== 'PUT') return Response.json({ error: 'Method not allowed' }, { status: 405 });
-  if (request.headers.get('Origin') !== env.BASE_URL) return Response.json({ error: 'Invalid origin' }, { status: 403 });
+  if (!originAllowed(request.headers.get('Origin'), request.headers.get('Host'))) return Response.json({ error: 'Invalid origin' }, { status: 403 });
   const body = await request.json();
   if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'Invalid account settings' }, { status: 400 });
   if (!validUsername(body.username)) return Response.json({ error: 'Invalid account name' }, { status: 400 });
@@ -285,7 +296,7 @@ const server = createServer(async (req, res) => {
     const pathname = requestUrl.pathname;
     if (pathname !== '/api/health' && rateLimited(req.socket.remoteAddress)) return sendJson(res, 429, { error: 'Rate limit exceeded' });
     if (pathname === '/mcp') {
-      if (req.headers.origin && req.headers.origin !== env.BASE_URL) return sendJson(res, 403, { error: 'Invalid origin' });
+      if (req.headers.origin && !originAllowed(req.headers.origin, req.headers.host)) return sendJson(res, 403, { error: 'Invalid origin' });
       const bearer = typeof req.headers.authorization === 'string' ? req.headers.authorization.match(/^Bearer (\S+)$/i)?.[1] : undefined;
       const identity = store.verify(bearer);
       // Mode changes and GitHub allowlist changes invalidate access, just like browser sessions.

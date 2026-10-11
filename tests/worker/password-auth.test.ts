@@ -378,6 +378,39 @@ describe('密码认证 — 登录端点', () => {
     expect(res.status).toBe(500);
   });
 
+  it('反代域名同宿主（Origin host === 请求 Host 头）→ 通过 Origin 层（401 密码错而非 403）', async () => {
+    // 生产场景：https://panel.example.com → Caddy/Nginx → 容器（BASE_URL 仍是内网地址）
+    const worker = await loadWorker();
+    const { hash } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, userDbStub: makeUserDbStub() });
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://panel.example.com', Host: 'panel.example.com' },
+        body: { key: 'x'.repeat(43) },
+      }),
+      env
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('反代域名下跨站 Origin（Host 头不匹配）→ 403', async () => {
+    const worker = await loadWorker();
+    const { hash } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash });
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://evil.example', Host: 'panel.example.com' },
+        body: { key: 'x'.repeat(43) },
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe('Forbidden origin');
+  });
+
   it('缺失 Origin 头 → 403（防跨站登录 CSRF）', async () => {
     const worker = await loadWorker();
     const { hash } = await makeAdminHash('correct-password');

@@ -267,7 +267,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/auth/callback` | GET | No | OAuth callback, creates user + session |
 | `/api/auth/logout` | POST | No | Logout, clears session |
 | `/api/auth/me` | GET | Yes | Returns current user info |
-| `/api/auth/password/login` | POST | No | 单管理员密码登录（密码模式专用；同源 Origin 校验 + 图片验证码[CAPTCHA_MODE≠off 时必验，先于节流] + DO 持久化节流 + 恒时比对；body 可带 `captcha:{challenge,answer}`） |
+| `/api/auth/password/login` | POST | No | 单管理员密码登录（密码模式专用；同源 Origin 校验[支持反代域名：Origin 与请求实际 Host 同宿主即放行，见 `sameOriginOrHost`] + 图片验证码[CAPTCHA_MODE≠off 时必验，先于节流] + DO 持久化节流 + 恒时比对；body 可带 `captcha:{challenge,answer}`） |
 | `/api/servers` | GET/POST | Yes | List or create saved servers（含 `tags` 与可选 `jump_server_id`） |
 | `/api/servers/:id` | PUT/DELETE | Yes | Update or delete a server（含标签和跳板关系校验） |
 | `/api/servers/:id/connect` | POST | Yes | Generate one-time-token, return WebSocket URL |
@@ -493,7 +493,7 @@ pnpm run deploy:test     # 部署 test 环境
 - `ENABLE_SSH_SHARING` - 可选，允许登录用户创建一次性、受审计的 SSH 分享（wrangler.toml `[vars]` 已随部署默认置 true，关闭改为 false）
 - `ADMIN_PASSWORD_HASH` - 可选，单管理员密码登录凭据（务必设为 Secret 类型，用 `pnpm run hash-password` 生成）
 - `CAPTCHA_MODE` - 图片验证码模式 `on`/`off`/`test`（默认 on；test 固定答案 TESTS 供 standalone 测试）
-- `BASE_URL` - OAuth 回调地址（需与实际域名一致）
+- `BASE_URL` - OAuth 回调地址（建议与浏览器实际访问地址一致；反代/自定义域名部署下同源校验按请求实际 Host 放行，Origin 不必等于 BASE_URL）
 
 Dashboard: Workers → 你的 Worker → Settings → Variables → Environment Variables
 CLI: `npx wrangler secret set <SECRET_NAME>`

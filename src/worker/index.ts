@@ -18,6 +18,7 @@ import {
   getPasswordAuthParams,
   parseAdminPasswordHash,
   resolveAuthMode,
+  sameOriginOrHost,
   LOCAL_ADMIN_GITHUB_ID,
 } from './auth';
 import { captchaActiveFor, issueCaptchaChallenge } from './captcha';
@@ -799,10 +800,10 @@ async function handleAIRoute(request: Request, url: URL, env: Env): Promise<Resp
     return Response.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  // 同源安全校验（CSRF 防护）
+  // 同源安全校验（CSRF 防护；反代域名部署按实际 Host 判定）
   if (request.method === 'POST' || request.method === 'PUT') {
     const origin = request.headers.get('Origin');
-    if (origin && origin !== url.origin) {
+    if (origin && !sameOriginOrHost(request, url)) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
   }
@@ -986,7 +987,8 @@ function parseRequestUrl(input: string): URL | null {
 }
 
 function hasSameWebSocketOrigin(request: Request, url: URL): boolean {
-  return request.headers.get('Origin') === url.origin;
+  // 反代域名部署：与登录同源判定同哲学（Origin 与实际 Host 同宿主即放行）
+  return sameOriginOrHost(request, url);
 }
 
 async function handleSSHConnection(request: Request, env: Env): Promise<Response> {
