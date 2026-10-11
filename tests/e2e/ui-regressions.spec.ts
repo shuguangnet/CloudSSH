@@ -274,6 +274,30 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
     .poll(() => challengeFetches)
     .toBe(2);
   await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+
+  // —— 高频轨迹节流：高刷屏画像（4 秒 400+ move 事件）下样本数必须被节流/抽稀
+  // 在服务端上限内，且终点仍对齐目标（真实用户反馈“越认真拖拽越无法通过”）
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 200; i++) {
+    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 200, box.y + box.height / 2, { steps: 2 });
+    await page.waitForTimeout(20);
+  }
+  await page.mouse.up();
+  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+  await dialog.locator('.auth-challenge-dialog__button--submit').click();
+  await expect
+    .poll(() => loginRequests.length)
+    .toBe(2);
+  const throttled = loginRequests[1]?.captcha;
+  expect(throttled).toBeTruthy();
+  // 200 步 × 20ms 节流后约 200 样本 → 抽稀硬上限 160；服务端上限 512
+  expect(throttled?.samples.length).toBeLessThanOrEqual(160);
+  expect(throttled?.samples.length).toBeGreaterThanOrEqual(3);
+  // 终点仍为最终视觉位置（pointerup 补记末样本）
+  expect(throttled?.x).toBeGreaterThanOrEqual(115);
+  expect(throttled?.x).toBeLessThanOrEqual(125);
+  expect(throttled?.samples[throttled!.samples.length - 1]?.x).toBeGreaterThanOrEqual(115);
 });
 
 /**

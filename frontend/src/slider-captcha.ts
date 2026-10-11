@@ -43,6 +43,22 @@ interface ChallengeResponse {
   y: number;
 }
 
+/** 样本记录节流间隔（毫秒）。高刷新率屏幕 pointermove 可达 120Hz+，慢速
+ *  精细拖拽 3 秒即可产生 400+ 样本，超出服务端上限会被整单拒绝（越认真
+ *  越失败）；16ms 节流 + SAMPLE_MAX 等距抽稀双保险，任何拖拽时长都不超限 */
+const SAMPLE_MIN_INTERVAL_MS = 16;
+/** 前端轨迹样本硬上限（服务端上限 512，留足冗余；首末样本始终保留） */
+const SAMPLE_MAX = 160;
+
+/** 等距抽稀：保留首末样本与中间均匀子集，时间跨度与离散度完整保留 */
+function decimateSamples(list: Array<{ x: number; t: number }>): Array<{ x: number; t: number }> {
+  if (list.length <= SAMPLE_MAX) return list;
+  const stride = (list.length - 1) / (SAMPLE_MAX - 1);
+  const kept: Array<{ x: number; t: number }> = [];
+  for (let i = 0; i < SAMPLE_MAX; i++) kept.push(list[Math.round(i * stride)]);
+  return kept;
+}
+
 export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
   const root = document.createElement('div');
   root.className = 'slider-captcha';
@@ -99,8 +115,8 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
   };
 
   // x 统一采用「拼图块绝对左缘」（SVG 逻辑坐标，含 startX 起始偏移）：
-  // 服务端 targetX 与校验均在同一空间（见 src/worker/captcha.ts 的 |x-targetX|≤5），
-  // 拖拽距离换算不得遇漏 startX，否则系统性偏差 10px 必然超出容差。
+  // 服务端 targetX 与校验均在同一空间（终点容差见 src/worker/captcha.ts），
+  // 拖拽距离换算不得遗漏 startX，否则系统性偏差 10px 必然超出容差。
   const applyX = (x: number): void => {
     if (!challenge) return;
     const clamped = clampX(x);
@@ -120,15 +136,25 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
     const px = event.clientX - rect.left - dragOffset;
     const x = clampX(px / canvasScale());
     currentX = x;
-    samples.push({ x, t: event.timeStamp });
+    // 节流记录：指针高频移动（高刷屏/高精度鼠标）时不逐事件采样，
+    // 防止慢速拖拽累积样本数超出服务端上限被整单拒绝
+    const last = samples[samples.length - 1];
+    if (!last || event.timeStamp - last.t >= SAMPLE_MIN_INTERVAL_MS) {
+      samples.push({ x, t: event.timeStamp });
+      if (samples.length > SAMPLE_MAX) samples = decimateSamples(samples);
+    }
     applyX(x);
   };
 
-  const endDrag = (): void => {
+  const endDrag = (timeStamp?: number): void => {
     if (!dragging) return;
     dragging = false;
     if (pointerMoveHandler) window.removeEventListener('pointermove', pointerMoveHandler);
     if (pointerUpHandler) window.removeEventListener('pointerup', pointerUpHandler);
+    // 补记松手时刻的最终样本：节流可能吞掉最后一次微调，而提交 x 取末样本，
+    // 必须保证末样本 = 用户最终视觉位置（服务端要求末样本与提交 x 一致）
+    samples.push({ x: currentX, t: timeStamp ?? performance.now() });
+    if (samples.length > SAMPLE_MAX) samples = decimateSamples(samples);
     // 服务端要求样本 ≥3（pointerdown + ≥2 次 move）；不足时不进入完成态，
     // 避免提交注定被拒的证明（单击/微拖不算有效拖拽，保持可重试）
     if (samples.length >= 3) {
@@ -145,7 +171,7 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
     }
   };
 
-  const onPointerUp = (): void => endDrag();
+  const onPointerUp = (event: PointerEvent): void => endDrag(event.timeStamp);
 
   thumb.addEventListener('pointerdown', (event) => {
     if (completed || !challenge) return;
@@ -159,7 +185,7 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
     window.addEventListener('pointermove', pointerMoveHandler = onPointerMove, { passive: false });
     window.addEventListener('pointerup', pointerUpHandler = onPointerUp);
   });
-  thumb.addEventListener('pointercancel', endDrag);
+  thumb.addEventListener('pointercancel', (event) => endDrag(event.timeStamp));
 
   const loadChallenge = async (): Promise<void> => {
     const generation = ++loadGeneration;
@@ -188,7 +214,10 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
         svg.removeAttribute('height');
       }
 
-      // 滑块图：纵向锚定缺口行，横向由拖拽驱动
+      // 滑块图：纵向锚定缺口行，横向由拖拽驱动。
+      // 尺寸从 SVG viewBox 推导（而非假设 = pieceSize）：拼图路径含右侧凸起，
+      // 横向包围盒比方块宽，按 viewBox 完整渲染才能与缺口形状严格一致，
+      // 消除视觉对齐歧义（否则用户右缘对齐会系统性偏差凸起宽度）
       const piece = document.createElement('div');
       piece.className = 'slider-captcha__piece';
       const logicalScale = canvas.clientWidth || data.width;
@@ -197,8 +226,11 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
       piece.innerHTML = data.piece;
       const pieceSvg = piece.querySelector('svg');
       if (pieceSvg) {
-        pieceSvg.style.width = `${Math.round(data.pieceSize * scale)}px`;
-        pieceSvg.style.height = `${Math.round(data.pieceSize * scale)}px`;
+        const viewBox = pieceSvg.viewBox?.baseVal;
+        const logicalW = viewBox && viewBox.width > 0 ? viewBox.width : data.pieceSize;
+        const logicalH = viewBox && viewBox.height > 0 ? viewBox.height : data.pieceSize;
+        pieceSvg.style.width = `${Math.round(logicalW * scale)}px`;
+        pieceSvg.style.height = `${Math.round(logicalH * scale)}px`;
       }
       piece.style.top = `${Math.round(data.y * scale)}px`;
       piece.style.left = '0px';

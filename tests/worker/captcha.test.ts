@@ -25,6 +25,16 @@ function proofFor(challenge: string, x = 120, span = 500): CaptchaProof {
   };
 }
 
+/** 高刷新率屏幕画像：慢速精细拖拽产生大量密集样本（120Hz+ 下 3 秒即 400+） */
+function rampProof(challenge: string, count: number, durationMs: number, x = 120, from = 10): CaptchaProof {
+  const now = Date.now();
+  const samples = Array.from({ length: count }, (_, i) => ({
+    x: +(from + ((x - from) * i) / (count - 1)).toFixed(2),
+    t: now + Math.round((durationMs * i) / (count - 1)),
+  }));
+  return { challenge, x, samples };
+}
+
 describe('滑块验证码 — 模式解析与启用门', () => {
   it('CAPTCHA_MODE 解析：off/test 显式，其余（含未配置/未知值）回退 on', () => {
     expect(resolveCaptchaMode({})).toBe('on');
@@ -104,6 +114,25 @@ describe('滑块验证码 — 证明校验', () => {
     expect(result.reason).toBe('missed');
   });
 
+  it('容差边界：|x-targetX| ≤ 8 通过，≥ 10 拒绝', async () => {
+    const within = await issueCaptchaChallenge(TEST_ENV);
+    expect((await verifyCaptcha(TEST_ENV, proofFor(within!.challenge, 128))).ok).toBe(true);
+    const beyond = await issueCaptchaChallenge(TEST_ENV);
+    expect((await verifyCaptcha(TEST_ENV, proofFor(beyond!.challenge, 130))).reason).toBe('missed');
+  });
+
+  it('高刷屏慢速精细拖拽（300+ 密集样本/3s）→ ok（旧 256 上限会误拒认真用户）', async () => {
+    const challengeA = await issueCaptchaChallenge(TEST_ENV);
+    expect((await verifyCaptcha(TEST_ENV, rampProof(challengeA!.challenge, 300, 3000))).ok).toBe(true);
+    const challengeB = await issueCaptchaChallenge(TEST_ENV);
+    expect((await verifyCaptcha(TEST_ENV, rampProof(challengeB!.challenge, 500, 4000))).ok).toBe(true);
+  });
+
+  it('快速人类甩动（6 样本/100ms）→ ok（旧 120ms 下限会误拒快甩用户）', async () => {
+    const challenge = await issueCaptchaChallenge(TEST_ENV);
+    expect((await verifyCaptcha(TEST_ENV, rampProof(challenge!.challenge, 6, 100))).ok).toBe(true);
+  });
+
   it('伪造/篡改挑战 → malformed', async () => {
     const challenge = await issueCaptchaChallenge(TEST_ENV);
     const parts = challenge!.challenge.split('.');
@@ -133,8 +162,9 @@ describe('滑块验证码 — 证明校验', () => {
 
   it.each([
     ['样本过少', (p: CaptchaProof) => ({ ...p, samples: (p.samples as Array<{ x: number; t: number }>).slice(0, 2) })],
-    ['时长过短（脚本瞬移）', (p: CaptchaProof) => proofFor(p.challenge as string, 120, 60)],
+    ['时长过短（脚本瞬移，< 60ms）', (p: CaptchaProof) => proofFor(p.challenge as string, 120, 40)],
     ['时长超限（挂机）', (p: CaptchaProof) => proofFor(p.challenge as string, 120, 60_000)],
+    ['样本数超限（> 512）', (p: CaptchaProof) => rampProof(p.challenge as string, 513, 3000)],
     ['时间戳回退', (p: CaptchaProof) => ({ ...p, samples: [...((p.samples as Array<{ x: number; t: number }>).slice(0, 2)), { x: 120, t: 0 }] })],
     ['全程同一 X（无拖拽位移）', (p: CaptchaProof) => ({ ...p, samples: (p.samples as Array<{ x: number; t: number }>).map((s, i) => ({ x: 10, t: 1000 + i * 150 })) })],
     ['末帧与终点不一致', (p: CaptchaProof) => ({ ...p, samples: [...((p.samples as Array<{ x: number; t: number }>).slice(0, 3)), { x: 95, t: 4000 }] })],

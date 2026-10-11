@@ -23,18 +23,24 @@ export const CAPTCHA_WIDTH = 300;
 export const CAPTCHA_HEIGHT = 140;
 /** 拼图块边长 */
 export const CAPTCHA_PIECE_SIZE = 44;
+/** 圆角/凸起半径：拼图路径横向包围盒为 [0, size + PIECE_TAB_RADIUS] */
+const PIECE_TAB_RADIUS = 9;
 /** 滑块起始 X（左侧留白） */
 export const CAPTCHA_START_X = 10;
-/** 终点容差：拖动终点与目标 X 的最大偏差 */
-const CAPTCHA_TOLERANCE = 5;
+/** 终点容差：拖动终点与目标 X 的最大偏差（人类在缩放画布上的对齐精度有限，
+ *  形状同形修复后左缘对齐无歧义；8px ≈ 画布宽 2.7%，仍拒直接瞬移的脚本） */
+const CAPTCHA_TOLERANCE = 8;
 /** 挑战有效期（毫秒） */
 const CAPTCHA_TTL_MS = 5 * 60 * 1000;
-/** 轨迹时长下/上限（毫秒）：过快为脚本、过慢为挂机重放 */
-const CAPTCHA_MIN_DRAG_MS = 120;
+/** 轨迹时长下/上限（毫秒）：过快为脚本瞬移、过慢为挂机重放。
+ *  下限 60ms：人类快甩通常 ≥100ms，机器人瞬移 <10ms；原 120ms 会误伤快甩用户 */
+const CAPTCHA_MIN_DRAG_MS = 60;
 const CAPTCHA_MAX_DRAG_MS = 30 * 1000;
-/** 轨迹样本数上下限 */
+/** 轨迹样本数上下限。
+ *  上限 512：高刷新率屏幕（120/144Hz）上 3 秒精细拖拽即可产生 400+ pointermove
+ *  样本，原 256 会拒绝“越认真越失败”；前端另有 16ms 节流 + 160 抽稀双保险 */
 const CAPTCHA_MIN_SAMPLES = 3;
-const CAPTCHA_MAX_SAMPLES = 256;
+const CAPTCHA_MAX_SAMPLES = 512;
 /** test 模式固定目标（画布 40%） */
 const CAPTCHA_TEST_TARGET_X = 120;
 const CAPTCHA_TEST_TARGET_Y = 48;
@@ -139,9 +145,12 @@ function randomInt(maxExclusive: number): number {
   return Math.floor(Math.random() * maxExclusive);
 }
 
-/** 拼图块路径：圆角方块 + 右侧外凸半圆凸起（缺口与滑块共用同一形状） */
+/** 拼图块路径：圆角方块 + 右侧外凸半圆凸起（缺口与滑块共用同一形状）。
+ *  路径横向包围盒为 [0, size + r]（凸起超出方块），拼图 SVG 的 viewBox
+ *  必须覆盖完整包围盒，否则凸起被裁剪 → 拼图（44px）与缺口（53px）不同形，
+ *  视觉对齐产生系统性歧义（右缘对齐偏差 9px 必超容差） */
 function piecePath(size: number): string {
-  const r = 9; // 圆角/凸起半径
+  const r = PIECE_TAB_RADIUS; // 圆角/凸起半径
   const tabTop = size / 2 - r;
   const tabBottom = size / 2 + r;
   return [
@@ -211,10 +220,12 @@ function renderBackgroundSvg(targetX: number, targetY: number, seed: number): st
   );
 }
 
-/** 服务端渲染滑块 SVG（半透明白块 + 描边 + 投影，浅/深主题均可读） */
-function renderPieceSvg(): string {
+/** 服务端渲染滑块 SVG（半透明白块 + 描边 + 投影，浅/深主题均可读）。
+ *  viewBox 覆盖完整路径包围盒（含右侧凸起），与缺口形状严格一致 */
+export function renderPieceSvg(): string {
+  const bboxWidth = CAPTCHA_PIECE_SIZE + PIECE_TAB_RADIUS;
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${CAPTCHA_PIECE_SIZE}" height="${CAPTCHA_PIECE_SIZE}" viewBox="0 0 ${CAPTCHA_PIECE_SIZE} ${CAPTCHA_PIECE_SIZE}">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${bboxWidth}" height="${CAPTCHA_PIECE_SIZE}" viewBox="0 0 ${bboxWidth} ${CAPTCHA_PIECE_SIZE}">` +
     `<path d="${piecePath(CAPTCHA_PIECE_SIZE)}" fill="rgba(255,255,255,0.82)" stroke="#e2e8f0" stroke-width="1.5"/>` +
     `<path d="${piecePath(CAPTCHA_PIECE_SIZE)}" fill="none" stroke="rgba(15,23,42,0.35)" stroke-width="1" transform="translate(0 1)"/>` +
     '</svg>'

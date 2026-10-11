@@ -39,16 +39,30 @@ function freePort(): Promise<number> {
 
 /** 按服务端契约拖拽：目标绝对 X → 拖拽距离 = (targetX - startX) * scale（CSS 像素） */
 async function dragTo(page: import('@playwright/test').Page, dialog: import('@playwright/test').Locator, targetX: number) {
+  await dragProfile(page, dialog, targetX, { moves: 8, intervalMs: 35, stepsPerMove: 2 });
+}
+
+/** 可画像拖拽：moves 次 move 事件、每次间隔 intervalMs 毫秒。
+ *  模拟真实用户行为画像（高刷屏慢速精细对齐 / 快速甩动），修复前这些画像
+ *  会因轨迹样本数/时长下限被服务端整单拒绝（真实用户反馈“一直无法通过”） */
+async function dragProfile(
+  page: import('@playwright/test').Page,
+  dialog: import('@playwright/test').Locator,
+  targetX: number,
+  opts: { moves: number; intervalMs: number; stepsPerMove?: number }
+) {
   const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
   const thumb = dialog.locator('.slider-captcha__thumb');
   const box = await thumb.boundingBox();
   if (!box) throw new Error('thumb not measurable');
   const dx = (targetX - START_X) * scale;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await page.mouse.move(cx, cy);
   await page.mouse.down();
-  for (let i = 1; i <= 8; i++) {
-    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
-    await page.waitForTimeout(35);
+  for (let i = 1; i <= opts.moves; i++) {
+    await page.mouse.move(cx + (dx * i) / opts.moves, cy, { steps: opts.stepsPerMove ?? 1 });
+    await page.waitForTimeout(opts.intervalMs);
   }
   await page.mouse.up();
 }
@@ -108,7 +122,30 @@ test('真实滑块验证码：未对齐 403 并重置，对齐后密码登录成
     await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
     await expect(dialog.locator('.slider-captcha__hint')).toContainText('Hold and drag');
 
+    // —— 人类画像 A：慢速精细对齐（高刷屏 4 秒 400+ move 事件，旧 256 样本上限必拒）。
+    // 用错误密码断言 401：滑块已通过（密码错误），证明轨迹未被样本数误拒
+    await dialog.locator('input[type="password"]').fill('definitely-wrong-password');
+    await dragProfile(page, dialog, TARGET_X, { moves: 200, intervalMs: 20, stepsPerMove: 2 });
+    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+    const [slowProfile] = await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
+      dialog.locator('.auth-challenge-dialog__button--submit').click(),
+    ]);
+    expect(slowProfile.status()).toBe(401);
+    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+
+    // —— 人类画像 B：快速甩动（全程 ~90ms，旧 120ms 时长下限必拒）
+    await dragProfile(page, dialog, TARGET_X, { moves: 5, intervalMs: 18 });
+    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+    const [fastProfile] = await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith('/api/auth/password/login')),
+      dialog.locator('.auth-challenge-dialog__button--submit').click(),
+    ]);
+    expect(fastProfile.status()).toBe(401);
+    await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+
     // —— 成功路径：对齐固定目标 120 → 200 → reload 进入用户空间
+    await dialog.locator('input[type="password"]').fill(PASSWORD);
     await dragTo(page, dialog, TARGET_X);
     await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
     const [accepted] = await Promise.all([
