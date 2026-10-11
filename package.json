@@ -5,6 +5,10 @@
   "description": "纯 Cloudflare 架构 Web SSH 工具",
   "main": "src/worker/index.ts",
   "scripts": {
+    "build:self-hosted": "pnpm run build:frontend && node scripts/build-standalone.mjs",
+    "start:self-hosted": "node standalone/server.mjs",
+    "setup:self-hosted": "node scripts/setup-standalone.mjs",
+    "test:self-hosted": "node --test tests/standalone/*.test.mjs",
     "dev": "node scripts/build-html.js && wrangler dev",
     "deploy": "node scripts/build-html.js && wrangler deploy",
     "deploy:test": "node scripts/build-html.js && wrangler deploy --env test",
@@ -39,8 +43,14 @@
     "@playwright/test": "1.62.0",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "4.1.10",
+    "esbuild": "^0.25.0",
     "typescript": "^5.7.0",
     "vitest": "4.1.10",
     "wrangler": "^4.125.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "ws": "^8.21.0",
+    "zod": "^3.25.76"
   }
 }

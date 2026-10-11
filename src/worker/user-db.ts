@@ -938,7 +938,7 @@ export class UserDBDO {
       inferDebug.push('[IP-GEO] 当前服务器通过跳板连接，区域由最外层入口决定，跳过推断');
     } else if (transportType === 'cf_tunnel') {
       inferDebug.push('[IP-GEO] 当前服务器使用 Cloudflare 隧道连接，跳过推断');
-    } else if (region === null) {
+    } else if (region === null && this.env.SELF_HOSTED !== 'true') {
       try {
         const result = await inferLocationHint(body.host);
         inferredHint = result.hint ?? null;
@@ -1089,6 +1089,7 @@ export class UserDBDO {
       values.push(body.host);
     }
     const shouldInfer =
+      this.env.SELF_HOSTED !== 'true' &&
       isDirect &&
       normalizedRegion === null &&
       (hostChanged || becameDirect || (switchedToAuto && current.inferred_hint === null));

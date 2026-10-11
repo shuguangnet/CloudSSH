@@ -630,7 +630,8 @@ async function handleServersRoute(request: Request, url: URL, env: Env): Promise
     if (!tokenRes.ok) return tokenRes;
 
     const { token } = await tokenRes.json<{ token: string }>();
-    const wsUrl = `wss://${url.host}/api/ssh?token=${token}`;
+    const wsProtocol = env.SELF_HOSTED === 'true' && url.protocol === 'http:' ? 'ws:' : 'wss:';
+    const wsUrl = `${wsProtocol}//${url.host}/api/ssh?token=${token}`;
 
     return Response.json({ wsUrl });
   }

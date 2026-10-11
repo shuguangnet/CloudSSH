@@ -79,6 +79,11 @@ function resumeReject(status: number, error: string): Response {
 }
 
 export class SSHSessionDO {
+  /** Used by the standalone runtime to release idle in-memory objects. */
+  hasActiveConnections(): boolean {
+    return this.sessions.size > 0 || this.sftpSessions.size > 0 ||
+      this.detachedSessions.size > 0 || this._pendingTimeouts.size > 0;
+  }
   private state: DurableObjectState;
   private env: Env;
   private sessions: Map<WebSocket, SSHSession> = new Map();
@@ -726,12 +731,14 @@ export class SSHSessionDO {
         }
         // SSRF checks apply to the only address reached directly from Cloudflare.
         // Private destinations are allowed only inside a trusted saved-server chain.
-        if (isBlockedHost(outer.host)) {
+        const allowPrivate = this.env.SELF_HOSTED_ALLOW_PRIVATE === 'true' &&
+          Boolean(config.userId && config.serverId);
+        if (!allowPrivate && isBlockedHost(outer.host)) {
           throw new Error('禁止连接内网或保留地址 (SSRF 防护)');
         }
-        const dnsCheck = await checkHostResolved(outer.host);
-        if (dnsCheck.blocked) {
-          throw new Error(dnsCheck.reason!);
+        if (!allowPrivate) {
+          const dnsCheck = await checkHostResolved(outer.host);
+          if (dnsCheck.blocked) throw new Error(dnsCheck.reason!);
         }
         for (const node of [...jumpHosts, config]) {
           if (!Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {

@@ -1,3 +1,5 @@
+> **This fork adds Docker/native self-hosting and an external MCP operations endpoint.** Run `bash scripts/deploy.sh --docker` (or `--native`). It includes scoped access tokens, saved-server authorization, SSH commands and file tools. See [self-hosting and MCP documentation](docs/self-hosted.md). Changes are developed on the `test` branch.
+
 <div align="center">
   <img src="./logo.svg" alt="CloudSSH" width="480">
   <p>A Serverless Web SSH Terminal built on Cloudflare Workers: Connect and manage your servers directly from the browser.</p>
