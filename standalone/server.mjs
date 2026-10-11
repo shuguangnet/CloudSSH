@@ -8,7 +8,10 @@ import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
 import { AccessStore, tokenHash } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
-import { savedServers } from './operations.mjs';
+import { savedServers, executeSaved } from './operations.mjs';
+import { AutomationStore } from './automation-store.mjs';
+import { AutomationEngine } from './scheduler.mjs';
+import { createAutomationRoutes } from './automation-api.mjs';
 
 process.umask(0o077);
 installWorkerGlobals();
@@ -49,6 +52,22 @@ env.USER_DB = new LocalNamespace('users', UserDBDO, env, dataDir);
 env.SSH_SESSION = new LocalNamespace('ssh', SSHSessionDO, env, dataDir);
 env.SSH_SHARE = new LocalNamespace('shares', SSHShareDO, env, dataDir);
 const store = new AccessStore(join(dataDir, 'mcp.sqlite'));
+const automationStore = new AutomationStore(join(dataDir, 'automation.sqlite'));
+const automationEngine = new AutomationEngine({
+  store: automationStore, env, SSHSession, executeSaved, log: (message) => console.error(`[automation] ${message}`),
+});
+const automationRoutes = createAutomationRoutes({
+  env, SSHSession, store: automationStore, engine: automationEngine, executeSaved, getAuthenticatedUser,
+});
+// PWA assets are copied to dist/public by scripts/build-standalone.mjs; icons are
+// immutable, the service worker must always revalidate.
+const PUBLIC_FILES = {
+  '/manifest.webmanifest': { file: 'manifest.webmanifest', type: 'application/manifest+json', cache: 'public, max-age=3600' },
+  '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+  '/icons/icon-192.png': { file: 'icons/icon-192.png', type: 'image/png', cache: 'public, max-age=604800' },
+  '/icons/icon-512.png': { file: 'icons/icon-512.png', type: 'image/png', cache: 'public, max-age=604800' },
+  '/icons/apple-touch-icon.png': { file: 'icons/apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=604800' },
+};
 let authGeneration = env.ADMIN_PASSWORD_HASH ? tokenHash(env.ADMIN_PASSWORD_HASH) : 'github';
 
 // Support Cloudflare's outbound WebSocket fetch for existing Tunnel connections.
@@ -113,7 +132,7 @@ async function sendResponse(res, response) {
   const cookies = response.headers.getSetCookie();
   if (cookies.length) headers['set-cookie'] = cookies.map((cookie) =>
     baseUrl.protocol === 'http:' ? cookie.replace(/; Secure\b/g, '') : cookie);
-  headers['cache-control'] = 'no-store';
+  if (!headers['cache-control']) headers['cache-control'] = 'no-store';
   headers['x-content-type-options'] = 'nosniff';
   res.writeHead(response.status, headers);
   if (response.body) {
@@ -316,12 +335,36 @@ const server = createServer(async (req, res) => {
         headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css' },
       }));
     }
+    if (pathname === '/automation') {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+      if (!await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
+      return sendResponse(res, new Response(readFileSync(new URL('./automation.html', import.meta.url)), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+      }));
+    }
+    if (['/automation.js', '/automation.css'].includes(pathname) && req.method === 'GET') {
+      const extension = pathname.endsWith('.js') ? 'js' : 'css';
+      return sendResponse(res, new Response(readFileSync(new URL(`./automation.${extension}`, import.meta.url)), {
+        headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css' },
+      }));
+    }
+    if (req.method === 'GET' && PUBLIC_FILES[pathname]) {
+      const { file, type, cache } = PUBLIC_FILES[pathname];
+      return sendResponse(res, new Response(readFileSync(new URL(`../dist/public/${file}`, import.meta.url)), {
+        headers: { 'Content-Type': type, 'Cache-Control': cache },
+      }));
+    }
+    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/')) {
+      const response = await automationRoutes(request, pathname, requestUrl);
+      if (response) return sendResponse(res, response);
+    }
     if (pathname.startsWith('/api/mcp/')) return sendResponse(res, await management(request, pathname));
     if (pathname === '/api/host-files' && req.method === 'GET') return sendResponse(res, await listHostFiles(request, requestUrl));
     if (pathname === '/api/host-file' && req.method === 'GET') return sendResponse(res, await readHostFile(request, requestUrl));
     const response = await worker.fetch(request, env);
     if (pathname === '/api/config' && response.ok) {
-      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
+      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, automationEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
     }
     return sendResponse(res, response);
   } catch (error) {
@@ -357,17 +400,21 @@ for (const file of readdirSync(dataDir)) {
 }
 const port = Number(process.env.PORT || 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-server.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`CloudSSH listening on port ${port}; panel ${env.BASE_URL}; MCP ${env.BASE_URL}/mcp`));
+server.listen(port, process.env.HOST || '0.0.0.0', () => {
+  automationEngine.start();
+  console.log(`CloudSSH listening on port ${port}; panel ${env.BASE_URL}; MCP ${env.BASE_URL}/mcp`);
+});
 let closing = false;
 function shutdown() {
   if (closing) return; closing = true;
+  automationEngine.stop();
   server.close(); wss.close();
   for (const client of wss.clients) client.close(1001, 'Service shutting down');
   // Give bounded operations time to finish; never replay calls on restart.
   const timer = setInterval(() => {
     if (activeMcp) return;
     clearInterval(timer);
-    env.SSH_SESSION.close(); env.USER_DB.close(); env.SSH_SHARE.close(); store.close();
+    env.SSH_SESSION.close(); env.USER_DB.close(); env.SSH_SHARE.close(); store.close(); automationStore.close();
     process.exit(0);
   }, 100);
   setTimeout(() => process.exit(1), 200000).unref();

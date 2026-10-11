@@ -387,6 +387,63 @@ export class ServerList {
     void hostFilesAvailable().then((available) => {
       if (available) hostKeyButton?.classList.remove('hidden');
     });
+
+    // 生成 ed25519 密钥对（仅自托管部署可用；按钮在 fetchSharingConfig 探测到 automationEnabled 后显示）
+    document.getElementById('server-generate-key')?.addEventListener('click', async () => {
+      const generateButton = document.getElementById('server-generate-key') as HTMLButtonElement;
+      generateButton.disabled = true;
+      try {
+        const comment = (document.getElementById('server-name') as HTMLInputElement).value.trim();
+        const response = await fetch('/api/ssh/keys/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comment }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const pair = (await response.json()) as { privateKey: string; publicKey: string };
+        this.keyFileReadVersion++;
+        keyTextarea.value = pair.privateKey;
+        keyFilename.textContent = '';
+        (document.getElementById('server-generated-public-key') as HTMLTextAreaElement).value = pair.publicKey;
+        document.getElementById('server-deploy-key')?.classList.toggle('hidden', this.editingServerId === null);
+        document.getElementById('server-generated-key-section')?.classList.remove('hidden');
+      } catch {
+        notify(t('auth.generateKeyFailed'), { title: t('auth.keyPairTitle'), variant: 'danger' });
+      } finally {
+        generateButton.disabled = false;
+      }
+    });
+    document.getElementById('server-copy-public-key')?.addEventListener('click', async () => {
+      const publicKey = (document.getElementById('server-generated-public-key') as HTMLTextAreaElement).value;
+      const ok = await copyTextToClipboard(publicKey);
+      if (ok) notify(t('auth.publicKeyCopied'), { variant: 'success', duration: 1500 });
+      else notify(t('auth.copyKeyFailed'), { variant: 'danger' });
+    });
+    document.getElementById('server-deploy-key')?.addEventListener('click', async () => {
+      const deployButton = document.getElementById('server-deploy-key') as HTMLButtonElement;
+      const serverId = this.editingServerId;
+      const publicKey = (document.getElementById('server-generated-public-key') as HTMLTextAreaElement).value;
+      if (!serverId || !publicKey) return;
+      deployButton.disabled = true;
+      try {
+        const response = await fetch('/api/ssh/keys/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ server_id: serverId, public_key: publicKey }),
+        });
+        const result = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; stderr?: string };
+        if (!response.ok) throw new Error(result.error || 'deploy failed');
+        if (result.ok) {
+          notify(t('auth.publicKeyDeployed'), { variant: 'success' });
+        } else {
+          notify(result.error || result.stderr?.trim() || t('auth.publicKeyDeployFailed'), { variant: 'danger' });
+        }
+      } catch (error) {
+        notify(error instanceof Error ? error.message : t('auth.publicKeyDeployFailed'), { variant: 'danger' });
+      } finally {
+        deployButton.disabled = false;
+      }
+    });
     hostKeyButton?.addEventListener('click', () => {
       openHostFileBrowser({
         onSelected: (path, content) => {
@@ -455,8 +512,19 @@ export class ServerList {
     try {
       const response = await fetch('/api/config');
       if (!response.ok) return;
-      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean };
+      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean; automationEnabled?: boolean };
       this.sharingEnabled = config.sshSharingEnabled === true;
+      if (config.automationEnabled) {
+        document.getElementById('server-generate-key')?.classList.remove('hidden');
+        if (!document.getElementById('automation-link')) {
+          const link = document.createElement('a');
+          link.id = 'automation-link';
+          link.href = '/automation';
+          link.textContent = t('auth.automation');
+          link.className = 'text-xs font-bold text-primary underline';
+          document.getElementById('user-info')?.appendChild(link);
+        }
+      }
       if (config.adminAccountEnabled && !document.getElementById('admin-account-link')) {
         const link = document.createElement('a');
         link.id = 'admin-account-link';
@@ -852,6 +920,7 @@ export class ServerList {
     this.keyFileReadVersion++;
     (document.getElementById('server-private-key-file') as HTMLInputElement).value = '';
     document.getElementById('server-key-file-name')!.textContent = '';
+    this.resetGeneratedKeySection();
     const modal = document.getElementById('server-modal');
     const title = document.getElementById('modal-title');
     const submitBtn = document.getElementById('server-submit-btn');
@@ -988,6 +1057,7 @@ export class ServerList {
     this.keyFileReadVersion++;
     (document.getElementById('server-private-key-file') as HTMLInputElement).value = '';
     document.getElementById('server-key-file-name')!.textContent = '';
+    this.resetGeneratedKeySection();
     const modal = document.getElementById('server-modal');
     if (modal) {
       modal.classList.add('hidden');
@@ -995,6 +1065,11 @@ export class ServerList {
     }
     this.editingServerId = null;
     this.editingOriginalAuthMethod = null;
+  }
+
+  private resetGeneratedKeySection(): void {
+    document.getElementById('server-generated-key-section')?.classList.add('hidden');
+    (document.getElementById('server-generated-public-key') as HTMLTextAreaElement).value = '';
   }
 
   private setModalTransportMode(mode: 'direct' | 'cf_tunnel'): void {

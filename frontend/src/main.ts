@@ -936,6 +936,11 @@ function consumeAdminSetupRoute(): void {
 
 async function init(): Promise<void> {
   initI18n();
+  // PWA：仅在安全上下文（HTTPS 或本机）注册 Service Worker，失败时静默降级。
+  // PWA：仅在安全上下文（HTTPS 或 localhost）注册 Service Worker，失败时静默降级。
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    void navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
   initUserSpaceMobileMenu();
   initServerPaginationBreakpoints();
   bindBackToTerminalButtons();
