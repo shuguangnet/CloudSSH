@@ -30,6 +30,11 @@ export interface TabInfo {
  *
  * 每个标签页拥有独立的 SSHTerminal 实例和 SFTPPanel 实例。
  * 切换标签通过隐藏/显示对应的终端容器来实现，WebSocket 连接始终保持。
+ *
+ * 左右分屏（splitMode）：#terminal-area 切换为 flex 布局，拆为
+ * 「左窗格 + 拖拽分隔条 + 右窗格」；每个窗格显示一个标签的容器。
+ * activeTabId 恒为聚焦窗格中的标签（焦点窗格点击/切换标签即跟随），
+ * 状态栏、SFTP/Agent 抽屉等“当前标签”能力均作用于聚焦窗格。
  */
 export class TabManager {
   private tabs: Map<string, TabInfo> = new Map();
@@ -38,6 +43,13 @@ export class TabManager {
   private terminalAreaEl: HTMLElement;
   private tabCounter = 0;
   private _isLoggedIn: boolean = false;
+
+  /** 左右分屏：是否开启；聚焦窗格；左右窗格各自显示的标签 ID（null = 空窗格） */
+  private splitMode = false;
+  private splitFocusedPane: 'left' | 'right' = 'left';
+  private paneTabIds: { left: string | null; right: string | null } = { left: null, right: null };
+  /** 最近访问的标签 ID（新的在前），用于分屏挑选“另一窗格”与回退标签 */
+  private recentTabIds: string[] = [];
 
   /** 标签右键菜单的 document click 监听器（关闭菜单时统一移除，防止累积） */
   private tabCtxCloseHandler: ((e: MouseEvent) => void) | null = null;
@@ -211,6 +223,7 @@ export class TabManager {
     };
 
     this.tabs.set(id, tab);
+    this.recentTabIds.unshift(id);
     terminal.setSelectionChangeHandler((selection, anchor) => {
       const currentTab = this.tabs.get(id);
       if (!currentTab) return;
@@ -232,9 +245,16 @@ export class TabManager {
   switchTab(tabId: string): void {
     const tab = this.tabs.get(tabId);
     if (!tab) return;
+
+    // 分屏模式：点击的标签进入聚焦窗格（或已显示在另一窗格时直接切换焦点）
+    if (this.splitMode) {
+      this.switchTabInSplit(tabId);
+      return;
+    }
+
     if (this.activeTabId === tabId) return;
 
-    // 隐藏当前活跃标签的 SFTP 面板与 Agent 面板
+    // 隐藏当前活跃标签的 SFTP 面板与 Agent 面板，以及容器本身
     if (this.activeTabId && this.activeTabId !== tabId) {
       const prevTab = this.tabs.get(this.activeTabId);
       if (prevTab) {
@@ -247,17 +267,274 @@ export class TabManager {
 
     // 显示目标标签
     tab.containerEl.style.display = 'flex';
+    this.setActiveTab(tabId);
+  }
+
+  /**
+   * 统一的“置为当前标签”内部入口：收起前一标签的抽屉、派发
+   * cloudssh:active-terminal-change、挂载终端并同步状态栏/标签栏。
+   * 不负责容器的显示与隐藏（单栏/分屏由各自调用方处理）。
+   */
+  private setActiveTab(tabId: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+
+    if (this.activeTabId && this.activeTabId !== tabId) {
+      const prevTab = this.tabs.get(this.activeTabId);
+      if (prevTab) {
+        prevTab.agentPanel?.rejectPendingConfirmation(false);
+        prevTab.agentPanel?.hide();
+        prevTab.sftpPanel?.hide();
+      }
+    }
+
     this.activeTabId = tabId;
+    const recentIdx = this.recentTabIds.indexOf(tabId);
+    if (recentIdx >= 0) this.recentTabIds.splice(recentIdx, 1);
+    this.recentTabIds.unshift(tabId);
+
     document.body.classList.toggle('agent-panel-open', tab.agentPanel?.isOpen ?? false);
     document.dispatchEvent(new Event('cloudssh:active-terminal-change'));
 
-    // Mount 并 fit 终端
     tab.terminal.mount();
-
-    // 更新状态栏
     this.updateStatusBar(tab);
     this.updateSelectionAction(tab);
     this.renderTabBar();
+  }
+
+  // ==================== 左右分屏 ====================
+
+  isSplitMode(): boolean {
+    return this.splitMode;
+  }
+
+  /** 切换左右分屏（无标签时忽略） */
+  toggleSplit(): void {
+    if (this.splitMode) this.exitSplitMode();
+    else this.enterSplitMode();
+  }
+
+  /** 焦点切到指定窗格（点击窗格内部时触发），该窗格标签成为当前标签 */
+  focusPane(pane: 'left' | 'right'): void {
+    if (!this.splitMode) return;
+    if (this.splitFocusedPane !== pane) {
+      this.splitFocusedPane = pane;
+      const tabId = this.paneTabIds[pane];
+      if (tabId && this.activeTabId !== tabId) this.setActiveTab(tabId);
+    }
+    this.renderSplitPanes();
+  }
+
+  private enterSplitMode(): void {
+    if (this.splitMode) return;
+    const active = this.getActiveTab();
+    if (!active) return;
+
+    this.splitMode = true;
+    this.splitFocusedPane = 'left';
+    // 当前标签留在左窗格；右窗格显示最近访问的另一个标签，没有则为空窗格
+    this.paneTabIds = { left: active.id, right: this.pickReplacementTabId(active.id) };
+
+    const left = document.createElement('div');
+    left.id = 'split-pane-left';
+    left.className = 'split-pane';
+    left.addEventListener('mousedown', () => this.focusPane('left'), true);
+
+    const divider = document.createElement('div');
+    divider.id = 'split-divider';
+    divider.className = 'split-divider';
+    const handle = document.createElement('div');
+    handle.className = 'split-divider-handle';
+    divider.appendChild(handle);
+
+    const right = document.createElement('div');
+    right.id = 'split-pane-right';
+    right.className = 'split-pane';
+    right.addEventListener('mousedown', () => this.focusPane('right'), true);
+
+    this.terminalAreaEl.append(left, divider, right);
+    this.terminalAreaEl.classList.add('split-active');
+
+    this.setupDividerDrag(divider);
+    this.renderSplitPanes();
+    this.renderTabBar();
+    this.fitVisibleTerminals();
+  }
+
+  private exitSplitMode(): void {
+    if (!this.splitMode) return;
+    this.splitMode = false;
+    this.terminalAreaEl.classList.remove('split-active');
+    for (const id of ['split-pane-left', 'split-divider', 'split-pane-right']) {
+      document.getElementById(id)?.remove();
+    }
+    // 所有容器回到终端区并隐藏，仅恢复显示当前标签
+    for (const tab of this.tabs.values()) {
+      this.terminalAreaEl.appendChild(tab.containerEl);
+      tab.containerEl.style.display = 'none';
+    }
+    const active = this.getActiveTab();
+    if (active) {
+      active.containerEl.style.display = 'flex';
+      active.terminal.mount();
+    }
+    this.paneTabIds = { left: null, right: null };
+    this.renderTabBar();
+    this.fitVisibleTerminals();
+  }
+
+  /** 分屏下点击标签：目标标签进入聚焦窗格；若已显示在另一窗格则只切换焦点 */
+  private switchTabInSplit(tabId: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    const focusedPane = this.splitFocusedPane;
+    const otherPane = focusedPane === 'left' ? 'right' : 'left';
+
+    if (this.paneTabIds[otherPane] === tabId) {
+      // 已在另一窗格显示：焦点切过去，布局不变
+      this.splitFocusedPane = otherPane;
+      if (this.activeTabId !== tabId) this.setActiveTab(tabId);
+      this.renderSplitPanes();
+      return;
+    }
+
+    if (this.activeTabId === tabId) {
+      // 就是聚焦窗格当前显示的标签：仅确保焦点样式同步
+      this.renderSplitPanes();
+      return;
+    }
+
+    // 新标签替换聚焦窗格内容；原窗格标签退回后台
+    this.paneTabIds[focusedPane] = tabId;
+    this.setActiveTab(tabId);
+    this.renderSplitPanes();
+    this.fitVisibleTerminals();
+  }
+
+  /** 按窗格状态同步两个窗格的 DOM（容器移动 / 空窗格占位 / 焦点高亮） */
+  private renderSplitPanes(): void {
+    const left = document.getElementById('split-pane-left');
+    const right = document.getElementById('split-pane-right');
+    if (!left || !right) return;
+
+    // 兜底：active 标签不在任何窗格（异常状态）时放回聚焦窗格；
+    // 焦点在空窗格时保留空占位，不得把 active 标签复制进来
+    if (
+      this.activeTabId &&
+      this.activeTabId !== this.paneTabIds.left &&
+      this.activeTabId !== this.paneTabIds.right
+    ) {
+      this.paneTabIds[this.splitFocusedPane] = this.activeTabId;
+    }
+
+    this.fillSplitPane(left, this.paneTabIds.left, 'left');
+    this.fillSplitPane(right, this.paneTabIds.right, 'right');
+    left.classList.toggle('split-pane-focused', this.splitFocusedPane === 'left');
+    right.classList.toggle('split-pane-focused', this.splitFocusedPane === 'right');
+  }
+
+  private fillSplitPane(wrap: HTMLElement, tabId: string | null, pane: 'left' | 'right'): void {
+    const tab = tabId ? this.tabs.get(tabId) ?? null : null;
+    if (tab) {
+      if (tab.containerEl.parentElement !== wrap) wrap.replaceChildren(tab.containerEl);
+      tab.containerEl.style.display = 'flex';
+    } else if (!wrap.querySelector('.split-empty-pane')) {
+      // 已有空占位则不重建，避免把用户正在点击的按钮换掉（mousedown→重渲染→click 丢失）
+      wrap.replaceChildren(this.createEmptyPaneEl(pane));
+    }
+  }
+
+  /** 空窗格占位：提示文字 + 「新建连接」（复用标签栏 ➕ 的事件委托） */
+  private createEmptyPaneEl(pane: 'left' | 'right'): HTMLElement {
+    const el = document.createElement('div');
+    el.className = 'split-empty-pane';
+    el.appendChild(this.createIcon('splitscreen', '32px'));
+    const text = document.createElement('div');
+    text.className = 'split-empty-text';
+    text.textContent = t('terminal.splitEmptyPane');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'split-empty-new-btn';
+    btn.textContent = t('terminal.splitNewConnection');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // 先把焦点切到空窗格，新建的标签会落在聚焦窗格
+      this.focusPane(pane);
+      document.getElementById('new-tab-btn')?.click();
+    });
+    el.append(text, btn);
+    return el;
+  }
+
+  /** 分隔条拖拽：pointer capture 跟随，拖动结束后统一 fit，双击复位 50/50 */
+  private setupDividerDrag(divider: HTMLElement): void {
+    let dragging = false;
+    const left = document.getElementById('split-pane-left');
+    if (!left) return;
+
+    const applyFromClientX = (clientX: number) => {
+      const rect = this.terminalAreaEl.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const pct = ((clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.min(80, Math.max(20, pct));
+      left.style.width = `${clamped.toFixed(2)}%`;
+    };
+    const stopDrag = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try {
+        divider.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 指针可能已释放 */
+      }
+      document.body.classList.remove('split-dragging');
+      this.fitVisibleTerminals();
+    };
+
+    divider.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      divider.setPointerCapture(e.pointerId);
+      document.body.classList.add('split-dragging');
+      e.preventDefault();
+    });
+    divider.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      applyFromClientX(e.clientX);
+    });
+    divider.addEventListener('pointerup', stopDrag);
+    divider.addEventListener('pointercancel', stopDrag);
+    divider.addEventListener('dblclick', () => {
+      left.style.width = '50%';
+      this.fitVisibleTerminals();
+    });
+  }
+
+  /** 对分屏两个窗格（或单栏的当前标签）统一 fit；隐藏/未挂载的终端自动跳过 */
+  private fitVisibleTerminals(): void {
+    requestAnimationFrame(() => {
+      if (this.splitMode) {
+        for (const id of [this.paneTabIds.left, this.paneTabIds.right]) {
+          if (!id) continue;
+          this.tabs.get(id)?.terminal.fit();
+        }
+      } else {
+        this.getActiveTab()?.terminal.fit();
+      }
+    });
+  }
+
+  /** 挑一个排除指定标签后最近访问的标签（用于另一窗格 / 窗格回退） */
+  private pickReplacementTabId(excludeId: string | null): string | null {
+    for (const id of this.recentTabIds) {
+      if (!this.tabs.has(id)) continue;
+      if (excludeId && id === excludeId) continue;
+      return id;
+    }
+    return null;
+  }
+
+  private isInPane(tabId: string): boolean {
+    return this.splitMode && (this.paneTabIds.left === tabId || this.paneTabIds.right === tabId);
   }
 
   // ==================== 关闭标签 ====================
@@ -278,6 +555,17 @@ export class TabManager {
     tab.terminal.dispose();
     tab.containerEl.remove();
     this.tabs.delete(tabId);
+    const recentIdx = this.recentTabIds.indexOf(tabId);
+    if (recentIdx >= 0) this.recentTabIds.splice(recentIdx, 1);
+
+    // 分屏模式：窗格回退/焦点迁移由分屏逻辑处理
+    if (this.splitMode) {
+      this.closeTabInSplit(tabId);
+      this.renderTabBar();
+      this.updateSelectionAction();
+      this.tabsChanged();
+      return;
+    }
 
     // 如果关闭的是当前活跃标签，切换到其他标签
     if (this.activeTabId === tabId) {
@@ -296,7 +584,70 @@ export class TabManager {
     this.tabsChanged();
   }
 
+  /** 分屏下关闭标签：被关窗格回退到最近的后台标签（无则空窗格），
+   * 关闭当前标签时焦点留在同窗格的接替标签，否则迁到另一窗格；两窗格
+   * 全空时自动退出分屏。 */
+  private closeTabInSplit(closedTabId: string): void {
+    const pane =
+      this.paneTabIds.left === closedTabId
+        ? 'left'
+        : this.paneTabIds.right === closedTabId
+          ? 'right'
+          : null;
+
+    if (pane) {
+      const otherPane = pane === 'left' ? 'right' : 'left';
+      this.paneTabIds[pane] = this.pickReplacementTabId(this.paneTabIds[otherPane]);
+    }
+
+    if (this.activeTabId === closedTabId) {
+      this.activeTabId = null;
+      const successorPane = pane ?? this.splitFocusedPane;
+      const successorId = pane ? this.paneTabIds[pane] : null;
+      if (successorId) {
+        // 同窗格的接替标签直接接管焦点
+        this.splitFocusedPane = successorPane;
+        this.setActiveTab(successorId);
+      } else {
+        const otherPane = successorPane === 'left' ? 'right' : 'left';
+        const otherTabId = this.paneTabIds[otherPane];
+        if (otherTabId) {
+          this.splitFocusedPane = otherPane;
+          this.setActiveTab(otherTabId);
+        } else if (!this.hasAnyTab()) {
+          // 最后一个标签被关闭：退出分屏并回到连接页
+          this.exitSplitMode();
+          document.body.classList.remove('agent-panel-open');
+          this.onAllTabsClosed?.();
+          return;
+        } else {
+          this.exitSplitMode();
+        }
+      }
+    }
+
+    // 两个窗格都空（仍有后台标签）→ 退出分屏，切到最近标签
+    if (!this.paneTabIds.left && !this.paneTabIds.right) {
+      this.exitSplitMode();
+      const fallback = this.pickReplacementTabId(null);
+      if (fallback) this.switchTab(fallback);
+    } else {
+      this.renderSplitPanes();
+      this.fitVisibleTerminals();
+    }
+  }
+
   closeAllTabs(): void {
+    // 分屏窗格直接拆除，容器由下方循环统一清理
+    if (this.splitMode) {
+      this.splitMode = false;
+      this.terminalAreaEl.classList.remove('split-active');
+      for (const id of ['split-pane-left', 'split-divider', 'split-pane-right']) {
+        document.getElementById(id)?.remove();
+      }
+      this.paneTabIds = { left: null, right: null };
+    }
+    this.recentTabIds = [];
     const tabIds = Array.from(this.tabs.keys());
     for (const tabId of tabIds) {
       const tab = this.tabs.get(tabId);
@@ -407,13 +758,15 @@ export class TabManager {
   // ==================== 渲染标签栏 ====================
 
   renderTabBar(): void {
-    // 保留 new-tab-btn，清除其他标签按钮
+    // 保留 new-tab-btn 与 split-view-btn，清除其他标签按钮
     const newTabBtn = this.tabBarEl.querySelector('#new-tab-btn');
+    const existingSplitBtn = this.tabBarEl.querySelector('#split-view-btn');
     this.tabBarEl.replaceChildren();
 
     for (const tab of this.tabs.values()) {
+      const inOtherPane = this.isInPane(tab.id) && tab.id !== this.activeTabId;
       const tabEl = document.createElement('div');
-      tabEl.className = `tab-item${tab.id === this.activeTabId ? ' active' : ''}${tab.state === 'disconnected' ? ' disconnected' : ''}`;
+      tabEl.className = `tab-item${tab.id === this.activeTabId ? ' active' : ''}${tab.state === 'disconnected' ? ' disconnected' : ''}${inOtherPane ? ' in-split-pane' : ''}`;
       tabEl.dataset.tabId = tab.id;
 
       // 状态指示点
@@ -423,7 +776,9 @@ export class TabManager {
       const label = document.createElement('span');
       label.className = 'tab-label';
       label.textContent = tab.label;
-      label.title = `${t('terminal.doubleClickToRename')}: ${tab.label}`;
+      label.title = inOtherPane
+        ? `${t('terminal.splitPaneHint')} · ${t('terminal.doubleClickToRename')}: ${tab.label}`
+        : `${t('terminal.doubleClickToRename')}: ${tab.label}`;
 
       label.addEventListener('dblclick', (e) => {
         e.stopPropagation();
@@ -469,6 +824,22 @@ export class TabManager {
       btn.appendChild(this.createIcon('add', '16px'));
       this.tabBarEl.appendChild(btn);
     }
+
+    // 追加左右分屏切换按钮（桌面端；desktop-terminal-action 在移动/平板隐藏）
+    let splitBtn = existingSplitBtn as HTMLButtonElement | null;
+    if (!splitBtn) {
+      splitBtn = document.createElement('button');
+      splitBtn.id = 'split-view-btn';
+      splitBtn.type = 'button';
+      splitBtn.className = 'tab-new-btn desktop-terminal-action';
+      splitBtn.appendChild(this.createIcon('vertical_split', '16px'));
+      splitBtn.addEventListener('click', () => this.toggleSplit());
+    }
+    splitBtn.title = this.splitMode ? t('terminal.exitSplitScreen') : t('terminal.splitScreen');
+    splitBtn.setAttribute('aria-pressed', String(this.splitMode));
+    splitBtn.classList.toggle('tab-split-active', this.splitMode);
+    splitBtn.classList.toggle('hidden', this.tabs.size === 0);
+    this.tabBarEl.appendChild(splitBtn);
   }
 
   private tabDotClass(state: TabState): string {

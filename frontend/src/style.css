@@ -1819,6 +1819,139 @@ select optgroup {
   background: var(--bg-elevated);
 }
 
+.tab-new-btn.tab-split-active {
+  color: var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+/* 分屏中另一窗格的标签：虚线边框提示“正在另一分栏中显示” */
+.tab-item.in-split-pane {
+  border-color: var(--border-strong);
+  border-style: dashed;
+  color: var(--text);
+}
+
+/* ==================== 左右分屏 ==================== */
+
+#terminal-area.split-active {
+  display: flex;
+}
+
+#terminal-area.split-active .split-pane {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+#terminal-area.split-active #split-pane-left {
+  width: 50%;
+}
+
+#terminal-area.split-active #split-pane-right {
+  flex: 1 1 auto;
+}
+
+/* 聚焦窗格：顶部一条强调线，与标签栏 active 呼应 */
+#terminal-area.split-active .split-pane::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 5;
+  pointer-events: none;
+}
+
+#terminal-area.split-active .split-pane.split-pane-focused::before {
+  background: var(--accent);
+}
+
+#terminal-area.split-active .split-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  position: relative;
+  background: var(--border);
+  touch-action: none;
+  transition: background-color var(--motion-fast) ease;
+}
+
+#terminal-area.split-active .split-divider:hover,
+#terminal-area.split-active .split-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+#terminal-area.split-active .split-divider .split-divider-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 28px;
+  border-radius: 2px;
+  background: var(--text-dim);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#terminal-area.split-active .split-divider:hover .split-divider-handle {
+  background: var(--bg-elevated);
+}
+
+body.split-dragging {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 空窗格占位 */
+#terminal-area .split-empty-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+  background: var(--bg);
+}
+
+#terminal-area .split-empty-pane .split-empty-text {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+#terminal-area .split-empty-pane .split-empty-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--control-radius);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
+}
+
+#terminal-area .split-empty-pane .split-empty-new-btn:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 @keyframes pulse {
   0%,
   100% {
