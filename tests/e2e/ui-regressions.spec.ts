@@ -240,14 +240,17 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
   await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('slider verification');
   expect(loginRequests).toHaveLength(0);
 
-  // 真实拖拽：按住滑块右移 110px（10 → 120），多步 + 间隔确保轨迹时长
+  // 真实拖拽：拖拽距离 = (targetX - startX) * scale（画布 CSS 宽 / 300），
+  // 模拟对齐固定目标 120；多步 + 间隔确保轨迹时长
+  const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
   const thumb = dialog.locator('.slider-captcha__thumb');
   const box = await thumb.boundingBox();
   if (!box) throw new Error('thumb not measurable');
+  const dx = (120 - 10) * scale;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   for (let i = 1; i <= 8; i++) {
-    await page.mouse.move(box.x + box.width / 2 + (110 * i) / 8, box.y + box.height / 2, { steps: 2 });
+    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
     await page.waitForTimeout(35);
   }
   await page.mouse.up();
@@ -262,9 +265,11 @@ test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交�
     .toBe(1);
   const captcha = loginRequests[0]?.captcha;
   expect(captcha).toBeTruthy();
-  expect(captcha?.x).toBeGreaterThanOrEqual(100);
-  expect(captcha?.x).toBeLessThanOrEqual(140);
+  // 坐标契约：x 为拼图块绝对左缘（对齐目标 120，容差内），首样本 ≈ startX(10)
+  expect(captcha?.x).toBeGreaterThanOrEqual(115);
+  expect(captcha?.x).toBeLessThanOrEqual(125);
   expect(captcha?.samples.length).toBeGreaterThanOrEqual(3);
+  expect(captcha?.samples[0]?.x).toBeLessThanOrEqual(15);
 
   // 登录失败后滑块自动重置（新挑战）
   await expect

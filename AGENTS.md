@@ -287,7 +287,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/snippets/:id` | PUT/DELETE | Yes | Update or delete a command snippet (ownership scoped by user_id) |
 | `/api/ai/config` | GET/PUT | Yes | Get or save AI LLM config |
 | `/api/ai/models` | POST | Yes | Proxy model list from user's LLM provider |
-| `/api/captcha/challenge` | GET | No | 下发滑块拼图挑战（`{challenge, background, piece, width, height, pieceSize, startX, y}`；目标 X 仅在 HMAC 签名载荷中；per-IP 限流 10/min，off 模式 501） |
+| `/api/captcha/challenge` | GET | No | 下发滑块拼图挑战（`{challenge, background, piece, width, height, pieceSize, startX, y}`；目标 X 仅在 HMAC 签名载荷中；per-IP 限流 10/min，off 模式 501）。**坐标契约**：登录提交的 `x` 与 `samples[].x` 必须是拼图块**绝对左缘**（SVG 逻辑坐标，含 `startX` 起始偏移），与签名载荷里的 `targetX` 同一空间，校验 `|x-targetX|≤5`；前端拖拽距离需换算 `(targetX-startX)*canvasScale`（canvasScale=canvas.clientWidth/300）——v2.6.3 曾因提交纯拖拽距离漏加 startX 造成 10px 系统性偏差、真实浏览器登录必 403（mock e2e 断言过宽 + solveCaptcha 直填绝对坐标均未覆盖），现由 `tests/e2e/captcha-live.spec.ts`（真实 standalone 服务器 + 真实浏览器拖拽 + 真实校验）守护 |
 | `/api/ssh` | WebSocket | Conditional | SSH terminal WebSocket connection |
 | `/api/ssh/sftp` | WebSocket | Token | SFTP data WebSocket (attaches to existing session) |
 | `/api/health` | GET | No | Health check |

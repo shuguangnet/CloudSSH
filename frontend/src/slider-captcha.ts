@@ -98,15 +98,19 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
     return Math.min(challenge.width - challenge.pieceSize, Math.max(0, x));
   };
 
+  // x 统一采用「拼图块绝对左缘」（SVG 逻辑坐标，含 startX 起始偏移）：
+  // 服务端 targetX 与校验均在同一空间（见 src/worker/captcha.ts 的 |x-targetX|≤5），
+  // 拖拽距离换算不得遇漏 startX，否则系统性偏差 10px 必然超出容差。
   const applyX = (x: number): void => {
     if (!challenge) return;
     const clamped = clampX(x);
     const piece = canvas.querySelector<HTMLElement>('.slider-captcha__piece');
     if (piece) piece.style.transform = `translate(${clamped * canvasScale()}px, 0)`;
-    const percent = (clamped / (challenge.width - challenge.pieceSize)) * 100;
+    const draggable = challenge.width - challenge.pieceSize - challenge.startX;
+    const percent = Math.min(100, Math.max(0, ((clamped - challenge.startX) / draggable) * 100));
     thumb.style.left = `${percent}%`;
     thumb.setAttribute('aria-valuenow', String(Math.round(percent)));
-    track.classList.toggle('slider-captcha__track--filled', clamped > 2);
+    track.classList.toggle('slider-captcha__track--filled', clamped > challenge.startX + 2);
   };
 
   const onPointerMove = (event: PointerEvent): void => {
@@ -125,7 +129,9 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
     dragging = false;
     if (pointerMoveHandler) window.removeEventListener('pointermove', pointerMoveHandler);
     if (pointerUpHandler) window.removeEventListener('pointerup', pointerUpHandler);
-    if (samples.length > 0) {
+    // 服务端要求样本 ≥3（pointerdown + ≥2 次 move）；不足时不进入完成态，
+    // 避免提交注定被拒的证明（单击/微拖不算有效拖拽，保持可重试）
+    if (samples.length >= 3) {
       completed = true;
       track.classList.add('slider-captcha__track--done');
       thumb.innerHTML = '';
@@ -195,12 +201,14 @@ export async function createSliderCaptcha(): Promise<SliderCaptchaWidget> {
         pieceSvg.style.height = `${Math.round(data.pieceSize * scale)}px`;
       }
       piece.style.top = `${Math.round(data.y * scale)}px`;
-      piece.style.left = `${Math.round(data.startX * scale)}px`;
+      piece.style.left = '0px';
       piece.style.setProperty('--piece-size', `${Math.round(data.pieceSize * scale)}px`);
-      piece.style.transform = `translate(0px, 0px)`;
+      piece.style.transform = 'translate(0px, 0px)';
       canvas.appendChild(piece);
 
-      applyX(0);
+      // 进入绝对坐标空间：初始位 = startX（applyX 的 translate 承担全部横向定位）
+      currentX = data.startX;
+      applyX(data.startX);
       root.classList.remove('slider-captcha--loading');
     } catch {
       if (destroyed || generation !== loadGeneration) return;
