@@ -197,8 +197,8 @@ async function accountManagement(request) {
   const verified = await worker.fetch(new Request(`${env.BASE_URL}/api/auth/password/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: env.BASE_URL,
       'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || 'unknown' },
-    body: JSON.stringify({ username: usernameBefore, key: body.currentKey, turnstileToken: body.turnstileToken }),
-  }), { ...env, TURNSTILE_SECRET: undefined });
+    body: JSON.stringify({ username: usernameBefore, key: body.currentKey }),
+  }), { ...env, CAPTCHA_MODE: 'off' });
   // Already authenticated and origin-checked; retain throttling without a second CAPTCHA.
   if (!verified.ok) return verified;
   if (generation !== authGeneration || usernameBefore !== env.ADMIN_USERNAME) {
@@ -349,13 +349,20 @@ const server = createServer(async (req, res) => {
         headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css' },
       }));
     }
+    // Shared design system + panel-theme sync for the standalone utility pages.
+    if (['/page.css', '/page.js'].includes(pathname) && req.method === 'GET') {
+      const extension = pathname.endsWith('.js') ? 'js' : 'css';
+      return sendResponse(res, new Response(readFileSync(new URL(`./page.${extension}`, import.meta.url)), {
+        headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css', 'Cache-Control': 'no-cache' },
+      }));
+    }
     if (req.method === 'GET' && PUBLIC_FILES[pathname]) {
       const { file, type, cache } = PUBLIC_FILES[pathname];
       return sendResponse(res, new Response(readFileSync(new URL(`../dist/public/${file}`, import.meta.url)), {
         headers: { 'Content-Type': type, 'Cache-Control': cache },
       }));
     }
-    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/')) {
+    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/') || pathname.startsWith('/api/docker/')) {
       const response = await automationRoutes(request, pathname, requestUrl);
       if (response) return sendResponse(res, response);
     }

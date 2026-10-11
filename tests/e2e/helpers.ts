@@ -21,7 +21,6 @@ export async function mockAnonymousSession(page: Page): Promise<void> {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        turnstileEnabled: false,
         sitekey: '',
         githubAuthEnabled: false,
         githubAuthRequired: false,

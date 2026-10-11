@@ -24,11 +24,6 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/src/style.css" />
-    <script
-      src="https://challenges.cloudflare.com/turnstile/v0/api.js"
-      async
-      defer
-    ></script>
   </head>
   <body class="min-h-screen font-body text-sm">
     <div id="app">
@@ -135,39 +130,6 @@
               <option value="__custom__" data-i18n="theme.custom">Custom</option>
             </select>
             <div data-language-switcher></div>
-            <div id="user-info" class="flex items-center gap-3">
-              <!-- 动态渲染：头像 + 用户名 -->
-            </div>
-            <button
-              id="ai-config-btn"
-              class="user-space-menu-action hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
-              data-i18n-title="agent.settings"
-              title="AI Agent 设置"
-            >
-              <span
-                class="material-symbols-outlined"
-                style="font-variation-settings: 'FILL' 0"
-                >psychology</span
-              >
-              <span class="user-space-action-label" data-i18n="agent.settings"
-                >AI Agent 设置</span
-              >
-            </button>
-            <button
-              id="logout-btn"
-              class="user-space-menu-action hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center text-error"
-              data-i18n-title="auth.logout"
-              title="退出登录"
-            >
-              <span
-                class="material-symbols-outlined"
-                style="font-variation-settings: 'FILL' 0"
-                >logout</span
-              >
-              <span class="user-space-action-label" data-i18n="auth.logout"
-                >退出登录</span
-              >
-            </button>
           </div>
           <button
             id="user-space-more-btn"
@@ -186,6 +148,104 @@
           </button>
         </header>
 
+        <div class="user-space-body">
+          <!-- 左侧导航栏：服务器（当前页）+ 功能/设置分组入口 + 底部用户区 -->
+          <aside
+            id="app-sidebar"
+            class="app-sidebar"
+            data-i18n-aria-label="nav.main"
+            aria-label="主导航"
+          >
+            <nav class="app-sidebar-nav">
+              <span
+                id="sidebar-servers"
+                class="sidebar-item sidebar-item--active"
+                aria-current="page"
+              >
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >dns</span
+                >
+                <span
+                  class="sidebar-item-label"
+                  data-i18n="server.list"
+                  >服务器列表</span
+                >
+              </span>
+              <div class="sidebar-group" data-menu-group="functions">
+                <div class="sidebar-group-label" data-i18n="menu.functions">
+                  功能
+                </div>
+                <a id="menu-automation" class="sidebar-item hidden" href="/automation">
+                  <span class="material-symbols-outlined" aria-hidden="true"
+                    >schedule</span
+                  >
+                  <span class="sidebar-item-label" data-i18n="auth.automation">自动化</span>
+                </a>
+                <a id="menu-mcp" class="sidebar-item hidden" href="/mcp/settings">
+                  <span class="material-symbols-outlined" aria-hidden="true">hub</span>
+                  <span class="sidebar-item-label">MCP</span>
+                </a>
+              </div>
+              <div class="sidebar-group" data-menu-group="settings">
+                <div class="sidebar-group-label" data-i18n="menu.settings">
+                  设置
+                </div>
+                <a
+                  id="menu-account"
+                  class="sidebar-item hidden"
+                  href="/account/settings"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true"
+                    >manage_account</span
+                  >
+                  <span
+                    class="sidebar-item-label"
+                    data-i18n="auth.adminAccountSettings"
+                    >账号设置</span
+                  >
+                </a>
+                <button
+                  id="ai-config-btn"
+                  type="button"
+                  class="sidebar-item"
+                  data-i18n-title="agent.settings"
+                  title="AI Agent 设置"
+                >
+                  <span
+                    class="material-symbols-outlined"
+                    style="font-variation-settings: 'FILL' 0"
+                    aria-hidden="true"
+                    >psychology</span
+                  >
+                  <span class="sidebar-item-label" data-i18n="agent.settings"
+                    >AI Agent 设置</span
+                  >
+                </button>
+              </div>
+            </nav>
+            <div class="app-sidebar-footer">
+              <div id="user-info" class="sidebar-user">
+                <!-- 动态渲染：头像 + 用户名 -->
+              </div>
+              <button
+                id="logout-btn"
+                type="button"
+                class="sidebar-item sidebar-item--danger"
+                data-i18n-title="auth.logout"
+                title="退出登录"
+              >
+                <span
+                  class="material-symbols-outlined"
+                  style="font-variation-settings: 'FILL' 0"
+                  aria-hidden="true"
+                  >logout</span
+                >
+                <span class="sidebar-item-label" data-i18n="auth.logout">退出登录</span>
+              </button>
+            </div>
+          </aside>
+
+          <div class="user-space-content">
         <!-- Server List Area -->
         <main
           class="user-space-main flex-1 p-6 relative overflow-auto custom-scrollbar"
@@ -429,6 +489,8 @@
             >
           </div>
         </footer>
+          </div>
+        </div>
       </div>
 
       <!-- Server Modal (添加/编辑) -->
@@ -870,6 +932,151 @@
         </div>
       </div>
 
+      <!-- 服务器状态弹窗：由 server-status.ts 动态渲染指标 -->
+      <div
+        id="status-modal"
+        class="responsive-modal hidden fixed inset-0 z-[100] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="status-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="status-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-md mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div
+            class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"
+          ></div>
+          <div class="flex items-center justify-between mb-4 pb-3 border-b border-dim shrink-0">
+            <span
+              id="status-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
+              data-i18n="server.status.title"
+              >服务器状态</span
+            >
+            <button
+              id="status-modal-close-btn"
+              class="panel-close-btn"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="status-modal-body" class="overflow-y-auto custom-scrollbar min-h-0"></div>
+          <div class="flex items-center justify-between gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <label class="flex items-center gap-2 text-xs text-muted cursor-pointer select-none">
+              <input id="status-auto-refresh" type="checkbox" class="accent-[var(--accent-secondary)]" checked />
+              <span data-i18n="server.status.autoRefresh">自动刷新</span>
+            </label>
+            <button
+              id="status-refresh-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">refresh</span>
+              <span data-i18n="server.status.refresh">刷新</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docker 容器管理弹窗：由 server-docker.ts 动态渲染容器列表 -->
+      <div
+        id="docker-modal"
+        class="responsive-modal hidden fixed inset-0 z-[100] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="docker-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="docker-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"></div>
+          <div class="flex items-center justify-between mb-4 pb-3 border-b border-dim shrink-0">
+            <span
+              id="docker-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
+              data-i18n="docker.title"
+              >Docker 容器管理</span
+            >
+            <button
+              id="docker-modal-close-btn"
+              class="panel-close-btn"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="docker-modal-body" class="overflow-y-auto custom-scrollbar min-h-0"></div>
+          <div class="flex items-center justify-between gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <label class="flex items-center gap-2 text-xs text-muted cursor-pointer select-none">
+              <input id="docker-auto-refresh" type="checkbox" class="accent-[var(--accent-secondary)]" checked />
+              <span data-i18n="docker.autoRefresh">自动刷新</span>
+            </label>
+            <button
+              id="docker-refresh-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">refresh</span>
+              <span data-i18n="docker.refresh">刷新</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docker 容器日志弹窗：由 server-docker.ts 动态渲染 -->
+      <div
+        id="docker-logs-modal"
+        class="responsive-modal hidden fixed inset-0 z-[110] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="docker-logs-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="docker-logs-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"></div>
+          <div class="flex items-center justify-between mb-3 pb-3 border-b border-dim shrink-0 gap-2">
+            <span
+              id="docker-logs-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)] truncate"
+            >
+              <span data-i18n="docker.logsTitle">容器日志</span>
+              <span id="docker-logs-container-name" class="text-dim font-mono normal-case"></span>
+            </span>
+            <button
+              id="docker-logs-close-btn"
+              class="panel-close-btn shrink-0"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="docker-logs-body" class="overflow-y-auto custom-scrollbar min-h-0 grow"></div>
+          <div class="flex items-center justify-between gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <label class="flex items-center gap-2 text-xs text-muted">
+              <span data-i18n="docker.logsTail">行数</span>
+              <select id="docker-logs-tail" class="bg-background border border-dim rounded px-1 py-0.5 text-xs text-on-surface">
+                <option value="100">100</option>
+                <option value="500" selected>500</option>
+                <option value="1000">1000</option>
+              </select>
+            </label>
+            <button
+              id="docker-logs-refresh-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">refresh</span>
+              <span data-i18n="docker.logsRefresh">刷新</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Terminal Page -->
       <div
         id="terminal-section"
@@ -975,6 +1182,30 @@
               >
             </button>
             <button
+              id="terminal-status-btn"
+              class="desktop-terminal-action hidden hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="server.status.button"
+              title="服务器状态"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                >monitoring</span
+              >
+            </button>
+            <button
+              id="terminal-docker-btn"
+              class="desktop-terminal-action hidden hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="docker.button"
+              title="Docker 容器"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                >deployed_code</span
+              >
+            </button>
+            <button
               id="export-btn"
               class="desktop-terminal-action hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
               data-i18n-title="terminal.export"
@@ -1051,6 +1282,16 @@
               <span class="material-symbols-outlined" aria-hidden="true"
                 >psychology</span
               ><span data-i18n="terminal.agent">AI Agent 助手</span>
+            </button>
+            <button id="mobile-status-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >monitoring</span
+              ><span data-i18n="server.status.title">服务器状态</span>
+            </button>
+            <button id="mobile-docker-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >deployed_code</span
+              ><span data-i18n="docker.title">Docker 容器管理</span>
             </button>
             <button id="mobile-export-btn" type="button">
               <span class="material-symbols-outlined" aria-hidden="true"

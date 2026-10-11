@@ -153,6 +153,8 @@ function makeEnv(
     SSH_SESSION: { idFromName: () => 'do-ssh', get: () => stub } as unknown as Env['SSH_SESSION'],
     USER_DB: { idFromName: () => 'do-userdb', get: () => stub } as unknown as Env['USER_DB'],
     SSH_SHARE: { idFromName: () => 'do-share', get: () => stub } as unknown as Env['SSH_SHARE'],
+    // 默认关闭滑块验证码：本文件聚焦密码/节流逻辑；滑块专测显式开启
+    CAPTCHA_MODE: 'off',
     ...rest,
   } as Env;
 }
@@ -181,7 +183,7 @@ function makeRequest(
   return new Request(url.toString(), init);
 }
 
-// ---------- global fetch mock（Turnstile 站点验证等外呼） ----------
+// ---------- global fetch mock（OAuth / LLM 代理等外呼；滑块验证码零外呼） ----------
 
 const fetchMock = vi.fn();
 beforeEach(() => {
@@ -511,10 +513,11 @@ describe('密码认证 — 登录端点', () => {
     expect(body.retryAfterSec).toBe(300);
   });
 
-  it('Turnstile 已配置且缺失 token → 403', async () => {
+  it('滑块验证码默认启用且缺失证明 → 403（不触达密码比对）', async () => {
     const worker = await loadWorker();
     const { hash, key } = await makeAdminHash('correct-password');
-    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, TURNSTILE_SECRET: 'ts-secret' });
+    // 显式开启（makeEnv 默认 off），覆盖 CAPTCHA_MODE 缺省 = on 的生产行为
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, CAPTCHA_MODE: 'on' });
 
     const res = await worker.fetch(
       makeRequest('/api/auth/password/login', {
@@ -526,27 +529,195 @@ describe('密码认证 — 登录端点', () => {
     );
 
     expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Captcha verification failed');
+    // 滑块为本地校验，绝不外呼
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Turnstile 已配置且验证通过 → 继续完成登录', async () => {
+  it('CAPTCHA_MODE=test 完整链路：取挑战 → 携带轨迹登录 → 200', async () => {
     const worker = await loadWorker();
     const { hash, key } = await makeAdminHash('correct-password');
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } })
+    const env = makeEnv({
+      ADMIN_PASSWORD_HASH: hash,
+      CAPTCHA_MODE: 'test',
+      userDbStub: makeUserDbStub(),
+    });
+
+    const challengeRes = await worker.fetch(
+      makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '203.0.113.10' } }),
+      env
     );
-    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, TURNSTILE_SECRET: 'ts-secret', userDbStub: makeUserDbStub() });
+    expect(challengeRes.status).toBe(200);
+    const challenge = (await challengeRes.json()) as {
+      challenge: string;
+      background: string;
+      piece: string;
+      width: number;
+      startX: number;
+      y: number;
+    };
+    // 响应不回显目标 X（只存在于签名载荷内）
+    expect(challenge.background).toContain('<svg');
+    expect(challenge.piece).toContain('<svg');
+    expect(challenge.width).toBe(300);
+    expect(challenge.startX).toBe(10);
 
     const res = await worker.fetch(
       makeRequest('/api/auth/password/login', {
         method: 'POST',
         headers: { Origin: 'https://cloudssh.test' },
-        body: { key, turnstileToken: 'cf-token' },
+        body: {
+          key,
+          captcha: {
+            challenge: challenge.challenge,
+            x: 120,
+            samples: [
+              { x: 10, t: 1000 },
+              { x: 45, t: 1150 },
+              { x: 85, t: 1300 },
+              { x: 112, t: 1450 },
+              { x: 120, t: 1600 },
+            ],
+          },
+        },
       }),
       env
     );
 
     expect(res.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('挑战单次使用：同一挑战二次登录 → 403', async () => {
+    const worker = await loadWorker();
+    const { hash, key } = await makeAdminHash('correct-password');
+    const env = makeEnv({
+      ADMIN_PASSWORD_HASH: hash,
+      CAPTCHA_MODE: 'test',
+      userDbStub: makeUserDbStub(),
+    });
+
+    const challengeRes = await worker.fetch(
+      makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '203.0.113.11' } }),
+      env
+    );
+    const challenge = (await challengeRes.json()) as { challenge: string };
+    const proof = {
+      challenge: challenge.challenge,
+      x: 120,
+      samples: [
+        { x: 10, t: 1000 },
+        { x: 60, t: 1200 },
+        { x: 120, t: 1400 },
+      ],
+    };
+
+    const first = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test' },
+        body: { key, captcha: proof },
+      }),
+      env
+    );
+    expect(first.status).toBe(200);
+
+    const second = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test' },
+        body: { key, captcha: proof },
+      }),
+      env
+    );
+    expect(second.status).toBe(403);
+  });
+
+  it('终点未对齐（超出容差）→ 403', async () => {
+    const worker = await loadWorker();
+    const { hash, key } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, CAPTCHA_MODE: 'test' });
+
+    const challengeRes = await worker.fetch(
+      makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '203.0.113.12' } }),
+      env
+    );
+    const challenge = (await challengeRes.json()) as { challenge: string };
+
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test' },
+        body: {
+          key,
+          captcha: {
+            challenge: challenge.challenge,
+            x: 60,
+            samples: [
+              { x: 10, t: 1000 },
+              { x: 40, t: 1200 },
+              { x: 60, t: 1400 },
+            ],
+          },
+        },
+      }),
+      env
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it('轨迹行为异常（两帧瞬移）→ 403', async () => {
+    const worker = await loadWorker();
+    const { hash, key } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, CAPTCHA_MODE: 'test' });
+
+    const challengeRes = await worker.fetch(
+      makeRequest('/api/captcha/challenge', { headers: { 'CF-Connecting-IP': '203.0.113.13' } }),
+      env
+    );
+    const challenge = (await challengeRes.json()) as { challenge: string };
+
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test' },
+        body: {
+          key,
+          captcha: {
+            challenge: challenge.challenge,
+            x: 120,
+            // 时长 30ms < 60ms 下限：脚本式瞬移（80ms 内的人类快甩已属合法画像）
+            samples: [
+              { x: 10, t: 1000 },
+              { x: 65, t: 1015 },
+              { x: 120, t: 1030 },
+            ],
+          },
+        },
+      }),
+      env
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it('CAPTCHA_MODE=off → 跳过滑块直接完成登录', async () => {
+    const worker = await loadWorker();
+    const { hash, key } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, userDbStub: makeUserDbStub() });
+
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://cloudssh.test' },
+        body: { key },
+      }),
+      env
+    );
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

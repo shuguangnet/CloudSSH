@@ -18,9 +18,9 @@ import {
   getPasswordAuthParams,
   parseAdminPasswordHash,
   resolveAuthMode,
-  verifyTurnstile,
   LOCAL_ADMIN_GITHUB_ID,
 } from './auth';
+import { captchaActiveFor, issueCaptchaChallenge } from './captcha';
 import { HTML } from './html';
 
 export { SSHSessionDO } from './durable-object';
@@ -32,7 +32,7 @@ const RATE_LIMIT_WINDOW = 60000; // 1 minute window
 const RATE_LIMIT_MAX_ENTRIES = 10000;
 const RATE_LIMIT_CLEANUP_INTERVAL = 256;
 
-// Worker 实例级削峰；Turnstile 和一次性 token 仍负责实际连接鉴权。
+// Worker 实例级削峰；滑块验证码挑战与一次性 token 复用同一限流。
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 let rateLimitChecks = 0;
 
@@ -71,68 +71,6 @@ function getRateLimitRetryAfter(ip: string | null): number | null {
 
   record.count++;
   return null;
-}
-
-// --- Simple token-based verification for session-level ---
-const VERIFIED_TOKEN_TTL = 24 * 60 * 60 * 1000; // 24 hours (fallback for token validation)
-
-async function generateVerifiedToken(secret: string): Promise<string> {
-  const expires = Date.now() + VERIFIED_TOKEN_TTL;
-  const payload = `${expires}`;
-
-  // 使用 HMAC-SHA256 进行签名
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
-
-  // 转换为十六进制字符串
-  const signatureHex = Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  return `${payload}:${signatureHex}`;
-}
-
-async function isVerifiedTokenValid(token: string, secret: string): Promise<boolean> {
-  try {
-    const parts = token.split(':');
-    if (parts.length !== 2) return false;
-
-    const [expiresStr, signature] = parts;
-    if (!/^\d+$/.test(expiresStr) || !/^[0-9a-f]{64}$/i.test(signature)) return false;
-
-    const expires = Number(expiresStr);
-    if (!Number.isSafeInteger(expires) || Date.now() > expires) return false;
-
-    // 使用 HMAC-SHA256 验证签名
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-
-    // 将十六进制签名转换回字节数组
-    const signatureBytes = new Uint8Array(
-      signature.match(/.{2}/g)!.map((byte) => parseInt(byte, 16))
-    );
-
-    return await crypto.subtle.verify(
-      'HMAC',
-      key,
-      signatureBytes,
-      new TextEncoder().encode(expiresStr)
-    );
-  } catch {
-    return false;
-  }
 }
 
 // --- UserDBDO helper ---
@@ -239,33 +177,21 @@ export default {
         return handleAIRoute(request, url, env);
       }
 
-      // ==================== Turnstile Verify ====================
+      // ==================== 滑块验证码挑战（登录前公开，复用 per-IP 限流） ====================
 
-      if (url.pathname === '/api/verify' && request.method === 'POST') {
-        if (!env.TURNSTILE_SECRET) {
-          return Response.json({ success: true });
+      if (url.pathname === '/api/captcha/challenge' && request.method === 'GET') {
+        const retryAfter = getRateLimitRetryAfter(request.headers.get('CF-Connecting-IP'));
+        if (retryAfter !== null) {
+          return new Response('Too Many Requests', {
+            status: 429,
+            headers: { 'Retry-After': String(retryAfter) },
+          });
         }
-
-        const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-        const body = await request.json<{ token: string }>();
-
-        if (!body.token) {
-          return Response.json({ success: false, error: 'Missing token' }, { status: 400 });
+        const challenge = await issueCaptchaChallenge(env);
+        if (!challenge) {
+          return Response.json({ error: 'Captcha not available' }, { status: 501 });
         }
-
-        const isValid = await verifyTurnstile(body.token, env.TURNSTILE_SECRET, clientIP);
-        if (!isValid) {
-          return Response.json({ success: false, error: 'Invalid token' }, { status: 403 });
-        }
-
-        // Issue a verified token as a session cookie (no Max-Age = session cookie, expires when browser closes)
-        const verifiedToken = await generateVerifiedToken(env.TURNSTILE_SECRET);
-        return new Response(JSON.stringify({ success: true }), {
-          headers: {
-            'Content-Type': 'application/json',
-            'Set-Cookie': `cf_verified=${verifiedToken}; Path=/; HttpOnly; Secure; SameSite=Strict`,
-          },
-        });
+        return Response.json(challenge);
       }
 
       // ==================== SSH WebSocket ====================
@@ -305,35 +231,6 @@ export default {
           return handleShareSSHConnection(request, env, shareRef, shareTicket);
         }
 
-        // Verify Turnstile if secret is configured
-        if (env.TURNSTILE_SECRET) {
-          // Check if user has a valid verification cookie
-          const cookies = request.headers.get('Cookie') || '';
-          const verifiedCookie = cookies
-            .split(';')
-            .find((c) => c.trim().startsWith('cf_verified='));
-          const verifiedToken = verifiedCookie?.split('=')[1];
-
-          if (
-            !verifiedToken ||
-            !(await isVerifiedTokenValid(verifiedToken, env.TURNSTILE_SECRET))
-          ) {
-            // No valid cookie, check Turnstile token
-            const turnstileToken = url.searchParams.get('turnstile_token');
-            if (!turnstileToken) {
-              return Response.json({ error: 'Missing Turnstile token' }, { status: 403 });
-            }
-            const isValid = await verifyTurnstile(
-              turnstileToken,
-              env.TURNSTILE_SECRET,
-              clientIP || ''
-            );
-            if (!isValid) {
-              return Response.json({ error: 'Turnstile verification failed' }, { status: 403 });
-            }
-          }
-        }
-
         return handleSSHConnection(request, env);
       }
 
@@ -345,8 +242,8 @@ export default {
       if (url.pathname === '/api/config') {
         const authMode = resolveAuthMode(env);
         return Response.json({
-          turnstileEnabled: !!env.TURNSTILE_SECRET,
-          sitekey: env.TURNSTILE_SITEKEY || '',
+          // 滑块验证码（密码模式默认启用；CAPTCHA_MODE=off 停用）
+          captchaEnabled: captchaActiveFor(env),
           // 密码模式下 GitHub 入口被权威禁用（即使凭据仍留在变量里，功能确实是关闭的）
           githubAuthEnabled: authMode === 'github',
           githubAuthRequired: isGitHubAuthRequired(env),

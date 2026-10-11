@@ -102,9 +102,17 @@ async function api(path, options = {}) {
 }
 
 function cell(row, value) { const td = document.createElement('td'); td.textContent = String(value ?? ''); row.append(td); return td; }
-function button(label, handler) {
+function emptyRow(body) { const row = document.createElement('tr'); const td = document.createElement('td'); td.className = 'empty'; td.textContent = text('empty'); row.append(td); body.append(row); }
+function badgeCell(row, label, kind) {
+  const td = cell(row, '');
+  const badge = document.createElement('span'); badge.className = `badge ${kind}`; badge.textContent = label;
+  td.append(badge); return td;
+}
+function button(label, handler, variant) {
   const element = document.createElement('button');
-  element.type = 'button'; element.textContent = label; element.addEventListener('click', handler);
+  element.type = 'button'; element.textContent = label;
+  if (variant) element.className = variant;
+  element.addEventListener('click', handler);
   return element;
 }
 const serverName = (id) => servers.find((server) => server.id === id)?.name || `#${id}`;
@@ -141,7 +149,7 @@ function renderTasks() {
       last.textContent = `${text(task.last_status === 'succeeded' ? 'succeeded' : 'failedRun')} · ${formatTime(task.last_run_at)}`;
       last.className = task.last_status === 'succeeded' ? 'ok' : 'err';
     } else last.textContent = '—';
-    cell(row, task.enabled ? text('on') : text('off'));
+    badgeCell(row, task.enabled ? text('on') : text('off'), task.enabled ? 'ok' : 'muted');
     const action = cell(row, '');
     action.append(button(text('runNow'), async (event) => {
       event.target.disabled = true;
@@ -164,10 +172,10 @@ function renderTasks() {
       event.target.disabled = true;
       try { await api(`/api/automation/cron/${task.id}`, { method: 'DELETE' }); notify(text('taskDeleted')); await refreshTasks(); }
       catch (error) { notify(error.message); event.target.disabled = false; }
-    }));
+    }, 'danger'));
     body.append(row);
   }
-  if (!tasks.length) { const row = document.createElement('tr'); cell(row, text('empty')); body.append(row); }
+  if (!tasks.length) emptyRow(body);
 }
 
 async function refreshTasks() {
@@ -194,9 +202,9 @@ function renderRuns() {
     const row = document.createElement('tr');
     const status = run.status === 'succeeded' ? 'succeeded' : run.status === 'running' ? 'running' : 'failedRun';
     cell(row, `${formatTime(run.started_at)}${run.trigger === 'manual' ? ` (${text('manual')})` : ''}`);
-    const statusCell = cell(row, text(status)); statusCell.className = run.status === 'succeeded' ? 'ok' : (run.status === 'running' ? '' : 'err');
-    cell(row, formatDuration(run.duration_ms));
-    cell(row, run.exit_code ?? '—');
+    badgeCell(row, text(status), run.status === 'succeeded' ? 'ok' : (run.status === 'running' ? 'warn' : 'err'));
+    const duration = cell(row, formatDuration(run.duration_ms)); duration.className = 'mono';
+    const exitCode = cell(row, run.exit_code ?? '—'); exitCode.className = 'mono';
     const errorCell = cell(row, run.error ?? '');
     if (run.output) {
       row.classList.add('clickable');
@@ -208,7 +216,7 @@ function renderRuns() {
     body.append(row);
     void errorCell;
   }
-  if (!runs.length) { const row = document.createElement('tr'); cell(row, text('empty')); body.append(row); }
+  if (!runs.length) emptyRow(body);
 }
 
 // ---------- uptime monitors ----------
@@ -218,11 +226,11 @@ function renderMonitors() {
     const row = document.createElement('tr');
     cell(row, monitor.server_name ?? serverName(monitor.server_id));
     const status = monitor.status ? { up: 'statusUp', down: 'statusDown', degraded: 'statusDegraded' }[monitor.status] || 'statusUnknown' : 'statusUnknown';
-    const statusCell = cell(row, text(status));
-    statusCell.className = monitor.status === 'up' ? 'ok' : monitor.status === 'down' ? 'err' : '';
+    const statusCell = badgeCell(row, text(status), monitor.status === 'up' ? 'ok' : monitor.status === 'down' ? 'err' : 'warn');
+    void statusCell;
     cell(row, formatTime(monitor.last_probe_at));
-    cell(row, monitor.last_latency_ms !== null && monitor.last_latency_ms !== undefined ? `${monitor.last_latency_ms}${text('latencyMs')}` : '—');
-    cell(row, `${monitor.interval_seconds}s`);
+    const latency = cell(row, monitor.last_latency_ms !== null && monitor.last_latency_ms !== undefined ? `${monitor.last_latency_ms}${text('latencyMs')}` : '—'); latency.className = 'mono';
+    const interval = cell(row, `${monitor.interval_seconds}s`); interval.className = 'mono';
     cell(row, monitor.last_error ?? '');
     const action = cell(row, '');
     action.append(button(text('chart'), () => { void loadChart(monitor.server_id); }));
@@ -236,10 +244,10 @@ function renderMonitors() {
       event.target.disabled = true;
       try { await api(`/api/automation/monitor/${monitor.server_id}`, { method: 'DELETE' }); notify(text('monitorDeleted')); await refreshMonitors(); $('chart-panel').hidden = true; }
       catch (error) { notify(error.message); event.target.disabled = false; }
-    }));
+    }, 'danger'));
     body.append(row);
   }
-  if (!monitors.length) { const row = document.createElement('tr'); cell(row, text('empty')); body.append(row); }
+  if (!monitors.length) emptyRow(body);
 }
 
 async function refreshMonitors() {
@@ -352,9 +360,9 @@ function renderChannels() {
   const body = $('channels'); body.replaceChildren();
   for (const channel of channels) {
     const row = document.createElement('tr');
-    cell(row, channel.type.toUpperCase());
-    cell(row, channelTarget(channel));
-    cell(row, channel.enabled ? text('on') : text('off'));
+    const type = cell(row, channel.type.toUpperCase()); type.className = 'mono';
+    const target = cell(row, channelTarget(channel)); target.className = 'mono';
+    badgeCell(row, channel.enabled ? text('on') : text('off'), channel.enabled ? 'ok' : 'muted');
     const action = cell(row, '');
     action.append(button(text('edit'), () => {
       $('channel-id').value = channel.id; $('channel-type').value = channel.type;
@@ -367,10 +375,10 @@ function renderChannels() {
       event.target.disabled = true;
       try { await api(`/api/automation/notifications/${channel.id}`, { method: 'DELETE' }); notify(text('channelDeleted')); await refreshChannels(); }
       catch (error) { notify(error.message); event.target.disabled = false; }
-    }));
+    }, 'danger'));
     body.append(row);
   }
-  if (!channels.length) { const row = document.createElement('tr'); cell(row, text('empty')); body.append(row); }
+  if (!channels.length) emptyRow(body);
 }
 
 async function refreshChannels() {

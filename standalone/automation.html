@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CloudSSH 自动化</title><link rel="stylesheet" href="/automation.css"><script defer src="/automation.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CloudSSH 自动化</title><link rel="stylesheet" href="/page.css"><link rel="stylesheet" href="/automation.css"><script defer src="/page.js"></script><script defer src="/automation.js"></script></head>
 <body><main>
-  <nav><a href="/" data-i18n="back">返回面板</a><select id="language" aria-label="Language"><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="en-US">English</option></select></nav>
-  <h1>CloudSSH <span data-i18n="title">自动化</span></h1>
-  <p data-i18n="intro">定时执行命令、监控服务器可达性，并在异常时推送通知。所有操作通过已验证指纹的 SSH 通道完成。</p>
+  <nav class="topbar"><a class="back" href="/" data-i18n="back">返回面板</a><select id="language" aria-label="Language"><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="en-US">English</option></select></nav>
+  <header class="page-head"><p class="eyebrow">CloudSSH</p><h1 data-i18n="title">自动化</h1>
+  <p class="intro" data-i18n="intro">定时执行命令、监控服务器可达性，并在异常时推送通知。所有操作通过已验证指纹的 SSH 通道完成。</p></header>
   <p id="message" role="status" aria-live="polite"></p>
 
   <section id="cron-section"><h2 data-i18n="tasks">定时任务</h2>
@@ -17,15 +17,15 @@
       </div>
       <label><span data-i18n="taskCommand">命令</span><textarea id="task-command" rows="4" required spellcheck="false"></textarea></label>
       <div class="grid">
-        <label><span data-i18n="taskCron">计划（cron 表达式）</span><input id="task-cron" value="*/5 * * * *" required autocomplete="off" spellcheck="false"></label>
+        <label><span data-i18n="taskCron">计划（cron 表达式）</span><input id="task-cron" class="mono-input" value="*/5 * * * *" required autocomplete="off" spellcheck="false"></label>
         <label><span data-i18n="taskTimeout">超时（秒，30–600）</span><input id="task-timeout" type="number" min="30" max="600" value="120" required></label>
       </div>
       <p class="hint"><span data-i18n="cronHint">五字段：分 时 日 月 周；</span><span class="presets" id="presets"></span></p>
       <label class="choice"><input id="task-notify" type="checkbox" checked><span data-i18n="notifyOnFailure">失败时推送通知</span></label>
       <label class="choice"><input id="task-enabled" type="checkbox" checked><span data-i18n="enabledNow">启用</span></label>
       <div class="actions">
-        <button type="submit" id="task-save" data-i18n="create">创建任务</button>
-        <button type="button" id="task-cancel" hidden data-i18n="cancel">取消</button>
+        <button type="submit" id="task-save" class="primary" data-i18n="create">创建任务</button>
+        <button type="button" id="task-cancel" class="ghost" hidden data-i18n="cancel">取消</button>
       </div>
     </form>
     <div class="scroll"><table><thead><tr>
@@ -33,12 +33,12 @@
       <th data-i18n="scheduleNext">下次执行</th><th data-i18n="lastRun">上次结果</th><th data-i18n="statusCol">状态</th><th></th>
     </tr></thead><tbody id="tasks"></tbody></table></div>
     <div id="runs-panel" hidden>
-      <h3><span data-i18n="history">运行历史</span> <span id="runs-title"></span></h3>
+      <h3><span data-i18n="history">运行历史</span> <span id="runs-title" class="mono"></span></h3>
       <div class="scroll"><table><thead><tr>
         <th data-i18n="runStarted">开始时间</th><th data-i18n="runStatus">结果</th><th data-i18n="runDuration">耗时</th><th data-i18n="runExitCode">退出码</th><th data-i18n="runError">错误</th>
       </tr></thead><tbody id="runs"></tbody></table></div>
       <details id="run-output-box" hidden><summary data-i18n="runOutput">输出</summary><pre id="run-output"></pre></details>
-      <button type="button" id="more-runs" data-i18n="loadMoreRuns">加载更早记录</button>
+      <div class="actions"><button type="button" id="more-runs" class="ghost" data-i18n="loadMoreRuns">加载更早记录</button></div>
     </div>
   </section>
 
@@ -50,14 +50,14 @@
         <label><span data-i18n="monitorInterval">探测间隔（秒，60–3600）</span><input id="monitor-interval" type="number" min="60" max="3600" value="120" required></label>
         <label><span data-i18n="monitorThreshold">连续失败阈值（1–10）</span><input id="monitor-threshold" type="number" min="1" max="10" value="3" required></label>
       </div>
-      <div class="actions"><button type="submit" data-i18n="monitorAdd">保存监控</button></div>
+      <div class="actions"><button type="submit" class="primary" data-i18n="monitorAdd">保存监控</button></div>
     </form>
     <div class="scroll"><table><thead><tr>
       <th data-i18n="taskServer">服务器</th><th data-i18n="statusCol">状态</th><th data-i18n="lastCheck">上次探测</th>
       <th data-i18n="latency">延迟</th><th data-i18n="monitorInterval">间隔</th><th data-i18n="runError">错误</th><th></th>
     </tr></thead><tbody id="monitors"></tbody></table></div>
     <div id="chart-panel" hidden>
-      <h3><span data-i18n="chart">延迟图表</span> <span id="chart-title"></span></h3>
+      <h3><span data-i18n="chart">延迟图表</span> <span id="chart-title" class="mono"></span></h3>
       <svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="Latency chart"></svg>
     </div>
   </section>
@@ -75,8 +75,8 @@
       <div id="channel-config"></div>
       <label class="choice"><input id="channel-enabled" type="checkbox" checked><span data-i18n="enabledNow">启用</span></label>
       <div class="actions">
-        <button type="submit" id="channel-save" data-i18n="addChannel">添加渠道</button>
-        <button type="button" id="channel-cancel" hidden data-i18n="cancel">取消</button>
+        <button type="submit" id="channel-save" class="primary" data-i18n="addChannel">添加渠道</button>
+        <button type="button" id="channel-cancel" class="ghost" hidden data-i18n="cancel">取消</button>
         <button type="button" id="channel-test" data-i18n="testChannels">发送测试通知</button>
       </div>
     </form>

@@ -6,10 +6,10 @@ import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { loadKnownFingerprint } from './known-hosts';
 import { parsePort } from './port';
+import { createSliderCaptcha, type SliderCaptchaWidget } from './slider-captcha';
 import { stretchAdminPassword } from './password-stretch';
 import { populateRegionSelect } from './regions';
 import type { TabManager } from './tab-manager';
-import { type ColorScheme, getActiveColorScheme, onColorSchemeChange } from './theme';
 import { notify } from './ui-feedback';
 
 // --- Credential encryption helpers ---
@@ -72,31 +72,19 @@ export interface ConnectionFormOptions {
 
 export class ConnectionForm {
   private options: ConnectionFormOptions;
-  private turnstileEnabled = false;
-  private turnstileVerified = false;
-  private turnstileWidgetId: string | null = null;
-  private turnstileSitekey = '';
-  private turnstileTheme: ColorScheme | null = null;
+  /** 滑块验证码是否参与管理员密码登录（/api/config 下发） */
+  private captchaEnabled = false;
   /** 密码模式下的浏览器预拉伸参数（/api/config 公开下发）；null = 非密码模式 */
   private adminUsernameRequired = false;
   private passwordAuthParams: { iterations: number; salt: string } | null = null;
-  private adminDialogTurnstileId: string | null = null;
+  /** 管理员登录对话框内的滑块组件实例（随对话框销毁） */
+  private adminDialogCaptcha: SliderCaptchaWidget | null = null;
 
   constructor(options: ConnectionFormOptions) {
     this.options = options;
     this.render();
-    onColorSchemeChange((colorScheme) => {
-      if (
-        this.turnstileEnabled &&
-        this.turnstileSitekey &&
-        !this.turnstileVerified &&
-        this.turnstileTheme !== colorScheme
-      ) {
-        this.renderTurnstile();
-      }
-    });
     this.loadSavedCredentials();
-    this.checkTurnstileConfig();
+    this.checkAuthConfig();
     onLocaleChange(() => {
       const select = document.getElementById('anon-region') as HTMLSelectElement | null;
       if (select) populateRegionSelect(select, select.value);
@@ -104,12 +92,11 @@ export class ConnectionForm {
     });
   }
 
-  private async checkTurnstileConfig(): Promise<void> {
+  private async checkAuthConfig(): Promise<void> {
     try {
       const response = await fetch('/api/config');
       const config = (await response.json()) as {
-        turnstileEnabled: boolean;
-        sitekey: string;
+        captchaEnabled?: boolean;
         githubAuthEnabled: boolean;
         githubAuthRequired: boolean;
         authMode?: 'password' | 'github' | 'anonymous';
@@ -118,8 +105,7 @@ export class ConnectionForm {
         adminUsernameRequired?: boolean;
       };
       this.adminUsernameRequired = config.adminUsernameRequired === true;
-      this.turnstileEnabled = config.turnstileEnabled;
-      this.turnstileSitekey = config.sitekey;
+      this.captchaEnabled = config.captchaEnabled === true;
 
       // 单管理员密码模式：登录入口整体替换（与 GitHub 入口互斥，不并列展示）。
       // 哈希损坏 → fail closed 错误面板（与后端坏哈希拒绝登录的语义对齐）
@@ -136,9 +122,6 @@ export class ConnectionForm {
           this.renderAdminAuthRequired();
           return;
         }
-        if (this.turnstileEnabled && this.turnstileSitekey) {
-          this.renderTurnstile();
-        }
         this.renderAdminLoginButton();
         return;
       }
@@ -146,9 +129,6 @@ export class ConnectionForm {
       if (config.githubAuthRequired) {
         this.renderGitHubAuthRequired(config.githubAuthEnabled);
         return;
-      }
-      if (this.turnstileEnabled && this.turnstileSitekey) {
-        this.renderTurnstile();
       }
       // 渲染 GitHub 登录按钮（仅当 OAuth 已配置时）
       if (config.githubAuthEnabled) {
@@ -161,7 +141,7 @@ export class ConnectionForm {
         this.renderAdminHashGenEntry();
       }
     } catch {
-      // Config endpoint not available, skip Turnstile
+      // Config endpoint not available, skip captcha
     }
   }
 
@@ -223,7 +203,7 @@ export class ConnectionForm {
     translateDocument(placeholder);
 
     document.getElementById('admin-login-btn')?.addEventListener('click', () => {
-      this.openAdminLoginDialog();
+      void this.openAdminLoginDialog();
     });
   }
 
@@ -291,8 +271,8 @@ export class ConnectionForm {
     row.appendChild(entry);
   }
 
-  /** 管理员登录对话框：密码输入 + 可选 Turnstile，本地 PBKDF2 预拉伸后提交 */
-  private openAdminLoginDialog(): void {
+  /** 管理员登录对话框：密码输入 + 滑块验证码，本地 PBKDF2 预拉伸后提交 */
+  private async openAdminLoginDialog(): Promise<void> {
     if (!this.passwordAuthParams) return;
 
     this.closeAdminLoginDialog();
@@ -347,25 +327,13 @@ export class ConnectionForm {
     passwordInput.setAttribute('data-i18n-aria-label', 'auth.adminPasswordLabel');
     passwordInput.setAttribute('aria-label', t('auth.adminPasswordLabel'));
 
-    const turnstileContainer = document.createElement('div');
-    turnstileContainer.className = 'flex justify-center';
-    let turnstileToken = '';
-    if (this.turnstileEnabled && this.turnstileSitekey && window.turnstile) {
-      const widget = document.createElement('div');
-      turnstileContainer.appendChild(widget);
-      this.adminDialogTurnstileId = window.turnstile.render(widget, {
-        sitekey: this.turnstileSitekey,
-        theme: getActiveColorScheme(),
-        callback: (token: string) => {
-          turnstileToken = token;
-        },
-        'expired-callback': () => {
-          turnstileToken = '';
-        },
-        'error-callback': () => {
-          turnstileToken = '';
-        },
-      });
+    // 滑块验证码（captchaEnabled 时必验；目标 X 不回显，对齐由服务端登录时裁决）
+    const captchaContainer = document.createElement('div');
+    captchaContainer.className = 'flex justify-center';
+    if (this.captchaEnabled) {
+      const widget = await createSliderCaptcha();
+      this.adminDialogCaptcha = widget;
+      captchaContainer.appendChild(widget.element);
     }
 
     const errorText = document.createElement('div');
@@ -387,7 +355,7 @@ export class ConnectionForm {
 
     if (this.adminUsernameRequired) form.append(accent, header, usernameLabel);
     else form.append(accent, header);
-    form.append(label, passwordInput, turnstileContainer, errorText, actions);
+    form.append(label, passwordInput, captchaContainer, errorText, actions);
     dialog.appendChild(form);
     document.body.appendChild(dialog);
 
@@ -412,9 +380,10 @@ export class ConnectionForm {
         passwordInput.focus();
         return;
       }
-      // 密码模式下登录必验 Turnstile（与后端 handlePasswordLogin 的必验分支对齐）
-      if (this.turnstileEnabled && this.turnstileSitekey && !turnstileToken) {
-        showError(t('auth.turnstileRequired'));
+      // 密码模式下登录必验滑块（与后端 handlePasswordLogin 的必验分支对齐）
+      const captchaProof = this.captchaEnabled ? this.adminDialogCaptcha?.getProof() ?? null : null;
+      if (this.captchaEnabled && !captchaProof) {
+        showError(t('auth.captchaRequired'));
         return;
       }
       if (!this.passwordAuthParams) return;
@@ -434,7 +403,11 @@ export class ConnectionForm {
         const response = await fetch('/api/auth/password/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, turnstileToken, ...(this.adminUsernameRequired ? { username: usernameInput.value.trim() } : {}) }),
+          body: JSON.stringify({
+            key,
+            ...(captchaProof ? { captcha: captchaProof } : {}),
+            ...(this.adminUsernameRequired ? { username: usernameInput.value.trim() } : {}),
+          }),
         });
 
         if (response.ok) {
@@ -444,16 +417,9 @@ export class ConnectionForm {
           return;
         }
 
-        // 失败时统一重置 Turnstile 状态与组件，避免二次提交携已消费的旧 Token 导致卡死
-        if (this.turnstileEnabled && this.turnstileSitekey) {
-          turnstileToken = '';
-          if (this.adminDialogTurnstileId && window.turnstile) {
-            try {
-              window.turnstile.reset(this.adminDialogTurnstileId);
-            } catch {
-              /* 容忍已重置或未挂载异常 */
-            }
-          }
+        // 失败时重置滑块（挑战单次使用，旧挑战二次提交必被拒）
+        if (this.adminDialogCaptcha) {
+          void this.adminDialogCaptcha.reset();
         }
 
         // 错误按状态码映射 i18n，不回显后端原文
@@ -464,7 +430,7 @@ export class ConnectionForm {
           const data = (await response.json().catch(() => ({}))) as { retryAfterSec?: number };
           showError(t('auth.adminLoginLocked', { seconds: data.retryAfterSec ?? 60 }));
         } else if (response.status === 403) {
-          showError(t('auth.adminLoginTurnstileFailed'));
+          showError(t('auth.adminLoginCaptchaFailed'));
         } else if (response.status === 500) {
           showError(t('auth.adminHashInvalid'));
         } else if (response.status === 501) {
@@ -502,62 +468,11 @@ export class ConnectionForm {
     passwordInput.focus();
   }
 
-  /** 关闭并销毁管理员登录对话框（含 Turnstile 组件与密码字段残留清理） */
+  /** 关闭并销毁管理员登录对话框（含滑块组件与密码字段残留清理） */
   private closeAdminLoginDialog(): void {
-    if (this.adminDialogTurnstileId) {
-      try {
-        window.turnstile?.remove(this.adminDialogTurnstileId);
-      } catch {
-        /* 组件已随 DOM 移除时静默容忍 */
-      }
-      this.adminDialogTurnstileId = null;
-    }
+    this.adminDialogCaptcha?.destroy();
+    this.adminDialogCaptcha = null;
     document.getElementById('admin-login-dialog')?.remove();
-  }
-
-  private renderTurnstile(): void {
-    const container = document.getElementById('turnstile-widget');
-    if (!container || !window.turnstile) return;
-
-    if (this.turnstileWidgetId) {
-      window.turnstile.remove(this.turnstileWidgetId);
-      this.turnstileWidgetId = null;
-      container.replaceChildren();
-    }
-
-    const wrapper = document.getElementById('turnstile-container');
-    if (wrapper) wrapper.style.display = 'block';
-
-    this.turnstileTheme = getActiveColorScheme();
-    this.turnstileWidgetId = window.turnstile.render(container, {
-      sitekey: this.turnstileSitekey,
-      theme: this.turnstileTheme,
-      callback: async (token: string) => {
-        // Verify with backend and get cookie
-        try {
-          const response = await fetch('/api/verify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token }),
-          });
-          const result = (await response.json()) as { success: boolean };
-          if (result.success) {
-            this.turnstileVerified = true;
-            // Hide Turnstile widget after successful verification
-            const wrapper = document.getElementById('turnstile-container');
-            if (wrapper) wrapper.style.display = 'none';
-          }
-        } catch {
-          this.turnstileVerified = false;
-        }
-      },
-      'expired-callback': () => {
-        this.turnstileVerified = false;
-      },
-      'error-callback': () => {
-        this.turnstileVerified = false;
-      },
-    });
   }
 
   private render(): void {
@@ -616,9 +531,6 @@ export class ConnectionForm {
               <span id="file-name" class="text-[10px] text-muted truncate"></span>
             </div>
           </div>
-        </div>
-        <div id="turnstile-container" style="display:none;">
-          <div id="turnstile-widget" class="flex justify-center"></div>
         </div>
         <div>
           <label for="anon-region" class="block text-xs font-bold tracking-[0.1em] text-muted mb-2"><span data-i18n="auth.regionHint">连接区域</span> <span class="text-[9px] opacity-60" data-i18n="auth.regionOptional">可选；自动模式由 Cloudflare 调度</span></label>
@@ -934,18 +846,6 @@ export class ConnectionForm {
         variant: 'warning',
       });
       (document.getElementById('private-key') as HTMLTextAreaElement)?.focus();
-      return;
-    }
-
-    // Check Turnstile if enabled
-    if (this.turnstileEnabled && !this.turnstileVerified) {
-      notify(t('auth.turnstileRequired'), {
-        title: t('auth.verificationRequired'),
-        variant: 'warning',
-      });
-      document
-        .getElementById('turnstile-container')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
 

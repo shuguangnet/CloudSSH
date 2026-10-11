@@ -1,31 +1,23 @@
-:root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
-body { margin: 0; background: light-dark(#f5f7fa, #13171e); color: light-dark(#20252b, #e3e8ef); }
-main { max-width: 980px; margin: 32px auto; padding: 0 20px 40px; }
-nav { display: flex; justify-content: space-between; align-items: center; }
-a { color: light-dark(#185abe, #8db6ff); }
-section { border: 1px solid light-dark(#d5dbe3, #404753); border-radius: 12px; padding: 22px; margin: 24px 0; background: light-dark(white, #1b212a); }
-h1, h2, h3 { line-height: 1.3; } h2 { font-size: 1.3rem; margin-top: 0; } h3 { font-size: 1.05rem; }
-label { display: block; margin: 12px 0; } label span { display: block; }
-input:not([type=checkbox]), textarea, select { box-sizing: border-box; border: 1px solid #7b8594; border-radius: 5px; padding: 9px; font: inherit; width: 100%; }
-textarea { font-family: ui-monospace, monospace; }
-.choice { display: flex; gap: 10px; align-items: flex-start; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
-button { padding: 6px 12px; border: 1px solid #59749b; border-radius: 6px; font: inherit; cursor: pointer; background: light-dark(#e8efff, #263b58); }
-button:disabled { opacity: .5; cursor: default; }
-.actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-.hint { font-size: .85rem; opacity: .8; }
-.presets { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-.preset { padding: 2px 10px; border-radius: 999px; font-size: .8rem; }
-th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #7b8594; font-size: .9rem; vertical-align: top; }
-table { width: 100%; border-collapse: collapse; } td button { margin: 2px 4px 2px 0; }
-.scroll { overflow-x: auto; }
-pre { overflow-x: auto; padding: 16px; background: light-dark(#f5f7fa, #13171e); white-space: pre-wrap; word-break: break-all; }
-td.ok { color: #2e9e5b; } td.err { color: #d25a5a; }
-tr.clickable { cursor: pointer; }
-#message { min-height: 1.6em; }
-#chart { width: 100%; height: 160px; border: 1px solid light-dark(#d5dbe3, #404753); border-radius: 8px; background: light-dark(#f5f7fa, #10141b); }
-#chart .line { fill: none; stroke: #3fa66f; stroke-width: 1.5; }
-#chart .fail { fill: #d25a5a; }
-#chart .axis { stroke: #7b8594; stroke-width: .5; }
-#chart .tick { fill: #8b95a3; font-size: 10px; }
+/* Page-specific styles for /automation.
+   Shared design system lives in /page.css. */
+
+.mono-input { font-family: var(--font-mono); font-size: .92rem; }
+
+.presets { display: inline-flex; gap: 8px; flex-wrap: wrap; margin-left: 6px; }
+.preset {
+  padding: 1px 11px; border-radius: 999px; font-size: .78rem;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted);
+}
+.preset:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+
 #run-output { max-height: 320px; overflow-y: auto; }
+
+#chart {
+  width: 100%; height: 160px; margin-top: 8px;
+  border: 1px solid var(--border); border-radius: var(--control-radius);
+  background: var(--bg-terminal);
+}
+#chart .line { fill: none; stroke: var(--ok); stroke-width: 1.5; }
+#chart .fail { fill: var(--error); }
+#chart .axis { stroke: var(--border-strong); stroke-width: .5; }
+#chart .tick { fill: var(--text-dim, var(--text-muted)); font-size: 10px; font-family: var(--font-mono); }

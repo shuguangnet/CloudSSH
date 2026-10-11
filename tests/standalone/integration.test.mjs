@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -25,7 +26,7 @@ async function stop(child) {
 }
 async function startPanel(directory, port) {
   const child = spawn(process.execPath, ['standalone/server.mjs'], {
-    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}` },
+    cwd: resolve('.'), env: { ...process.env, DATA_DIR: directory, PORT: String(port), BASE_URL: `http://127.0.0.1:${port}`, CAPTCHA_MODE: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
@@ -49,8 +50,18 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal((await fetch(`${base}/mcp`, { method: 'POST' })).status, 401);
     const config = await (await fetch(`${base}/api/config`)).json();
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
+    assert.equal(config.captchaEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    // 滑块负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
+    const noCaptcha = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    assert.equal(noCaptcha.status, 403);
+    // 挑战单次使用：同一证明重放 → 403
+    const proof = await solveCaptcha(base);
+    const replay = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: proof }) });
+    assert.equal(replay.status, 200);
+    const replayAgain = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: proof }) });
+    assert.equal(replayAgain.status, 403);
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     assert.equal(login.status, 200);
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -89,7 +100,7 @@ test('native panel and real MCP client enforce authentication, persistence and r
     });
     client = new Client({ name: 'integration', version: '1' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token.token}` } } }));
-    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['list_files', 'list_servers', 'read_file']);
+    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']);
     const listed = JSON.parse((await client.callTool({ name: 'list_servers', arguments: {} })).content[0].text);
     assert.equal(listed.servers[0].id, id);
     assert.equal(JSON.stringify(listed).includes('fixture-only'), false);
@@ -129,7 +140,7 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     panel = await startPanel(dataDir, port);
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
     const cookie = login.headers.getSetCookie()[0].split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const addServer = async (name, jump_server_id) => {
@@ -194,6 +205,56 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     await call('write_file', { server_id: id, path: target, content: 'hello\n世界\n' });
     const read = await call('read_file', { server_id: id, path: target });
     assert.equal(Buffer.from(read.stdout, 'base64').toString(), 'hello\n世界\n');
+
+    // 面板命令片段：list_snippets 可见，run_snippet 逐字执行
+    await api('/api/snippets', 'POST', { name: 'whoami fixture', command: 'printf snippet-ok', category: 'ops' });
+    const snippetList = await call('list_snippets', {});
+    const created = snippetList.snippets.find((item) => item.name === 'whoami fixture');
+    assert.ok(created, JSON.stringify(snippetList));
+    const snippetRun = await call('run_snippet', { server_id: id, snippet_id: created.id });
+    assert.equal(snippetRun.stdout, 'snippet-ok');
+    assert.equal(snippetRun.snippet_name, 'whoami fixture');
+
+    // 分块下载：300 KiB 随机数据，逐块校验 sha256，末块 truncated=false
+    const blobPath = join(directory, 'blob.bin');
+    const blob = randomBytes(300 * 1024);
+    writeFileSync(blobPath, blob);
+    const localHash = (buffer) => createHash('sha256').update(buffer).digest('hex');
+    let offset = 0; const downloaded = [];
+    for (;;) {
+      const chunk = await call('download_file', { server_id: id, path: blobPath, offset, max_bytes: 262144 });
+      const raw = Buffer.from(chunk.content_base64, 'base64');
+      assert.equal(chunk.size_bytes, blob.length);
+      assert.equal(chunk.chunk_bytes, raw.length);
+      assert.equal(chunk.content_sha256, localHash(raw));
+      downloaded.push(raw); offset += raw.length;
+      if (!chunk.truncated) break;
+      assert.ok(offset < blob.length + 1024, 'download did not terminate');
+    }
+    assert.equal(Buffer.concat(downloaded).toString('hex'), blob.toString('hex'));
+
+    // 分块上传：首块原子创建，后续 append，末尾 sha256 与木地一致
+    const uploadPath = join(directory, 'upload.bin');
+    const payload = randomBytes(300 * 1024);
+    const payloadB64 = payload.toString('base64');
+    for (let position = 0, index = 0; position < payloadB64.length; position += 128000, index++) {
+      const uploaded = await call('upload_file', {
+        server_id: id, path: uploadPath,
+        content_base64: payloadB64.slice(position, position + 128000), append: index > 0,
+      });
+      assert.equal(uploaded.exit_code, 0);
+    }
+    const remoteHash = await call('execute_command', { server_id: id, command: `sha256sum -- ${JSON.stringify(uploadPath)}` });
+    assert.match(remoteHash.stdout, new RegExp(`^${localHash(payload)}`));
+
+    // 服务器信息概览：一条命令拿到 CPU/内存/磁盘/OS
+    const info = await call('get_server_info', { server_id: id });
+    assert.ok(info.cpu.cores >= 1, JSON.stringify(info));
+    assert.ok(info.memory.total_bytes > 0);
+    assert.ok(info.disk.total_bytes > 0);
+    assert.ok(typeof info.os === 'string' && info.os.length > 0);
+    assert.ok(info.uptime_seconds >= 0);
+
     const forwarded = await call('execute_command', { server_id: jumped, command: 'printf jump-ok' });
     assert.equal(forwarded.stdout, 'jump-ok');
     const blocked = await client.callTool({ name: 'execute_command', arguments: { server_id: id, command: 'rm -rf /' } });
@@ -212,7 +273,22 @@ test('administrator account migration, account/password changes, invalidation an
     const config = await (await fetch(`${base}/api/config`)).json();
     return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
   };
-  const login = (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key }) });
+  /** 真实拖拽管理员登录对话框内的滑块，对齐 CAPTCHA_MODE=test 固定目标（120,48） */
+  const dragCaptchaToTestTarget = async (page, dialog) => {
+    await dialog.locator('.slider-captcha__piece').waitFor();
+    const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
+    const thumb = dialog.locator('.slider-captcha__thumb');
+    const box = await thumb.boundingBox();
+    const dx = (120 - 10) * scale;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
+      await page.waitForTimeout(35);
+    }
+    await page.mouse.up();
+  };
+  const login = async (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key, captcha: await solveCaptcha(base) }) });
   const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
   const request = (cookie, path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   try {
@@ -269,10 +345,17 @@ test('administrator account migration, account/password changes, invalidation an
         await page.getByText('密码已更新，请使用新账号和密码重新登录。', { exact: true }).waitFor();
         await page.goto(`${base}/?lang=zh-CN`);
         await page.locator('#admin-login-btn').click();
-        await page.locator('#admin-login-dialog input[name=username]').fill('operator2');
-        await page.locator('#admin-login-dialog input[type=password]').fill(newPassword);
-        await page.locator('#admin-login-dialog .auth-challenge-dialog__button--submit').click();
-        await page.locator('#admin-account-link').waitFor({ state: 'visible' });
+        const dialog = page.locator('#admin-login-dialog');
+        await dialog.locator('input[name=username]').fill('operator2');
+        await dialog.locator('input[type=password]').fill(newPassword);
+        // 密码模式登录对话框内嵌滑块验证码：真实拖拽对齐固定目标后才能提交
+        await dragCaptchaToTestTarget(page, dialog);
+        await dialog.locator('.auth-challenge-dialog__button--submit').click();
+        // 登录成功 → reload 进入用户空间；账号设置入口在左侧导航栏常驻展示
+        await page.locator('#user-space-section').waitFor({ state: 'visible' });
+        await page.locator('#app-sidebar').waitFor({ state: 'visible' });
+        await page.locator('#menu-account').waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#menu-account').getAttribute('href'), '/account/settings');
         assert.deepEqual(errors, []);
       } finally { await browser.close(); }
     } else {

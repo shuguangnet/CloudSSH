@@ -4,7 +4,7 @@ import { blockOptionalThirdPartyAssets } from './helpers';
 test('saved server keys support extensionless local files and manual editing', async ({ page }) => {
   await blockOptionalThirdPartyAssets(page);
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
-  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true, turnstileEnabled: false } }));
+  await page.route('**/api/config', route => route.fulfill({ json: { githubAuthEnabled: true } }));
   await page.route('**/api/user/theme', route => route.fulfill({ json: { theme: null } }));
   const saves: Record<string, unknown>[] = [];
   await page.route('**/api/servers', route => {

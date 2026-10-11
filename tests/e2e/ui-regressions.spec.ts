@@ -15,7 +15,6 @@ test('强制 GitHub 登录模式隐藏匿名连接表单', async ({ page }) => {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        turnstileEnabled: false,
         sitekey: '',
         githubAuthEnabled: true,
         githubAuthRequired: true,
@@ -161,76 +160,144 @@ test('AI 模型选择下拉框：免重复输入 token 获取模型列表，且�
   await expect(menu).toBeHidden();
 });
 
-test('Turnstile 跟随 Standard Light 和后续主题切换', async ({ page }) => {
+test('管理员登录对话框滑块验证码：渲染、拖拽采样与提交载荷', async ({ page }) => {
+  await blockOptionalThirdPartyAssets(page);
   await page.addInitScript(() => {
     localStorage.setItem('cloudssh_theme_selection', 'standard-light');
-
-    const state = {
-      renders: [] as Array<{ id: string; theme: string | undefined }>,
-      removals: [] as string[],
-    };
-    (window as any).__turnstileTest = state;
-    (window as any).turnstile = {
-      render(container: HTMLElement, options: { theme?: string }) {
-        const id = `widget-${state.renders.length + 1}`;
-        state.renders.push({ id, theme: options.theme });
-        container.replaceChildren(document.createTextNode(id));
-        return id;
-      },
-      remove(widgetId: string) {
-        state.removals.push(widgetId);
-      },
-      reset() {},
-      getResponse() {
-        return undefined;
-      },
-    };
   });
-  await blockOptionalThirdPartyAssets(page);
   await page.route('**/api/auth/me', (route) =>
-    route.fulfill({
-      status: 401,
-      contentType: 'application/json',
-      body: '{"error":"unauthorized"}',
-    })
+    route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' })
   );
   await page.route('**/api/config', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        turnstileEnabled: true,
-        sitekey: 'test-site-key',
+        captchaEnabled: true,
         githubAuthEnabled: false,
         githubAuthRequired: false,
+        authMode: 'password',
+        adminUsernameRequired: true,
+        passwordAuth: { kdf: 'pbkdf2-sha256', iterations: 1000, salt: 'c2FsdHNhbHRzYWx0c2FsdA' },
       }),
     })
   );
 
-  await page.goto('/');
-
-  await expect
-    .poll(() => page.evaluate(() => (window as any).__turnstileTest.renders))
-    .toEqual([{ id: 'widget-1', theme: 'light' }]);
-
-  await page.evaluate(() => {
-    const themeSelector = document.getElementById('theme-selector');
-    if (!(themeSelector instanceof HTMLSelectElement)) {
-      throw new Error('theme-selector not found');
-    }
-    themeSelector.value = 'standard-dark';
-    themeSelector.dispatchEvent(new Event('change', { bubbles: true }));
+  const background =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="140" viewBox="0 0 300 140"><rect width="300" height="140" fill="#141b26"/><circle cx="120" cy="70" r="20" fill="rgba(0,0,0,0.48)" stroke="rgba(255,255,255,0.28)" stroke-width="1.5"/></svg>';
+  const pieceSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44"><path d="M9 0 H35 A9 9 0 0 1 44 9 V13 A9 9 0 0 1 44 31 V35 A9 9 0 0 1 35 44 H9 A9 9 0 0 1 0 35 V9 A9 9 0 0 1 9 0 Z" fill="rgba(255,255,255,0.82)" stroke="#e2e8f0" stroke-width="1.5"/></svg>';
+  let challengeFetches = 0;
+  await page.route('**/api/captcha/challenge', (route) => {
+    challengeFetches += 1;
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        challenge: 'dmExfDEyMHw0OHwxNzAwMDAwMDAwfDAwMTEyMjMzNDQ1NTY2Nzc.A'.repeat(1) + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        background,
+        piece: pieceSvg,
+        width: 300,
+        height: 140,
+        pieceSize: 44,
+        startX: 10,
+        y: 48,
+      }),
+    });
   });
 
+  const loginRequests: Array<{ captcha?: { x: number; samples: Array<{ x: number }> } }> = [];
+  await page.route('**/api/auth/password/login', async (route) => {
+    const body = route.request().postDataJSON();
+    loginRequests.push(body);
+    await route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' });
+  });
+
+  await page.goto('/');
+
+  // 密码模式渲染管理员登录入口
+  const loginBtn = page.locator('#admin-login-btn');
+  await expect(loginBtn).toBeVisible();
+  await loginBtn.click();
+
+  const dialog = page.locator('#admin-login-dialog');
+  await expect(dialog).toBeVisible();
+
+  // 滑块组件：背景 SVG 注入 + 拼图块定位 + 轨道出现
+  const canvas = dialog.locator('.slider-captcha__canvas');
+  await expect(canvas.locator('> svg')).toHaveCount(1);
+  const piece = dialog.locator('.slider-captcha__piece');
+  await expect(piece).toBeVisible();
+  await expect(dialog.locator('.slider-captcha__track')).toBeVisible();
+  await expect(dialog.locator('.slider-captcha__hint')).toContainText('drag the piece');
+
+  // 未拖拽直接提交 → captchaRequired 错误提示，且不发登录请求
+  await dialog.locator('input[type="text"]').fill('admin');
+  await dialog.locator('input[type="password"]').fill('secret-password');
+  await dialog.locator('.auth-challenge-dialog__button--submit').click();
+  await expect(dialog.locator('.auth-challenge-dialog__warning')).toContainText('slider verification');
+  expect(loginRequests).toHaveLength(0);
+
+  // 真实拖拽：拖拽距离 = (targetX - startX) * scale（画布 CSS 宽 / 300），
+  // 模拟对齐固定目标 120；多步 + 间隔确保轨迹时长
+  const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
+  const thumb = dialog.locator('.slider-captcha__thumb');
+  const box = await thumb.boundingBox();
+  if (!box) throw new Error('thumb not measurable');
+  const dx = (120 - 10) * scale;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) {
+    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
+    await page.waitForTimeout(35);
+  }
+  await page.mouse.up();
+
+  // 轨道进入完成态
+  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+
+  // 提交 → 登录请求体携带 captcha 载荷（challenge + x + samples）
+  await dialog.locator('.auth-challenge-dialog__button--submit').click();
   await expect
-    .poll(() => page.evaluate(() => (window as any).__turnstileTest))
-    .toEqual({
-      renders: [
-        { id: 'widget-1', theme: 'light' },
-        { id: 'widget-2', theme: 'dark' },
-      ],
-      removals: ['widget-1'],
-    });
+    .poll(() => loginRequests.length)
+    .toBe(1);
+  const captcha = loginRequests[0]?.captcha;
+  expect(captcha).toBeTruthy();
+  // 坐标契约：x 为拼图块绝对左缘（对齐目标 120，容差内），首样本 ≈ startX(10)
+  expect(captcha?.x).toBeGreaterThanOrEqual(115);
+  expect(captcha?.x).toBeLessThanOrEqual(125);
+  expect(captcha?.samples.length).toBeGreaterThanOrEqual(3);
+  expect(captcha?.samples[0]?.x).toBeLessThanOrEqual(15);
+
+  // 登录失败后滑块自动重置（新挑战）
+  await expect
+    .poll(() => challengeFetches)
+    .toBe(2);
+  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(0);
+
+  // —— 高频轨迹节流：高刷屏画像（4 秒 400+ move 事件）下样本数必须被节流/抽稀
+  // 在服务端上限内，且终点仍对齐目标（真实用户反馈“越认真拖拽越无法通过”）
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 200; i++) {
+    await page.mouse.move(box.x + box.width / 2 + (dx * i) / 200, box.y + box.height / 2, { steps: 2 });
+    await page.waitForTimeout(20);
+  }
+  await page.mouse.up();
+  await expect(dialog.locator('.slider-captcha__track--done')).toHaveCount(1);
+  await dialog.locator('.auth-challenge-dialog__button--submit').click();
+  await expect
+    .poll(() => loginRequests.length)
+    .toBe(2);
+  const throttled = loginRequests[1]?.captcha;
+  expect(throttled).toBeTruthy();
+  // 200 步 × 20ms 节流后约 200 样本 → 抽稀硬上限 160；服务端上限 512
+  expect(throttled?.samples.length).toBeLessThanOrEqual(160);
+  expect(throttled?.samples.length).toBeGreaterThanOrEqual(3);
+  // 终点仍为最终视觉位置（pointerup 补记末样本）
+  expect(throttled?.x).toBeGreaterThanOrEqual(115);
+  expect(throttled?.x).toBeLessThanOrEqual(125);
+  expect(throttled?.samples[throttled!.samples.length - 1]?.x).toBeGreaterThanOrEqual(115);
 });
 
 /**
@@ -448,4 +515,100 @@ test('标签栏不绘制无效纵向滚动条（单行横向容器必须禁止�
   expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight);
   // 多标签时仍需横向滚动，不得因禁止纵向滚动而一并关闭
   expect(metrics.overflowX).toBe('auto');
+});
+
+test('左侧导航栏按功能/设置分组常驻展示独立页面入口', async ({ page }) => {
+  await blockOptionalThirdPartyAssets(page);
+  await page.route('**/api/user/theme', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"theme":null}' })
+  );
+  await page.route('**/api/auth/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 1, github_id: 1, username: 'tester', avatar_url: '' }),
+    })
+  );
+  await page.route('**/api/servers', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  );
+  // 自托管能力全开：功能组（自动化/MCP）与设置组（账号设置/AI）都应出现
+  await page.route('**/api/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sshSharingEnabled: true,
+        mcpEnabled: true,
+        adminAccountEnabled: true,
+        automationEnabled: true,
+      }),
+    })
+  );
+
+  await page.goto('/?lang=zh-CN');
+  await expect(page.locator('#user-space-section')).toBeVisible();
+
+  // 左侧边栏常驻展示：功能/设置分组 + 各入口
+  const sidebar = page.locator('#app-sidebar');
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar.locator('[data-menu-group="functions"]')).toBeVisible();
+  await expect(sidebar.locator('[data-menu-group="settings"]')).toBeVisible();
+  await expect(page.locator('#sidebar-servers')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('#menu-automation')).toHaveAttribute('href', '/automation');
+  await expect(page.locator('#menu-mcp')).toHaveAttribute('href', '/mcp/settings');
+  await expect(page.locator('#menu-account')).toHaveAttribute('href', '/account/settings');
+  await expect(sidebar.locator('.sidebar-group-label').first()).toHaveText('功能');
+  await expect(sidebar.locator('.sidebar-group-label').nth(1)).toHaveText('设置');
+  await expect(page.locator('#ai-config-btn')).toBeVisible();
+  await expect(page.locator('#logout-btn')).toBeVisible();
+  await expect(page.locator('#user-info')).toBeVisible();
+  // 旧的用户下拉菜单已被侧边栏取代
+  await expect(page.locator('#user-menu-btn')).toHaveCount(0);
+  await expect(page.locator('#user-menu')).toHaveCount(0);
+
+  // 侧边栏位于内容左侧：内容区起点 = 侧边栏右缘
+  const sidebarBox = await sidebar.boundingBox();
+  const mainBox = await page.locator('.user-space-main').boundingBox();
+  expect(mainBox?.x).toBeCloseTo(sidebarBox!.x + sidebarBox!.width, 0);
+});
+
+test('Workers 部署（无自动化/MCP/账号页能力）隐藏功能组与受限入口', async ({ page }) => {
+  await blockOptionalThirdPartyAssets(page);
+  await page.route('**/api/user/theme', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"theme":null}' })
+  );
+  await page.route('**/api/auth/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 1, github_id: 1, username: 'tester', avatar_url: '' }),
+    })
+  );
+  await page.route('**/api/servers', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  );
+  await page.route('**/api/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sshSharingEnabled: true,
+        mcpEnabled: false,
+        adminAccountEnabled: false,
+        automationEnabled: false,
+      }),
+    })
+  );
+
+  await page.goto('/?lang=zh-CN');
+  await expect(page.locator('#user-space-section')).toBeVisible();
+
+  // 左侧边栏：功能组整组隐藏；设置组仅剩 AI Agent 设置
+  const sidebar = page.locator('#app-sidebar');
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar.locator('[data-menu-group="functions"]')).toBeHidden();
+  await expect(page.locator('#menu-account')).toBeHidden();
+  await expect(sidebar.locator('[data-menu-group="settings"]')).toBeVisible();
+  await expect(sidebar.locator('[data-menu-group="settings"] .sidebar-item:not(.hidden)')).toHaveCount(1);
 });

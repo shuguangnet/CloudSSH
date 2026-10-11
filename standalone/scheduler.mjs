@@ -131,15 +131,15 @@ export class AutomationEngine {
     let error = null;
     try {
       output = await this.execute(this.env, { github_id: task.github_id, user_id: task.user_id },
-        task.server_id, task.command, task.timeout_seconds, this.SSHSession);
-      ok = output.exit_code === 0;
+        task.server_id, task.command, task.timeout_seconds * 1000, this.SSHSession);
+      ok = output.exitCode === 0;
     } catch (caught) {
       error = briefError(caught);
     }
     this.store.finishRun(runId, {
       finished_at: this.now(),
       status: ok ? 'succeeded' : 'failed',
-      exit_code: output?.exit_code ?? null,
+      exit_code: output?.exitCode ?? null,
       duration_ms: this.now() - startedAt,
       error,
       output: truncateOutput(output),
@@ -154,7 +154,7 @@ export class AutomationEngine {
     const channels = this.store.listChannels(task.owner, { enabledOnly: true });
     if (!channels.length) return [];
     const serverName = await this.serverName(task.owner, { github_id: task.github_id, user_id: task.user_id }, task.server_id);
-    const detail = [error ? `Error: ${error}` : `Exit code: ${output?.exit_code}`,
+    const detail = [error ? `Error: ${error}` : `Exit code: ${output?.exitCode}`,
       output?.stderr || output?.stdout || ''].join('\n').slice(0, 1500);
     const body = [
       `Task: ${task.name}`,
