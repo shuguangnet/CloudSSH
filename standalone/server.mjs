@@ -336,7 +336,7 @@ const server = createServer(async (req, res) => {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
       if (!env.ADMIN_PASSWORD_HASH || !await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
       return sendResponse(res, new Response(readFileSync(new URL('./account.html', import.meta.url)), {
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'" },
       }));
     }
     if (pathname === '/account/settings.js' && req.method === 'GET') return sendResponse(res, new Response(readFileSync(new URL('../dist/account.js', import.meta.url)), { headers: { 'Content-Type': 'text/javascript; charset=utf-8' } }));
@@ -345,7 +345,7 @@ const server = createServer(async (req, res) => {
       if (!await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
       return sendResponse(res, new Response(readFileSync(new URL('./settings.html', import.meta.url)), {
         headers: { 'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'" },
       }));
     }
     if (['/mcp/settings.js', '/mcp/settings.css'].includes(pathname) && req.method === 'GET') {
@@ -359,7 +359,7 @@ const server = createServer(async (req, res) => {
       if (!await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
       return sendResponse(res, new Response(readFileSync(new URL('./automation.html', import.meta.url)), {
         headers: { 'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'" },
       }));
     }
     if (['/automation.js', '/automation.css'].includes(pathname) && req.method === 'GET') {

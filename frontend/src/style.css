@@ -5182,3 +5182,30 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
     transform: rotate(360deg);
   }
 }
+
+/* ---------- share terminal page: back-to-panel link ---------- */
+.share-back-link {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted, #bbccb0);
+  background: color-mix(in srgb, var(--bg-surface, #121212) 82%, transparent);
+  border: 1px solid var(--border, #1f1f1f);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-decoration: none;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.share-back-link:hover {
+  color: var(--accent, #4af626);
+  border-color: var(--accent, #4af626);
+  text-decoration: none;
+}
+body.terminal-active .share-back-link { opacity: 0.85; }

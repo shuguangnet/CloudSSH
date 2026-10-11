@@ -467,6 +467,35 @@
           </div>
         </main>
 
+        <!-- Embedded utility pages (automation / MCP / account) —
+             opened in-place so SSH sessions keep their WebSockets alive;
+             the standalone pages hide their own sidebar when embedded. -->
+        <section
+          id="embedded-page-section"
+          class="embedded-page-section hidden flex-1 flex-col min-h-0"
+        >
+          <header
+            class="embedded-page-header flex items-center justify-between px-5 h-14 border-b border-outline-variant"
+          >
+            <h2 id="embedded-page-title" class="text-base font-semibold text-on-surface"></h2>
+            <button
+              id="embedded-page-close"
+              type="button"
+              class="embedded-page-close flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-outline-variant text-on-surface-variant hover:text-on-surface hover:border-on-surface-variant bg-transparent cursor-pointer"
+              data-i18n-title="nav.backToPanel"
+              title="返回面板"
+            >
+              <span class="material-symbols-outlined" style="font-size: 16px">arrow_back</span>
+              <span data-i18n="nav.backToPanel">返回面板</span>
+            </button>
+          </header>
+          <iframe
+            id="embedded-page-frame"
+            class="embedded-page-frame flex-1 w-full border-none bg-surface"
+            title="CloudSSH"
+          ></iframe>
+        </section>
+
         <!-- Footer -->
         <footer
           class="user-space-footer px-6 py-0 flex justify-between items-center z-50 bg-elevated border-t border-outline-variant text-xs h-8"
@@ -1096,6 +1125,16 @@
           <div
             class="terminal-header-actions flex items-center gap-2 sm:gap-4 text-primary-container flex-wrap"
           >
+            <button
+              id="terminal-back-btn"
+              type="button"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1.5"
+              data-i18n-title="terminal.backToList"
+              title="返回服务器列表"
+            >
+              <span class="material-symbols-outlined" style="font-size: 15px">arrow_back</span>
+              <span data-i18n="terminal.backToList">返回列表</span>
+            </button>
             <select
               id="theme-selector"
               data-theme-selector

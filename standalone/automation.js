@@ -1,6 +1,6 @@
 const dictionaries = {
   'zh-CN': {
-    back: '返回面板', title: '自动化', intro: '定时执行命令、监控服务器可达性，并在异常时推送通知。所有操作通过已验证指纹的 SSH 通道完成。',
+    'nav.panel': '返回面板', 'nav.automation': '自动化', 'nav.mcp': 'MCP', 'nav.account': '账号设置', back: '返回面板', title: '自动化', intro: '定时执行命令、监控服务器可达性，并在异常时推送通知。所有操作通过已验证指纹的 SSH 通道完成。',
     failed: '请求失败，请检查登录状态与输入。', empty: '暂无记录', cancel: '取消', edit: '编辑', delete: '删除', close: '关闭',
     enabledNow: '启用', on: '启用', off: '停用', confirmDelete: '确认删除？',
     tasks: '定时任务', tasksIntro: '按 cron 计划在面板后端执行命令，命令快照保存于任务中（编辑片段不影响已建任务）。',
@@ -28,7 +28,7 @@ const dictionaries = {
     channelSaved: '渠道已保存', channelDeleted: '渠道已删除',
   },
   'zh-TW': {
-    back: '返回面板', title: '自動化', intro: '定時執行命令、監控伺服器可達性，並在異常時推送通知。所有操作透過已驗證指紋的 SSH 通道完成。',
+    'nav.panel': '返回面板', 'nav.automation': '自動化', 'nav.mcp': 'MCP', 'nav.account': '帳號設定', back: '返回面板', title: '自動化', intro: '定時執行命令、監控伺服器可達性，並在異常時推送通知。所有操作透過已驗證指紋的 SSH 通道完成。',
     failed: '請求失敗，請檢查登入狀態與輸入。', empty: '暫無記錄', cancel: '取消', edit: '編輯', delete: '刪除', close: '關閉',
     enabledNow: '啟用', on: '啟用', off: '停用', confirmDelete: '確認刪除？',
     tasks: '定時任務', tasksIntro: '按 cron 排程在面板後端執行命令，命令快照儲存於任務中（編輯片段不影響已建任務）。',
@@ -56,7 +56,7 @@ const dictionaries = {
     channelSaved: '渠道已儲存', channelDeleted: '渠道已刪除',
   },
   'en-US': {
-    back: 'Back to panel', title: 'Automation', intro: 'Run commands on schedule, monitor server reachability and get push notifications on failures. Everything goes through fingerprint-verified SSH.',
+    'nav.panel': 'Back to panel', 'nav.automation': 'Automation', 'nav.mcp': 'MCP', 'nav.account': 'Account settings', back: 'Back to panel', title: 'Automation', intro: 'Run commands on schedule, monitor server reachability and get push notifications on failures. Everything goes through fingerprint-verified SSH.',
     failed: 'Request failed. Check your login and input.', empty: 'No records', cancel: 'Cancel', edit: 'Edit', delete: 'Delete', close: 'Close',
     enabledNow: 'Enabled', on: 'On', off: 'Off', confirmDelete: 'Delete this item?',
     tasks: 'Scheduled tasks', tasksIntro: 'Commands run on a cron schedule in the panel backend. The command is snapshotted per task (editing snippets later does not change existing tasks).',

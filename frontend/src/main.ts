@@ -1,7 +1,7 @@
 import { AIConfigPanel } from './ai-config';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
-import { initI18n, onLocaleChange, t } from './i18n';
+import { initI18n, onLocaleChange, t, type TranslationKey } from './i18n';
 import { MobileTerminalController } from './mobile-terminal';
 import { ServerList } from './server-list';
 import {
@@ -164,6 +164,10 @@ function showTerminalSection(): void {
 }
 
 function bindBackToTerminalButtons(): void {
+  // 终端视图 → 返回服务器列表（tab 与 WebSocket 保持活跃，可随时切回）
+  document.getElementById('terminal-back-btn')?.addEventListener('click', () => {
+    showConnectionPage();
+  });
   document.getElementById('back-to-terminal-btn')?.addEventListener('click', () => {
     showTerminalSection();
   });
@@ -237,6 +241,14 @@ function initTerminalTab(): void {
   // 隐藏标签栏（URL 直连模式只有一个标签，不需要标签栏）
   const tabBar = document.getElementById('tab-bar');
   if (tabBar) tabBar.style.display = 'none';
+
+  // 返回面板入口：分享页是独立窗口，提供回主面板的路径
+  const backLink = document.createElement('a');
+  backLink.href = '/';
+  backLink.className = 'share-back-link';
+  backLink.dataset.i18n = 'terminal.backToPanel';
+  backLink.textContent = t('terminal.backToPanel');
+  document.body.appendChild(backLink);
 
   const tm = getTabManager();
   const tab = tm.createTab(serverName, host && port ? { host, port } : undefined);
@@ -977,6 +989,69 @@ function consumeAdminSetupRoute(): void {
   openAdminHashGeneratorDialog();
 }
 
+// ==================== 内嵌功能页（自动化 / MCP / 账号设置） ====================
+// 点击侧边栏入口时不再整页跳转（会断开所有 SSH WebSocket），
+// 改为在主内容区内嵌 iframe 打开；关闭即返回，SSH 会话全程保活。
+const EMBED_PAGES: Record<string, { titleKey: TranslationKey; frameTitle: string }> = {
+  '/automation': { titleKey: 'auth.automation', frameTitle: 'CloudSSH Automation' },
+  '/mcp/settings': { titleKey: 'menu.mcp', frameTitle: 'CloudSSH MCP' },
+  '/account/settings': { titleKey: 'auth.adminAccountSettings', frameTitle: 'CloudSSH Account' },
+};
+
+function sidebarSetCurrent(itemId: string | null): void {
+  for (const id of ['sidebar-servers', 'menu-automation', 'menu-mcp', 'menu-account']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const active = id === itemId;
+    el.classList.toggle('sidebar-item--active', active);
+    if (active) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
+  }
+}
+
+function openEmbeddedPage(url: string): void {
+  const entry = EMBED_PAGES[url];
+  if (!entry) return;
+  const section = document.getElementById('embedded-page-section');
+  const frame = document.getElementById('embedded-page-frame') as HTMLIFrameElement | null;
+  const title = document.getElementById('embedded-page-title');
+  if (!section || !frame || !title) return;
+  title.textContent = t(entry.titleKey);
+  frame.title = entry.frameTitle;
+  if (frame.dataset.src !== url) {
+    frame.dataset.src = url;
+    frame.src = url;
+  }
+  document.querySelector('.user-space-main')?.classList.add('hidden');
+  section.classList.remove('hidden');
+  section.classList.add('flex');
+  sidebarSetCurrent(
+    url === '/automation' ? 'menu-automation' : url === '/mcp/settings' ? 'menu-mcp' : 'menu-account'
+  );
+}
+
+function closeEmbeddedPage(): void {
+  const section = document.getElementById('embedded-page-section');
+  if (!section || section.classList.contains('hidden')) return;
+  section.classList.add('hidden');
+  section.classList.remove('flex');
+  document.querySelector('.user-space-main')?.classList.remove('hidden');
+  sidebarSetCurrent('sidebar-servers');
+}
+
+function bindEmbeddedPageNav(): void {
+  document.getElementById('embedded-page-close')?.addEventListener('click', closeEmbeddedPage);
+  for (const url of Object.keys(EMBED_PAGES)) {
+    const link = document.querySelector<HTMLAnchorElement>(`#user-space-section a.sidebar-item[href="${url}"]`);
+    link?.addEventListener('click', (event) => {
+      // 中键 / 修饰键点击保留浏览器默认行为（新标签打开独立页）
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openEmbeddedPage(url);
+    });
+  }
+}
+
 async function init(): Promise<void> {
   initI18n();
   // PWA：仅在安全上下文（HTTPS 或本机）注册 Service Worker，失败时静默降级。
@@ -987,6 +1062,7 @@ async function init(): Promise<void> {
   initUserSpaceMobileMenu();
   initServerPaginationBreakpoints();
   bindBackToTerminalButtons();
+  bindEmbeddedPageNav();
   initPointerSpecularTracking();
   const userSegmentedContainer = document.getElementById('user-theme-segmented-container');
   const userSelect = document.getElementById('user-theme-selector') as HTMLSelectElement | null;
@@ -1054,6 +1130,12 @@ async function init(): Promise<void> {
   onLocaleChange(() => {
     if (localStorage.getItem('cloudssh_imported_theme')) ensureCustomOption();
     tabManager?.refreshTranslations();
+    // 内嵌功能页标题随语言刷新（JS 设置的 textContent 不在 data-i18n 体系内）
+    const openFrame = document.getElementById('embedded-page-frame') as HTMLIFrameElement | null;
+    if (openFrame?.dataset.src) {
+      const entry = EMBED_PAGES[openFrame.dataset.src];
+      if (entry) document.getElementById('embedded-page-title')!.textContent = t(entry.titleKey);
+    }
   });
   const initialThemeSelection = localStorage.getItem('cloudssh_theme_selection');
   restoreTheme();

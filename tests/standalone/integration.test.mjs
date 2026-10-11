@@ -99,6 +99,13 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal((await api('/api/mcp/tokens', 'POST', { ...settings, server_ids: [99999] })).status, 400);
     const created = await api('/api/mcp/tokens', 'POST', settings); assert.equal(created.status, 201);
     const token = await created.json();
+    // 独立功能页：data-page 驱动左侧栏注入 + CSP 允许同源 iframe 嵌入（主面板保活 SSH）
+    for (const [path, page_] of [['/automation', 'automation'], ['/mcp/settings', 'mcp'], ['/account/settings', 'account']]) {
+      const html = await api(path);
+      assert.equal(html.status, 200, `${path} 登录态可访问`);
+      assert.match(html.headers.get('content-security-policy') || '', /frame-ancestors 'self'/, `${path} CSP 允许同源嵌入`);
+      assert.match(await html.text(), new RegExp(`data-page="${page_}"`), `${path} 标注 data-page`);
+    }
     if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') await t.test('browser settings create and revoke tokens under CSP in three languages', async () => {
       const browser = await chromium.launch();
       try {
