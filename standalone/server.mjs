@@ -355,7 +355,7 @@ const server = createServer(async (req, res) => {
         headers: { 'Content-Type': type, 'Cache-Control': cache },
       }));
     }
-    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/')) {
+    if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/') || pathname.startsWith('/api/docker/')) {
       const response = await automationRoutes(request, pathname, requestUrl);
       if (response) return sendResponse(res, response);
     }

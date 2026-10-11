@@ -7,6 +7,7 @@ import { populateRegionSelect, regionLabel } from './regions';
 import { ShareManager } from './share-manager';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { serverStatusPanel, initServerStatusPanel } from './server-status';
+import { dockerPanel, initDockerPanel } from './server-docker';
 import type { SSHHostInfo } from './terminal';
 import { confirmAction, notify } from './ui-feedback';
 import { formatTimestampWithRelative } from '../../src/server-memory-schema';
@@ -293,6 +294,7 @@ export class ServerList {
 
     // 服务器状态弹窗（关闭/背景点击/手动刷新/Escape）
     initServerStatusPanel();
+    initDockerPanel();
 
     // 添加服务器按钮
     document
@@ -636,6 +638,9 @@ export class ServerList {
         .getElementById(`status-${server.id}`)
         ?.addEventListener('click', () => serverStatusPanel.open(server.id, server.name));
       document
+        .getElementById(`docker-${server.id}`)
+        ?.addEventListener('click', () => dockerPanel.open(server.id, server.name));
+      document
         .getElementById(`clone-${server.id}`)
         ?.addEventListener('click', () => this.showModal('clone', server));
       document
@@ -809,6 +814,9 @@ export class ServerList {
           </button>
           ${this.automationEnabled ? `<button id="status-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.status.button')}" aria-label="${t('server.status.button')}">
             <span class="material-symbols-outlined" style="font-size: 14px;">monitoring</span>
+          </button>
+          <button id="docker-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('docker.button')}" aria-label="${t('docker.button')}">
+            <span class="material-symbols-outlined" style="font-size: 14px;">deployed_code</span>
           </button>` : ''}
           <button id="clone-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.clone')}">
             <span class="material-symbols-outlined" style="font-size: 14px;">content_copy</span>
