@@ -50,8 +50,8 @@ describe('issueCaptchaChallenge', () => {
     expect(challenge).not.toBeNull();
     expect(challenge!.challenge).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(challenge!.image).toContain('<svg');
-    expect(challenge!.width).toBe(160);
-    expect(challenge!.height).toBe(48);
+    expect(challenge!.width).toBe(180);
+    expect(challenge!.height).toBe(52);
   });
 
   it('renders exactly the test answer in test mode', async () => {
@@ -78,6 +78,21 @@ describe('issueCaptchaChallenge', () => {
     const nonceA = decodePayload(a!.challenge).split('|')[3];
     const nonceB = decodePayload(b!.challenge).split('|')[3];
     expect(nonceA).not.toBe(nonceB);
+  });
+
+  it('on-mode answers draw only from the de-confusable alphabet (readability contract)', async () => {
+    // v2.6.5 首版含 G/6、Z/2、S/5、B/8、U/V、T/7 互混对致真实用户误读必 missed;
+    // 本断言防止未来有人把易混淆字符加回字符集
+    const env = { ADMIN_PASSWORD_HASH: PASSWORD_HASH, CAPTCHA_MODE: 'on' };
+    const allowed = new Set('ACDEFGHJKLMNRSTVW3'.split(''));
+    for (let i = 0; i < 30; i++) {
+      const challenge = await issueCaptchaChallenge(env);
+      const chars = [...challenge!.image.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((m) => m[1]);
+      expect(chars).toHaveLength(4);
+      for (const ch of chars) {
+        expect(allowed.has(ch), `character ${ch} outside de-confusable alphabet`).toBe(true);
+      }
+    }
   });
 
   it('returns null when disabled or unconfigured', async () => {

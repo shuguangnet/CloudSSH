@@ -15,7 +15,9 @@
  *
  * 历史注记：v2.6.3–v2.6.4 曾用滑块拼图形态，真实用户拖拽（高刷屏慢速对齐/
  * 快速甩动/视觉对齐策略）与脚本画像差异导致多轮"真人必拒"返工，最终按用户
- * 决策改为图片字符验证码——输入框无坐标歧义、移动端零手势依赖。
+ * 决策改为图片字符验证码——输入框无坐标歧义、移动端零手势依赖。v2.6.5
+ * 首版字符集仍含 G/6、Z/2、S/5、B/8、U/V、T/7 等互混对 + 旋转 ±13° + 双
+ * 干扰线，真实用户误读必 missed；本版按可读性优先收紧（见 CAPTCHA_ALPHABET）。
  *
  * 环境变量 `CAPTCHA_MODE`：
  * - `on`（默认）：随机答案；
@@ -24,13 +26,17 @@
  */
 
 /** 逻辑图片宽度（px，客户端按容器等比缩放） */
-export const CAPTCHA_WIDTH = 160;
+export const CAPTCHA_WIDTH = 180;
 /** 逻辑图片高度 */
-export const CAPTCHA_HEIGHT = 48;
-/** 答案长度 */
-const CAPTCHA_ANSWER_LENGTH = 5;
-/** 答案字符集（去除易混淆的 I / O / 0 / 1，全大写显示；比对大小写不敏感） */
-const CAPTCHA_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export const CAPTCHA_HEIGHT = 52;
+/** 答案长度（4 位：输入负担最小；20^4=16 万组合，配合答错即消耗 +
+ *  挑战限流 10/min + 登录 DO 节流，暴力不可行，摩擦定位不变） */
+const CAPTCHA_ANSWER_LENGTH = 4;
+/** 答案字符集：仅保留互不混淆的 20 个字符（全大写显示；比对大小写不敏感）。
+ *  已剔除易混淆对：B/8、G/6、Z/2、S/5、T/7、X/K、Y/4、U/V（留 V）、
+ *  P/D-R 近形（留 D R 去 P）、Q/O/0、I/1/l；数字仅 3（与 E 可辨：E 三横
+ *  平直，3 圆弧开口）。v2.6.5 首版含上述互混对致真实用户误读必 missed。 */
+const CAPTCHA_ALPHABET = 'ACDEFGHJKLMNRSTVW3';
 /** 提交答案的合法形态（trim + 转大写后） */
 const CAPTCHA_ANSWER_PATTERN = /^[A-Z0-9]{4,10}$/;
 /** test 模式固定答案（自动化测试缝；docker-smoke / e2e / solveCaptcha 依赖） */
@@ -161,30 +167,31 @@ function renderCaptchaSvg(answer: string, seed: number): string {
   const palette = ['#7dd3fc', '#c4b5fd', '#6ee7b7', '#fcd34d', '#f9a8d4', '#fdba74'];
 
   let noise = '';
-  // 两条随机折线（半透明，横穿字符区）
-  for (let i = 0; i < 2; i++) {
-    const y1 = 6 + rand() * 36;
+  // 一条淡折线横穿（干扰读图但不破坏字形：opacity 0.10，远低于字符对比度）
+  {
+    const y1 = 6 + rand() * 40;
     const points = [`M-4 ${y1.toFixed(1)}`];
     let x = 12 + rand() * 20;
     while (x < CAPTCHA_WIDTH + 8) {
-      points.push(`L${x.toFixed(1)} ${(4 + rand() * 40).toFixed(1)}`);
+      points.push(`L${x.toFixed(1)} ${(4 + rand() * 44).toFixed(1)}`);
       x += 16 + rand() * 22;
     }
-    noise += `<path d="${points.join(' ')}" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.2"/>`;
+    noise += `<path d="${points.join(' ')}" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="1.1"/>`;
   }
-  // 噪点
-  for (let i = 0; i < 26; i++) {
-    noise += `<circle cx="${(rand() * CAPTCHA_WIDTH).toFixed(1)}" cy="${(rand() * CAPTCHA_HEIGHT).toFixed(1)}" r="${(0.6 + rand() * 1.4).toFixed(1)}" fill="#ffffff" opacity="${(0.08 + rand() * 0.14).toFixed(2)}"/>`;
+  // 少量噪点
+  for (let i = 0; i < 14; i++) {
+    noise += `<circle cx="${(rand() * CAPTCHA_WIDTH).toFixed(1)}" cy="${(rand() * CAPTCHA_HEIGHT).toFixed(1)}" r="${(0.6 + rand() * 1.2).toFixed(1)}" fill="#ffffff" opacity="${(0.06 + rand() * 0.06).toFixed(2)}"/>`;
   }
 
-  // 逐字符渲染：等距分布 + 随机纵向偏移 / 旋转 / 字号 / 颜色
+  // 逐字符渲染：等距分布 + 轻微纵向偏移 / 旋转 / 字号 / 颜色（可读性优先：
+  // 旋转 ±8° 与纵向 ±3px 足以打散 OCR 直读，又不让人眼误判字形）
   const step = CAPTCHA_WIDTH / CAPTCHA_ANSWER_LENGTH;
   let chars = '';
   for (let i = 0; i < answer.length; i++) {
     const cx = step * i + step / 2;
-    const cy = CAPTCHA_HEIGHT / 2 + 5 + (rand() - 0.5) * 9;
-    const rotate = ((rand() - 0.5) * 26).toFixed(1);
-    const fontSize = 23 + Math.round(rand() * 6);
+    const cy = CAPTCHA_HEIGHT / 2 + 6 + (rand() - 0.5) * 6;
+    const rotate = ((rand() - 0.5) * 16).toFixed(1);
+    const fontSize = 28 + Math.round(rand() * 5);
     const fill = palette[Math.floor(rand() * palette.length)];
     chars +=
       `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" transform="rotate(${rotate} ${cx.toFixed(1)} ${cy.toFixed(1)})" ` +

@@ -5070,7 +5070,7 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
 .image-captcha__figure {
   position: relative;
   width: 100%;
-  aspect-ratio: 160 / 48;
+  aspect-ratio: 180 / 52;
   border: 1px solid var(--border-strong);
   border-radius: var(--control-radius, 8px);
   overflow: hidden;
@@ -5093,7 +5093,15 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
 .image-captcha__row {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
+}
+
+.image-captcha__hint {
+  margin-top: 6px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .image-captcha__input {

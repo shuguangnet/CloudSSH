@@ -430,8 +430,14 @@ export class ConnectionForm {
           const data = (await response.json().catch(() => ({}))) as { retryAfterSec?: number };
           showError(t('auth.adminLoginLocked', { seconds: data.retryAfterSec ?? 60 }));
         } else if (response.status === 403) {
-          showError(t('auth.adminLoginCaptchaFailed'));
-          this.adminDialogCaptcha?.focus();
+          const data = (await response.json().catch(() => ({}))) as { error?: string };
+          if (data.error === 'Forbidden origin') {
+            // 同源校验失败（非验证码问题）：与“验证码错误”区分，避免误导排查
+            showError(t('auth.adminLoginOriginForbidden'));
+          } else {
+            showError(t('auth.adminLoginCaptchaFailed'));
+            this.adminDialogCaptcha?.focus();
+          }
         } else if (response.status === 500) {
           showError(t('auth.adminHashInvalid'));
         } else if (response.status === 501) {

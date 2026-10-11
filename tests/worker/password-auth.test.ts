@@ -557,8 +557,8 @@ describe('密码认证 — 登录端点', () => {
     };
     // 响应不回显答案（挑战载荷只含 sha256 摘要，明文可 base64 解码也不泄露）
     expect(challenge.image).toContain('<svg');
-    expect(challenge.width).toBe(160);
-    expect(challenge.height).toBe(48);
+    expect(challenge.width).toBe(180);
+    expect(challenge.height).toBe(52);
 
     const res = await worker.fetch(
       makeRequest('/api/auth/password/login', {

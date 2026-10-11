@@ -77,7 +77,11 @@ export async function createImageCaptcha(): Promise<ImageCaptchaWidget> {
   const row = document.createElement('div');
   row.className = 'image-captcha__row';
   row.append(input, refresh);
-  root.append(figure, row);
+  const hint = document.createElement('div');
+  hint.className = 'image-captcha__hint';
+  hint.setAttribute('data-i18n', 'auth.captchaRefreshHint');
+  hint.textContent = t('auth.captchaRefreshHint');
+  root.append(figure, row, hint);
 
   let challenge: ChallengeResponse | null = null;
   let destroyed = false;
