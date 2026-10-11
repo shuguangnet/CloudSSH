@@ -3,6 +3,7 @@
 // GitHub Actions 质量门禁不含该规则（AGENTS.md #27）。
 import { onLocaleChange, t, translateDocument } from './i18n';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
+import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { loadKnownFingerprint } from './known-hosts';
 import { parsePort } from './port';
 import { stretchAdminPassword } from './password-stretch';
@@ -77,6 +78,7 @@ export class ConnectionForm {
   private turnstileSitekey = '';
   private turnstileTheme: ColorScheme | null = null;
   /** 密码模式下的浏览器预拉伸参数（/api/config 公开下发）；null = 非密码模式 */
+  private adminUsernameRequired = false;
   private passwordAuthParams: { iterations: number; salt: string } | null = null;
   private adminDialogTurnstileId: string | null = null;
 
@@ -113,7 +115,9 @@ export class ConnectionForm {
         authMode?: 'password' | 'github' | 'anonymous';
         passwordAuth?: { kdf: string; iterations: number; salt: string } | null;
         passwordHashInvalid?: boolean;
+        adminUsernameRequired?: boolean;
       };
+      this.adminUsernameRequired = config.adminUsernameRequired === true;
       this.turnstileEnabled = config.turnstileEnabled;
       this.turnstileSitekey = config.sitekey;
 
@@ -322,6 +326,17 @@ export class ConnectionForm {
     title.id = titleId;
     header.append(icon, title);
 
+    const usernameLabel = document.createElement('label');
+    usernameLabel.className = 'auth-challenge-dialog__label';
+    usernameLabel.textContent = t('auth.adminUsernameLabel');
+    const usernameInput = document.createElement('input');
+    usernameInput.type = 'text';
+    usernameInput.name = 'username';
+    usernameInput.className = 'auth-challenge-dialog__input';
+    usernameInput.autocomplete = 'username';
+    usernameInput.maxLength = 64;
+    usernameInput.setAttribute('aria-label', t('auth.adminUsernameLabel'));
+    usernameLabel.appendChild(usernameInput);
     const label = document.createElement('label');
     label.className = 'auth-challenge-dialog__label';
     label.textContent = t('auth.adminPasswordLabel');
@@ -370,7 +385,9 @@ export class ConnectionForm {
     submitButton.textContent = t('auth.adminLoginSubmit');
     actions.append(cancelButton, submitButton);
 
-    form.append(accent, header, label, passwordInput, turnstileContainer, errorText, actions);
+    if (this.adminUsernameRequired) form.append(accent, header, usernameLabel);
+    else form.append(accent, header);
+    form.append(label, passwordInput, turnstileContainer, errorText, actions);
     dialog.appendChild(form);
     document.body.appendChild(dialog);
 
@@ -385,6 +402,11 @@ export class ConnectionForm {
     const submit = async (): Promise<void> => {
       if (pending) return;
       const password = passwordInput.value;
+      if (this.adminUsernameRequired && !usernameInput.value.trim()) {
+        showError(t('auth.adminUsernameRequired'));
+        usernameInput.focus();
+        return;
+      }
       if (!password) {
         showError(t('auth.validationPassword'));
         passwordInput.focus();
@@ -400,6 +422,7 @@ export class ConnectionForm {
       pending = true;
       submitButton.disabled = true;
       errorText.style.display = 'none';
+      let loginRequestStarted = false;
       try {
         // 浏览器本地 PBKDF2 预拉伸（server relief），原始密码不出浏览器
         const key = await stretchAdminPassword(
@@ -407,10 +430,11 @@ export class ConnectionForm {
           this.passwordAuthParams.salt,
           this.passwordAuthParams.iterations
         );
+        loginRequestStarted = true;
         const response = await fetch('/api/auth/password/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, turnstileToken }),
+          body: JSON.stringify({ key, turnstileToken, ...(this.adminUsernameRequired ? { username: usernameInput.value.trim() } : {}) }),
         });
 
         if (response.ok) {
@@ -449,7 +473,7 @@ export class ConnectionForm {
           showError(t('auth.adminLoginNetwork'));
         }
       } catch {
-        showError(t('auth.adminLoginNetwork'));
+        showError(t(loginRequestStarted ? 'auth.adminLoginNetwork' : 'auth.adminLoginCrypto'));
       } finally {
         pending = false;
         submitButton.disabled = false;
@@ -584,7 +608,11 @@ export class ConnectionForm {
                 <span class="material-symbols-outlined" style="font-size: 14px;">upload_file</span>
                 <span data-i18n="auth.chooseKeyFile">选择密钥文件</span>
               </label>
-              <input type="file" id="private-key-file" accept=".pem,.key,.txt,.pub" class="hidden">
+              <input type="file" id="private-key-file" class="hidden">
+              <button type="button" id="choose-host-key" class="hidden text-[11px] text-muted hover:text-primary cursor-pointer flex items-center gap-1 border border-dim px-2 py-1 hover:border-[var(--accent)] transition-all" data-i18n="auth.serverKeyFile" aria-label="服务器文件" data-i18n-aria-label="auth.serverKeyFile">
+                <span class="material-symbols-outlined" style="font-size: 14px;">dns</span>
+                <span>服务器文件</span>
+              </button>
               <span id="file-name" class="text-[10px] text-muted truncate"></span>
             </div>
           </div>
@@ -666,6 +694,23 @@ export class ConnectionForm {
 
       // Reset file input
       fileInput.value = '';
+    });
+
+    // 浏览部署服务器上已存在的密钥文件（仅自托管部署可用）
+    const hostKeyButton = document.getElementById('choose-host-key');
+    void hostFilesAvailable().then((available) => {
+      if (available) hostKeyButton?.classList.remove('hidden');
+    });
+    hostKeyButton?.addEventListener('click', () => {
+      openHostFileBrowser({
+        onSelected: (path, content) => {
+          const privateKeyTextarea = document.getElementById('private-key') as HTMLTextAreaElement;
+          privateKeyTextarea.value = content;
+          if (fileNameSpan) {
+            fileNameSpan.textContent = path;
+          }
+        },
+      });
     });
   }
 

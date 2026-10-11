@@ -194,6 +194,8 @@ export interface Env {
   // 置空/删除即刻退回 GitHub 模式；verifier = SHA-256(PBKDF2(password, salt, iterations))。
   // 浏览器端执行 PBKDF2 预拉伸（server relief），Worker 侧仅做一次 SHA-256 比对（Free 套餐 CPU 安全）。
   ADMIN_PASSWORD_HASH?: string;
+  /** Optional account name required by self-hosted administrator login. */
+  ADMIN_USERNAME?: string;
 }
 
 /** /api/config 下发的密码认证公开参数（盐与迭代数非机密，供浏览器预拉伸） */

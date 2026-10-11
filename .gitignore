@@ -19,3 +19,7 @@ coverage/
 playwright-report/
 test-results/
 .playwright-cli/
+
+# Deployment-local Compose overrides (see docs/self-hosted.md)
+compose.override.yaml
+compose.override.yml

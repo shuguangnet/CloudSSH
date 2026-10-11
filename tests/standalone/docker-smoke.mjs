@@ -34,7 +34,7 @@ try {
   assert.equal(healthy, true);
   const config = await (await fetch(`${base}/api/config`)).json();
   const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-  const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+  const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
   assert.equal(login.status, 200);
   const cookie = login.headers.getSetCookie()[0].split(';')[0];
   const api = (path, method = 'GET', body) => fetch(`${base}${path}`, { method,

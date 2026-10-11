@@ -19,6 +19,8 @@ bash scripts/deploy.sh --docker
 
 仅在受信任内网需要 HTTP 时，可以明确设置 `ALLOW_INSECURE_HTTP=true`、`BIND_ADDRESS=0.0.0.0` 和实际 `BASE_URL`。HTTP 会关闭 Cookie 的 Secure 属性。
 
+若明确使用公网 IP 的 HTTP 地址，同样需要设置上述选项，并将 `BASE_URL` 设为实际地址（例如 `http://5.175.220.95:8788`）。浏览器在 HTTP 下缺少 Web Crypto 时，管理员密码预拉伸通过本地异步 PBKDF2 兼容实现完成，原始密码仍不会发送给后端；HTTP 传输自身不加密。
+
 管理员密码校验值和所有数据库保存在 `cloudssh-data` Docker 卷中。容器使用非 root 用户、只读根文件系统、无 Linux capabilities。升级使用同一个 Compose 项目和数据卷：
 
 ```bash
@@ -40,7 +42,33 @@ unset admin_password
 docker compose up -d
 ```
 
-初始化不会覆盖已有密码。轮换时用原项目 `hash-password` 工具生成新校验值，替换卷中的 `admin-password-hash`（权限 600），重启服务；旧浏览器会话和旧 MCP 令牌均失效。
+默认管理员账号为 `admin`（首次初始化可用 `ADMIN_USERNAME` 设置），原有部署升级后密码保持不变。登录后点击用户信息旁的「账号设置」，或访问 `/account/settings`，输入当前密码后即可修改账号或密码。新密码为 12–256 个字符；更改密码会立即使旧登录会话和 MCP 令牌失效，并关闭现有浏览器 SSH 连接，服务器与主机指纹数据保留。只修改账号会保留当前会话和 MCP 令牌。
+
+账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
+
+## 服务器文件密钥选择（文件浏览器）
+
+自托管部署的保存服务器弹窗（新增／编辑／克隆）和匿名连接表单在「选择密钥文件」旁提供「服务器文件」入口，可浏览部署服务器上已存在的私钥文件（如 `/root/.ssh/id_ed25519`），选中后内容直接填入私钥文本域，无需从手机或电脑上传。后端提供两个需要管理员会话的只读接口：`GET /api/host-files?path=`（目录列表，目录优先、最多 500 项）和 `GET /api/host-file?path=`（读取不超过 1 MiB 的普通文件）；Cloudflare Workers 部署无此路由，前端探测不到时自动隐藏入口。
+
+无 Docker 脚本部署直接生效，可浏览运行用户的整个文件系统。Docker 部署默认只能浏览容器内部文件；如需选择宿主机上的密钥，在同目录创建 `compose.override.yaml`（已被 .gitignore 忽略）挂载对应目录，例如挂载 root 专属的 `~/.ssh`：
+
+```yaml
+services:
+  cloudssh:
+    user: "0:0"
+    volumes:
+      - /root/.ssh:/host/keys:ro
+```
+
+容器默认以 uid 1000（node）运行，无法读取 root 属主且权限为 700 的 `~/.ssh`；上例改用 root 运行并通过属主权限读取，挂载为只读，容器仍保持只读根文件系统、无 capabilities 与 no-new-privileges。已有部署首次从默认用户切换到 root 时，数据卷内文件仍属 uid 1000，需先调整属主再启动：
+
+```bash
+docker compose down
+chown -R 0:0 "$(docker volume inspect cloudssh_cloudssh-data --format '{{.Mountpoint}}')"
+docker compose up -d
+```
+
+多个目录可追加更多 `:ro` 挂载；浏览器中在 `/host/keys` 下选择密钥。
 
 ## 无 Docker 脚本部署
 

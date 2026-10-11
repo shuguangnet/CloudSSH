@@ -1,16 +1,19 @@
 import { createServer } from 'node:http';
 import { readFileSync, mkdirSync, chmodSync, existsSync, readdirSync } from 'node:fs';
+import { readdir, stat, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer, WebSocket as NetworkWebSocket } from 'ws';
 import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
 import { AccessStore, tokenHash } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
+import { AdminAccount, validUsername } from './admin-account.mjs';
 import { savedServers } from './operations.mjs';
 
 process.umask(0o077);
 installWorkerGlobals();
 const { worker, SSHSessionDO, UserDBDO, SSHShareDO, SSHSession,
-  getAuthenticatedUser, isBlockedCommand } = await import('../dist/worker.mjs');
+  getAuthenticatedUser, parseAdminPasswordHash, isBlockedCommand } = await import('../dist/worker.mjs');
 
 const dataDir = resolve(process.env.DATA_DIR || './data');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -37,6 +40,8 @@ if (env.GITHUB_ALLOWED_USER_IDS === '') delete env.GITHUB_ALLOWED_USER_IDS;
 if (!env.ADMIN_PASSWORD_HASH && existsSync(join(dataDir, 'admin-password-hash'))) {
   env.ADMIN_PASSWORD_HASH = readFileSync(join(dataDir, 'admin-password-hash'), 'utf8').trim();
 }
+const adminAccount = new AdminAccount(dataDir, env);
+if (env.ADMIN_PASSWORD_HASH && parseAdminPasswordHash(env.ADMIN_PASSWORD_HASH) === 'invalid') throw new Error('Invalid administrator password hash');
 if (!env.ADMIN_PASSWORD_HASH && !(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET)) {
   throw new Error('Authentication required: run scripts/setup-standalone.mjs or configure GitHub OAuth');
 }
@@ -44,7 +49,7 @@ env.USER_DB = new LocalNamespace('users', UserDBDO, env, dataDir);
 env.SSH_SESSION = new LocalNamespace('ssh', SSHSessionDO, env, dataDir);
 env.SSH_SHARE = new LocalNamespace('shares', SSHShareDO, env, dataDir);
 const store = new AccessStore(join(dataDir, 'mcp.sqlite'));
-const authGeneration = env.ADMIN_PASSWORD_HASH ? tokenHash(env.ADMIN_PASSWORD_HASH) : 'github';
+let authGeneration = env.ADMIN_PASSWORD_HASH ? tokenHash(env.ADMIN_PASSWORD_HASH) : 'github';
 
 // Support Cloudflare's outbound WebSocket fetch for existing Tunnel connections.
 const nativeFetch = globalThis.fetch;
@@ -150,8 +155,109 @@ async function management(request, pathname) {
   return Response.json({ error: 'Not found' }, { status: 404 });
 }
 
+async function accountManagement(request) {
+  if (!env.ADMIN_PASSWORD_HASH) return Response.json({ error: 'Password login required' }, { status: 404 });
+  const generation = authGeneration;
+  const usernameBefore = env.ADMIN_USERNAME;
+  const user = await getAuthenticatedUser(request, env);
+  if (!user || String(user.github_id) !== '-1') return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  if (request.method === 'GET') return Response.json({ username: env.ADMIN_USERNAME });
+  if (request.method !== 'PUT') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  if (request.headers.get('Origin') !== env.BASE_URL) return Response.json({ error: 'Invalid origin' }, { status: 403 });
+  const body = await request.json();
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'Invalid account settings' }, { status: 400 });
+  if (!validUsername(body.username)) return Response.json({ error: 'Invalid account name' }, { status: 400 });
+  const newHash = body.passwordHash;
+  if (newHash !== undefined) {
+    const parsed = typeof newHash === 'string' ? parseAdminPasswordHash(newHash) : 'invalid';
+    if (!parsed || parsed === 'invalid' || newHash !== newHash.trim() || parsed.iterations !== 600000 || parsed.salt.length !== 16) {
+      return Response.json({ error: 'Invalid new password verifier' }, { status: 400 });
+    }
+  }
+  // Reuse the persistent login throttle and constant-time password verifier.
+  const verified = await worker.fetch(new Request(`${env.BASE_URL}/api/auth/password/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: env.BASE_URL,
+      'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || 'unknown' },
+    body: JSON.stringify({ username: usernameBefore, key: body.currentKey, turnstileToken: body.turnstileToken }),
+  }), { ...env, TURNSTILE_SECRET: undefined });
+  // Already authenticated and origin-checked; retain throttling without a second CAPTCHA.
+  if (!verified.ok) return verified;
+  if (generation !== authGeneration || usernameBefore !== env.ADMIN_USERNAME) {
+    return Response.json({ error: 'Account changed; sign in again' }, { status: 409 });
+  }
+  const changedPassword = newHash !== undefined && newHash !== env.ADMIN_PASSWORD_HASH;
+  adminAccount.update(body.username, newHash ?? env.ADMIN_PASSWORD_HASH);
+  authGeneration = tokenHash(env.ADMIN_PASSWORD_HASH);
+  if (changedPassword) {
+    store.revokeOwner(user);
+    for (const client of wss.clients) client.close(1008, 'Administrator password changed');
+  }
+  return Response.json({ username: env.ADMIN_USERNAME, loginRequired: changedPassword });
+}
+
 const inflight = new Map();
 let activeMcp = 0;
+
+// Admin-only file browsing on the self-hosted deployment, so keys already on this
+// machine (for example ~/.ssh/id_ed25519) can be picked for saved servers.
+const HOST_FILE_MAX_BYTES = 1024 * 1024;
+const HOST_LISTING_MAX_ENTRIES = 500;
+function hostFilePath(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.length > 4096 || raw.includes('\0')) return null;
+  return resolve(raw);
+}
+async function listHostFiles(request, url) {
+  if (!await getAuthenticatedUser(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401 });
+  const raw = url.searchParams.get('path');
+  if (raw !== null && hostFilePath(raw) === null) return Response.json({ error: 'Absolute path required' }, { status: 400 });
+  const dirPath = raw === null ? resolve(homedir()) : hostFilePath(raw);
+  let entries;
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return Response.json({ error: 'Directory not found' }, { status: 404 });
+    if (error.code === 'EACCES' || error.code === 'EPERM') return Response.json({ error: 'Access denied' }, { status: 403 });
+    return Response.json({ error: 'Unable to list directory' }, { status: 500 });
+  }
+  let truncated = false;
+  const listed = [];
+  for (const entry of entries) {
+    if (listed.length >= HOST_LISTING_MAX_ENTRIES) { truncated = true; break; }
+    let type = entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : null;
+    let size = null;
+    try {
+      // Follow symlinks so a symlinked .ssh directory still navigates.
+      const stats = await stat(join(dirPath, entry.name));
+      type = stats.isDirectory() ? 'dir' : stats.isFile() ? 'file' : null;
+      if (type === 'file') size = stats.size;
+    } catch { /* Keep the dirent type when stat is not permitted. */ }
+    if (!type) continue;
+    listed.push({ name: entry.name, type, size });
+  }
+  listed.sort((a, b) => (a.type === b.type
+    ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    : a.type === 'dir' ? -1 : 1));
+  return Response.json({ path: dirPath, entries: listed, truncated });
+}
+async function readHostFile(request, url) {
+  if (!await getAuthenticatedUser(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401 });
+  const filePath = hostFilePath(url.searchParams.get('path'));
+  if (!filePath) return Response.json({ error: 'Absolute path required' }, { status: 400 });
+  let stats;
+  try {
+    stats = await stat(filePath);
+  } catch {
+    return Response.json({ error: 'File not found' }, { status: 404 });
+  }
+  if (!stats.isFile()) return Response.json({ error: 'Not a regular file' }, { status: 400 });
+  if (stats.size > HOST_FILE_MAX_BYTES) return Response.json({ error: 'File exceeds 1 MiB limit' }, { status: 413 });
+  try {
+    return Response.json({ path: filePath, size: stats.size, content: await readFile(filePath, 'utf8') });
+  } catch (error) {
+    if (error.code === 'EACCES' || error.code === 'EPERM') return Response.json({ error: 'Access denied' }, { status: 403 });
+    return Response.json({ error: 'Unable to read file' }, { status: 500 });
+  }
+}
 const server = createServer(async (req, res) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) return sendJson(res, 400, { error: 'Invalid request target' });
@@ -187,6 +293,15 @@ const server = createServer(async (req, res) => {
     }
     const body = !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
     const request = requestFromNode(req, body);
+    if (pathname === '/api/admin/account') return sendResponse(res, await accountManagement(request));
+    if (pathname === '/account/settings') {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+      if (!env.ADMIN_PASSWORD_HASH || !await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
+      return sendResponse(res, new Response(readFileSync(new URL('./account.html', import.meta.url)), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+      }));
+    }
+    if (pathname === '/account/settings.js' && req.method === 'GET') return sendResponse(res, new Response(readFileSync(new URL('../dist/account.js', import.meta.url)), { headers: { 'Content-Type': 'text/javascript; charset=utf-8' } }));
     if (pathname === '/mcp/settings') {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
       if (!await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
@@ -202,9 +317,11 @@ const server = createServer(async (req, res) => {
       }));
     }
     if (pathname.startsWith('/api/mcp/')) return sendResponse(res, await management(request, pathname));
+    if (pathname === '/api/host-files' && req.method === 'GET') return sendResponse(res, await listHostFiles(request, requestUrl));
+    if (pathname === '/api/host-file' && req.method === 'GET') return sendResponse(res, await readHostFile(request, requestUrl));
     const response = await worker.fetch(request, env);
     if (pathname === '/api/config' && response.ok) {
-      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true }));
+      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
     }
     return sendResponse(res, response);
   } catch (error) {

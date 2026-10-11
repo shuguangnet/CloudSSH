@@ -61,6 +61,10 @@ export class AccessStore {
     return this.db.prepare('UPDATE mcp_tokens SET revoked_at=? WHERE id=? AND github_id=? AND revoked_at IS NULL')
       .run(Date.now(), id, String(user.github_id)).changes > 0;
   }
+  revokeOwner(user) {
+    this.db.prepare('UPDATE mcp_tokens SET revoked_at=? WHERE github_id=? AND revoked_at IS NULL')
+      .run(Date.now(), String(user.github_id));
+  }
   audit(identity, tool, serverId, status, details = {}) {
     this.db.prepare('INSERT INTO mcp_audit (token_id, github_id, server_id, tool, status, created_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(identity.id, identity.github_id, serverId ?? null, tool, status, Date.now(), JSON.stringify(details));

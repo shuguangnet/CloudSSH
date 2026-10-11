@@ -78,6 +78,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.keyPlaceholder':
     '-----BEGIN OPENSSH PRIVATE KEY-----\n...paste private key here...\n-----END OPENSSH PRIVATE KEY-----',
   'auth.chooseKeyFile': 'Choose key file',
+  'auth.serverKeyFile': 'Server file',
   'auth.regionHint': 'Connection region',
   'auth.regionOptional': 'Optional; Auto lets Cloudflare choose',
   'auth.remember': 'Remember connection',
@@ -95,6 +96,9 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   // --- Single-admin password sign-in (alternative auth mode, mutually exclusive with GitHub) ---
   'auth.adminLogin': 'Admin Login',
   'auth.adminLoginTitle': 'Admin Sign In',
+  'auth.adminUsernameLabel': 'Administrator account',
+  'auth.adminUsernameRequired': 'Enter the administrator account.',
+  'auth.adminAccountSettings': 'Account settings',
   'auth.adminPasswordLabel': 'Admin Password',
   'auth.adminLoginSubmit': 'Sign In',
   'auth.adminLoginCancel': 'Cancel',
@@ -103,11 +107,12 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.adminHashInvalidTitle': 'Admin password configuration is invalid',
   'auth.adminHashInvalid':
     'ADMIN_PASSWORD_HASH is malformed; sign-in is disabled. Ask the administrator to fix it.',
-  'auth.adminLoginFailed': 'Incorrect password',
+  'auth.adminLoginFailed': 'Incorrect account or password',
   'auth.adminLoginLocked': 'Too many attempts. Try again in {seconds} seconds.',
   'auth.adminLoginTurnstileFailed': 'Human verification failed. Please try again.',
   'auth.adminLoginUnavailable':
     'Password sign-in is unavailable (auth mode may have changed). Refresh the page.',
+  'auth.adminLoginCrypto': 'Your browser could not process the login password. Update your browser and reload the page.',
   'auth.adminLoginNetwork': 'Network error. Please try again later.',
   // --- Admin password hash generator (in-browser local ADMIN_PASSWORD_HASH generation) ---
   'auth.adminHashGenTitle': 'Admin Password Sign-In Setup',
@@ -853,4 +858,13 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'snippets.error.limitReached': 'Snippet limit ({max}) reached.',
   'snippets.error.notFound': 'The snippet no longer exists.',
   'snippets.error.network': 'Network error. Please try again later.',
+  'hostFiles.title': 'Browse server files',
+  'hostFiles.pathLabel': 'Path',
+  'hostFiles.go': 'Go',
+  'hostFiles.up': 'Parent directory',
+  'hostFiles.empty': 'Empty directory',
+  'hostFiles.truncated': 'Too many entries; showing the first 500',
+  'hostFiles.selectFile': 'Select this file',
+  'hostFiles.loadFailed': 'Could not read the directory.',
+  'hostFiles.readFailed': 'Could not read the file.',
 };

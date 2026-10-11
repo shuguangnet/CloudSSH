@@ -8,6 +8,9 @@
  * 与 `scripts/hash-password.mjs` 的生成口径保持一致。
  */
 
+import { pbkdf2Async } from '@noble/hashes/pbkdf2';
+import { sha256 } from '@noble/hashes/sha256';
+
 function b64urlToBytes(input: string): Uint8Array {
   const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
@@ -54,18 +57,26 @@ export async function stretchAdminPassword(
   const salt = b64urlToBytes(saltB64url);
   if (salt.length < 8) throw new Error('Invalid KDF salt');
 
-  const baseKey = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-  // SAFETY: b64urlToBytes 以 `new Uint8Array(length)` 构造，底层恒为纯 ArrayBuffer，
-  // 运行时满足 BufferSource；断言仅桥接 TS 5.7+ lib 对 Uint8Array<ArrayBufferLike> 的类型收敛差异。
-  const kdfParams = { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations };
-  const bits = await crypto.subtle.deriveBits(kdfParams, baseKey, STRETCHED_KEY_BYTES * 8);
-  return bytesToB64url(new Uint8Array(bits));
+  // Some embedded/older browsers expose subtle but reject PBKDF2 operations.
+  // Keep the same local derivation when native Web Crypto is unavailable.
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const baseKey = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+      );
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations },
+        baseKey, STRETCHED_KEY_BYTES * 8
+      );
+      return bytesToB64url(new Uint8Array(bits));
+    } catch {
+      // No credentials leave the browser until local derivation succeeds.
+    }
+  }
+  const stretched = await pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
+    c: iterations, dkLen: STRETCHED_KEY_BYTES, asyncTick: 10,
+  });
+  return bytesToB64url(stretched);
 }
 
 /**
@@ -87,6 +98,11 @@ export async function buildAdminPasswordHash(
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const stretchedB64url = await stretchAdminPassword(password, bytesToB64url(salt), iterations);
   const stretched = b64urlToBytes(stretchedB64url);
-  const verifier = new Uint8Array(await crypto.subtle.digest('SHA-256', stretched));
+  let verifier: Uint8Array;
+  try {
+    verifier = new Uint8Array(await crypto.subtle.digest('SHA-256', stretched));
+  } catch {
+    verifier = sha256(stretched);
+  }
   return `pbkdf2$sha256$${iterations}$${bytesToB64url(salt)}$${bytesToB64url(verifier)}`;
 }

@@ -9,6 +9,7 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8787}:8787"
     environment:
       BASE_URL: "${BASE_URL:-http://localhost:8787}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ALLOW_INSECURE_HTTP: "${ALLOW_INSECURE_HTTP:-false}"
       GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
       GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"

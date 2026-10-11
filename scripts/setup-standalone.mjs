@@ -7,7 +7,7 @@ process.umask(0o077);
 const directory = resolve(process.env.DATA_DIR || './data');
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const file = join(directory, 'admin-password-hash');
-if (existsSync(file) || process.env.ADMIN_PASSWORD_HASH ||
+if (existsSync(join(directory, 'admin-account.json')) || existsSync(file) || process.env.ADMIN_PASSWORD_HASH ||
     (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET)) {
   console.log('Authentication already configured; no password changed.');
   process.exit(0);
@@ -29,5 +29,6 @@ const stretched = pbkdf2Sync(password, salt, 600000, 32, 'sha256');
 const verifier = createHash('sha256').update(stretched).digest('base64url');
 writeFileSync(file, `pbkdf2$sha256$600000$${salt.toString('base64url')}$${verifier}\n`, { mode: 0o600, flag: 'wx' });
 console.log('CloudSSH administrator authentication initialized.');
+console.log(`Administrator account: ${process.env.ADMIN_USERNAME || 'admin'}`);
 if (!process.argv.includes('--stdin')) console.log(`Administrator password (shown once): ${password}`);
 console.log('Save the password securely. The data directory stores only its verifier.');
