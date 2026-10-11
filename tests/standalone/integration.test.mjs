@@ -273,6 +273,21 @@ test('administrator account migration, account/password changes, invalidation an
     const config = await (await fetch(`${base}/api/config`)).json();
     return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
   };
+  /** 真实拖拽管理员登录对话框内的滑块，对齐 CAPTCHA_MODE=test 固定目标（120,48） */
+  const dragCaptchaToTestTarget = async (page, dialog) => {
+    await dialog.locator('.slider-captcha__piece').waitFor();
+    const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
+    const thumb = dialog.locator('.slider-captcha__thumb');
+    const box = await thumb.boundingBox();
+    const dx = (120 - 10) * scale;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
+      await page.waitForTimeout(35);
+    }
+    await page.mouse.up();
+  };
   const login = async (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key, captcha: await solveCaptcha(base) }) });
   const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
   const request = (cookie, path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -330,10 +345,17 @@ test('administrator account migration, account/password changes, invalidation an
         await page.getByText('密码已更新，请使用新账号和密码重新登录。', { exact: true }).waitFor();
         await page.goto(`${base}/?lang=zh-CN`);
         await page.locator('#admin-login-btn').click();
-        await page.locator('#admin-login-dialog input[name=username]').fill('operator2');
-        await page.locator('#admin-login-dialog input[type=password]').fill(newPassword);
-        await page.locator('#admin-login-dialog .auth-challenge-dialog__button--submit').click();
-        await page.locator('#admin-account-link').waitFor({ state: 'visible' });
+        const dialog = page.locator('#admin-login-dialog');
+        await dialog.locator('input[name=username]').fill('operator2');
+        await dialog.locator('input[type=password]').fill(newPassword);
+        // 密码模式登录对话框内嵌滑块验证码：真实拖拽对齐固定目标后才能提交
+        await dragCaptchaToTestTarget(page, dialog);
+        await dialog.locator('.auth-challenge-dialog__button--submit').click();
+        // 登录成功 → reload 进入用户空间；账号设置入口在用户下拉菜单（cc73480 重构后 #menu-account）
+        await page.locator('#user-space-section').waitFor({ state: 'visible' });
+        await page.locator('#user-menu-btn').click();
+        await page.locator('#menu-account').waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#menu-account').getAttribute('href'), '/account/settings');
         assert.deepEqual(errors, []);
       } finally { await browser.close(); }
     } else {
