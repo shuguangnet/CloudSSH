@@ -12,17 +12,56 @@
         <label><span data-i18n="name">名称</span><input id="name" maxlength="100" required autocomplete="off"></label>
         <label><span data-i18n="days">有效天数（1–365）</span><input id="days" type="number" min="1" max="365" value="30" required></label>
       </div>
-      <fieldset><legend data-i18n="servers">授权服务器</legend><div id="servers"></div></fieldset>
+      <fieldset><legend data-i18n="servers">授权服务器</legend>
+        <div class="server-picker">
+          <div class="server-picker__bar">
+            <label class="choice choice--mini"><input id="select-all" type="checkbox"><span data-i18n="selectAll">全选</span></label>
+            <span class="server-picker__count" id="server-count">0/0</span>
+            <input id="server-search" type="search" data-i18n-placeholder="searchServers" placeholder="搜索服务器…（名称 / 主机 / 标签）" autocomplete="off">
+          </div>
+          <div class="server-picker__grid" id="servers" role="group" data-i18n-label="servers"></div>
+          <p class="server-picker__empty" id="servers-empty" hidden data-i18n="noMatch">没有匹配的服务器</p>
+        </div>
+      </fieldset>
       <fieldset><legend data-i18n="permissions">权限</legend>
-        <label class="choice"><input name="scope" type="checkbox" value="read" checked><span data-i18n="read">读取目录与文件</span></label>
-        <label class="choice"><input name="scope" type="checkbox" value="write"><span data-i18n="write">写入文件</span></label>
-        <label class="choice"><input name="scope" type="checkbox" value="exec"><span data-i18n="exec">执行任意命令（拥有 SSH 账号的系统权限）</span></label>
+        <div class="scope-row">
+          <label class="choice"><input name="scope" type="checkbox" value="read" checked><span data-i18n="read">读取目录与文件</span></label>
+          <label class="choice"><input name="scope" type="checkbox" value="write"><span data-i18n="write">写入文件</span></label>
+          <label class="choice"><input name="scope" type="checkbox" value="exec"><span data-i18n="exec">执行任意命令（拥有 SSH 账号的系统权限）</span></label>
+        </div>
       </fieldset>
       <p class="hint" data-i18n="fingerprint">请先在面板连接服务器并验证主机指纹。MCP 调用无需保持浏览器打开。</p>
       <div class="actions"><button type="submit" class="primary" data-i18n="create">创建访问令牌</button></div>
     </form>
     <div id="created" hidden><h3 data-i18n="once">令牌仅显示这一次，请妥善保存</h3><textarea id="token" readonly aria-label="Access token"></textarea><div class="actions"><button id="copy" type="button" data-i18n="copy">复制令牌</button></div><h3 data-i18n="client">MCP 客户端配置示例</h3><pre id="client-config"></pre></div>
   </section>
-  <section><h2 data-i18n="tokens">访问令牌</h2><div class="scroll"><table><thead><tr><th data-i18n="name">名称</th><th data-i18n="servers">授权服务器</th><th data-i18n="permissions">权限</th><th data-i18n="expires">到期时间</th><th data-i18n="status">状态</th><th></th></tr></thead><tbody id="tokens"></tbody></table></div></section>
-  <section><h2 data-i18n="audit">调用审计</h2><p data-i18n="auditHint">记录调用状态和命令摘要，不保存命令输出、令牌或服务器凭据。</p><div class="scroll"><table><thead><tr><th data-i18n="time">时间</th><th data-i18n="name">令牌</th><th data-i18n="servers">服务器</th><th>Tool</th><th data-i18n="status">状态</th></tr></thead><tbody id="audit"></tbody></table></div><div class="actions"><button id="more" type="button" class="ghost" data-i18n="more">加载更早记录</button></div></section>
+  <section><h2 data-i18n="tokens">访问令牌</h2>
+    <div class="toolbar">
+      <input id="token-filter" type="search" data-i18n-placeholder="searchTokens" placeholder="按名称搜索…" autocomplete="off">
+      <select id="token-status-filter" data-i18n-label="status">
+        <option value="" data-i18n="allStatuses">全部状态</option>
+        <option value="active" data-i18n="active">有效</option>
+        <option value="revoked" data-i18n="revoked">已撤销</option>
+        <option value="expired" data-i18n="expired">已过期</option>
+      </select>
+      <span class="toolbar__count" id="token-count"></span>
+    </div>
+    <div class="scroll"><table><thead><tr><th data-i18n="name">名称</th><th data-i18n="servers">授权服务器</th><th data-i18n="permissions">权限</th><th data-i18n="expires">到期时间</th><th data-i18n="status">状态</th><th></th></tr></thead><tbody id="tokens"></tbody></table></div></section>
+  <section><h2 data-i18n="audit">调用审计</h2><p data-i18n="auditHint">记录调用状态和命令摘要，不保存命令输出、令牌或服务器凭据。</p>
+    <div class="toolbar">
+      <select id="audit-token-filter" data-i18n-label="name"></select>
+      <select id="audit-server-filter" data-i18n-label="servers"></select>
+      <select id="audit-tool-filter"><option value="">Tool: *</option></select>
+      <select id="audit-status-filter" data-i18n-label="status">
+        <option value="" data-i18n="allStatuses">全部状态</option>
+        <option value="succeeded">succeeded</option>
+        <option value="failed">failed</option>
+        <option value="started">started</option>
+        <option value="denied">denied</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <button id="audit-reset" type="button" class="ghost" data-i18n="reset">重置</button>
+    </div>
+    <div class="scroll"><table><thead><tr><th data-i18n="time">时间</th><th data-i18n="name">令牌</th><th data-i18n="servers">服务器</th><th>Tool</th><th data-i18n="status">状态</th></tr></thead><tbody id="audit"></tbody></table></div>
+    <div class="actions"><button id="more" type="button" class="ghost" data-i18n="more">加载更早记录</button></div></section>
 </main></body></html>

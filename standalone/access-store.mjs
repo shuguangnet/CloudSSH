@@ -17,6 +17,8 @@ export class AccessStore {
         github_id TEXT NOT NULL, server_id INTEGER, tool TEXT NOT NULL,
         status TEXT NOT NULL, created_at INTEGER NOT NULL, details TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS mcp_audit_owner ON mcp_audit(github_id, id);
+      CREATE INDEX IF NOT EXISTS mcp_audit_token ON mcp_audit(github_id, token_id, id);
+      CREATE INDEX IF NOT EXISTS mcp_audit_filter ON mcp_audit(github_id, server_id, id);
     `);
   }
   create(user, { name, server_ids, scopes, expires_in_days }, authGeneration = 'github') {
@@ -61,6 +63,16 @@ export class AccessStore {
     return this.db.prepare('UPDATE mcp_tokens SET revoked_at=? WHERE id=? AND github_id=? AND revoked_at IS NULL')
       .run(Date.now(), id, String(user.github_id)).changes > 0;
   }
+  /** 删除令牌记录：仅允许删除已撤销或已过期的令牌；审计记录保留（不可篡改）。 */
+  remove(user, id) {
+    const row = this.db.prepare('SELECT id FROM mcp_tokens WHERE id=? AND github_id=?').get(id, String(user.github_id));
+    if (!row) return false;
+    const disposable = this.db.prepare('SELECT id FROM mcp_tokens WHERE id=? AND github_id=? AND (revoked_at IS NOT NULL OR expires_at<=?)')
+      .get(id, String(user.github_id), Date.now());
+    if (!disposable) throw new Error('Active tokens must be revoked before deletion');
+    this.db.prepare('DELETE FROM mcp_tokens WHERE id=? AND github_id=?').run(id, String(user.github_id));
+    return true;
+  }
   revokeOwner(user) {
     this.db.prepare('UPDATE mcp_tokens SET revoked_at=? WHERE github_id=? AND revoked_at IS NULL')
       .run(Date.now(), String(user.github_id));
@@ -69,9 +81,14 @@ export class AccessStore {
     this.db.prepare('INSERT INTO mcp_audit (token_id, github_id, server_id, tool, status, created_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(identity.id, identity.github_id, serverId ?? null, tool, status, Date.now(), JSON.stringify(details));
   }
-  audits(user, before = Number.MAX_SAFE_INTEGER) {
-    return this.db.prepare('SELECT * FROM mcp_audit WHERE github_id=? AND id<? ORDER BY id DESC LIMIT 100')
-      .all(String(user.github_id), before);
+  /** 审计列表：支持 token_id / server_id / tool / status 组合筛选 + before 游标分页。 */
+  audits(user, { before = Number.MAX_SAFE_INTEGER, token_id = null, server_id = null, tool = null, status = null } = {}) {
+    const where = ['github_id=?', 'id<?']; const args = [String(user.github_id), before];
+    if (token_id) { where.push('token_id=?'); args.push(token_id); }
+    if (server_id !== null) { where.push('server_id=?'); args.push(server_id); }
+    if (tool) { where.push('tool=?'); args.push(tool); }
+    if (status) { where.push('status=?'); args.push(status); }
+    return this.db.prepare(`SELECT * FROM mcp_audit WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 100`).all(...args);
   }
   close() { this.db.close(); }
 }

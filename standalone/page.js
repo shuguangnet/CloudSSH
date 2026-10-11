@@ -12,7 +12,7 @@
     cyberpunk: {
       scheme: 'dark',
       vars: {
-        '--bg': '#0a0a0a', '--bg-surface': '#121212', '--bg-elevated': '#131313', '--bg-terminal': '#0e0e0e',
+        '--bg': '#0a0a0a', '--bg-surface': '#121212', '--bg-inset': '#0c0c0c', '--bg-elevated': '#131313', '--bg-terminal': '#0e0e0e',
         '--text': '#4af626', '--text-muted': '#bbccb0', '--text-dim': '#3c4b36',
         '--accent': '#4af626', '--accent-secondary': '#14d1ff',
         '--border': '#1f1f1f', '--border-strong': '#3c4b36',
@@ -27,7 +27,7 @@
     'standard-dark': {
       scheme: 'dark',
       vars: {
-        '--bg': '#0f1115', '--bg-surface': '#161a22', '--bg-elevated': '#1c222d', '--bg-terminal': '#0b0e14',
+        '--bg': '#0f1115', '--bg-surface': '#161a22', '--bg-inset': '#11151c', '--bg-elevated': '#1c222d', '--bg-terminal': '#0b0e14',
         '--text': '#e6edf3', '--text-muted': '#9ba7b4', '--text-dim': '#7d8590',
         '--accent': '#58a6ff', '--accent-secondary': '#79c0ff',
         '--border': '#30363d', '--border-strong': '#484f58',
@@ -42,7 +42,7 @@
     'standard-light': {
       scheme: 'light',
       vars: {
-        '--bg': '#f6f8fa', '--bg-surface': '#ffffff', '--bg-elevated': '#eef2f6', '--bg-terminal': '#ffffff',
+        '--bg': '#f6f8fa', '--bg-surface': '#ffffff', '--bg-inset': '#f0f3f7', '--bg-elevated': '#eef2f6', '--bg-terminal': '#ffffff',
         '--text': '#1f2328', '--text-muted': '#57606a', '--text-dim': '#656d76',
         '--accent': '#0969da', '--accent-secondary': '#0550ae',
         '--border': '#d0d7de', '--border-strong': '#afb8c1',
@@ -57,7 +57,7 @@
     'liquid-glass': {
       scheme: 'light',
       vars: {
-        '--bg': '#e6ecf4', '--bg-surface': 'rgba(255, 255, 255, 0.35)', '--bg-elevated': 'rgba(255, 255, 255, 0.55)', '--bg-terminal': 'rgba(255, 255, 255, 0.88)',
+        '--bg': '#e6ecf4', '--bg-surface': 'rgba(255, 255, 255, 0.35)', '--bg-inset': 'rgba(255, 255, 255, 0.22)', '--bg-elevated': 'rgba(255, 255, 255, 0.55)', '--bg-terminal': 'rgba(255, 255, 255, 0.88)',
         '--text': '#1d1d1f', '--text-muted': '#515154', '--text-dim': '#69696e',
         '--accent': '#0066da', '--accent-secondary': '#5856d6',
         '--border': 'rgba(0, 0, 0, 0.1)', '--border-strong': 'rgba(0, 0, 0, 0.18)',

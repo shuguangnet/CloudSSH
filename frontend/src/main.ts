@@ -1139,11 +1139,6 @@ async function init(): Promise<void> {
   });
   const initialThemeSelection = localStorage.getItem('cloudssh_theme_selection');
   restoreTheme();
-  // 设置版权年份
-  const copyrightYearSpan = document.getElementById('copyright-year');
-  if (copyrightYearSpan) {
-    copyrightYearSpan.textContent = new Date().getFullYear().toString();
-  }
 
   const shareToken = takeShareTokenFromLocation();
   if (shareToken) {

@@ -17,7 +17,6 @@ export const zhTW = {
   'common.auto': '自動',
   'common.password': '密碼',
   'common.privateKey': '私鑰',
-  'common.documentation': '文件',
   'feedback.info': '提示',
   'feedback.success': '操作成功',
   'feedback.warning': '請注意',

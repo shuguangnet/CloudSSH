@@ -222,3 +222,38 @@ test('revocation after SSH authentication prevents command dispatch', async () =
     assert.equal(output.isError, true); assert.equal(dispatched, false);
   } finally { await client.close(); await server.close(); store.close(); }
 });
+
+test('AccessStore: audit filters combine and delete only allows non-active tokens', () => {
+  const store = new AccessStore(':memory:');
+  const user = { id: 1, github_id: -1 };
+  const other = { id: 2, github_id: -2 };
+  const a = store.create(user, { name: 'alpha', server_ids: [1, 2], scopes: ['read'], expires_in_days: 1 });
+  const b = store.create(user, { name: 'beta', server_ids: [2], scopes: ['read', 'exec'], expires_in_days: 1 });
+  const c = store.create(other, { name: 'not-mine', server_ids: [1], scopes: ['read'], expires_in_days: 1 });
+  const ia = store.verify(a.token); const ib = store.verify(b.token);
+  store.audit(ia, 'list_servers', null, 'succeeded');
+  store.audit(ia, 'read_file', 1, 'failed');
+  store.audit(ia, 'read_file', 2, 'succeeded');
+  store.audit(ib, 'read_file', 2, 'succeeded');
+  store.audit(store.verify(c.token), 'read_file', 1, 'succeeded'); // 他人的审计不可见
+
+  // 组合筛选：token a + read_file → 2 条；token a + server 2 → 1 条；status failed → 1 条
+  assert.equal(store.audits(user, { token_id: a.id, tool: 'read_file' }).length, 2);
+  assert.equal(store.audits(user, { token_id: a.id, server_id: 2 }).length, 1);
+  assert.equal(store.audits(user, { status: 'failed' }).length, 1);
+  assert.equal(store.audits(user, { status: 'succeeded' }).length, 3);
+  assert.equal(store.audits(user).length, 4);
+
+  // 活跃令牌不可删除；他人令牌不可删；撤销后可删且审计保留
+  assert.throws(() => store.remove(user, a.id), /revoked before deletion/);
+  assert.equal(store.remove(other, a.id), false); // 不属 other → false 且不抛
+  store.revoke(user, b.id);
+  assert.equal(store.remove(user, b.id), true);
+  assert.equal(store.list(user).some((token) => token.id === b.id), false);
+  assert.equal(store.audits(user, { token_id: b.id }).length, 1, '审计记录保留');
+
+  // 过期令牌可直接删除
+  const expired = store.create(user, { name: 'gone', server_ids: [1], scopes: ['read'], expires_in_days: 1 });
+  store.db.prepare('UPDATE mcp_tokens SET expires_at=? WHERE id=?').run(Date.now() - 1, expired.id);
+  assert.equal(store.remove(user, expired.id), true);
+});

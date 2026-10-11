@@ -4,8 +4,57 @@
 .endpoint { margin: 14px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--text-muted); font-size: .92rem; }
 .endpoint code { font-size: .84rem; }
 
-#servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 18px; margin: 4px 0; }
-#servers .choice { margin: 6px 0; }
+/* 创建令牌：服务器多选 / 全选 / 搜索 */
+.server-picker { border: 1px solid var(--border); border-radius: var(--control-radius); overflow: hidden; }
+.server-picker__bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  background: var(--bg-inset); font-size: .88rem;
+}
+.server-picker__bar .choice--mini { margin: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.server-picker__count { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.server-picker__bar input[type="search"] {
+  flex: 1; min-width: 200px; margin: 0; max-width: 420px;
+  padding: 5px 10px; font-size: .86rem;
+}
+.server-picker__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px; padding: 10px 12px; max-height: 264px; overflow: auto;
+}
+.server-picker__empty { margin: 0; padding: 14px 12px; color: var(--text-muted); font-size: .88rem; }
+.server-card {
+  display: flex; align-items: flex-start; gap: 9px; margin: 0; cursor: pointer;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-card, transparent);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.server-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.server-card--selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.server-card input { margin-top: 2px; }
+.server-card__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.server-card__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-card__host { color: var(--text-muted); font-size: .8rem; font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-card__tags { color: var(--text-muted); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-row { display: flex; gap: 18px; flex-wrap: wrap; }
+
+/* 列表工具栏：筛选 + 计数 */
+.toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--control-radius);
+  background: var(--bg-inset);
+}
+.toolbar input[type="search"] { margin: 0; padding: 5px 10px; font-size: .86rem; min-width: 180px; max-width: 260px; }
+.toolbar select { margin: 0; padding: 5px 8px; font-size: .86rem; }
+.toolbar .ghost { margin: 0; }
+.toolbar__count { margin-left: auto; color: var(--text-muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+
+/* 行内操作按钮 */
+.row-actions { white-space: nowrap; text-align: right; }
+.row-actions button { margin-left: 6px; }
 
 #created {
   margin-top: 18px; padding: 16px 18px;

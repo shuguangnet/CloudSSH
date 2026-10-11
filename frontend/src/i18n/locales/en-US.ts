@@ -48,7 +48,6 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'common.auto': 'Auto',
   'common.password': 'Password',
   'common.privateKey': 'Private key',
-  'common.documentation': 'Documentation',
   'feedback.info': 'Notice',
   'feedback.success': 'Success',
   'feedback.warning': 'Attention',

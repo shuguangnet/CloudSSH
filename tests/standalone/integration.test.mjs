@@ -113,8 +113,14 @@ test('native panel and real MCP client enforce authentication, persistence and r
         const [name, ...value] = cookie.split('=');
         await context.addCookies([{ name, value: value.join('='), url: base }]);
         const page = await context.newPage();
+        page.on('dialog', (dialog) => dialog.accept()); // 撤销/删除确认框自动接受
         const errors = []; page.on('pageerror', (error) => errors.push(error.message));
         await page.goto(`${base}/mcp/settings`);
+        // 全选/取消联动服务器复选框与计数
+        await page.locator('#select-all').check();
+        assert.equal(await page.locator('input[name=server]').first().isChecked(), true);
+        await page.locator('#select-all').uncheck();
+        assert.equal(await page.locator('input[name=server]').first().isChecked(), false);
         await page.locator('input[name=server]').first().check();
         await page.locator('#name').fill('browser agent');
         await page.locator('#create-token button').click();
@@ -127,6 +133,9 @@ test('native panel and real MCP client enforce authentication, persistence and r
         const row = page.locator('#tokens tr').filter({ hasText: 'browser agent' });
         await row.getByRole('button', { name: 'Revoke' }).click();
         await row.getByText('Revoked', { exact: true }).waitFor();
+        // 删除记录：确认后从列表移除
+        await row.getByRole('button', { name: 'Delete' }).click();
+        await row.waitFor({ state: 'detached' });
         assert.deepEqual(errors, []);
       } finally { await browser.close(); }
     });
@@ -143,9 +152,22 @@ test('native panel and real MCP client enforce authentication, persistence and r
     await stop(child); child = await startPanel(directory, port);
     assert.equal((await api('/api/mcp/tokens')).status, 200);
     assert.equal((await (await api('/api/servers')).json())[0].id, id);
-    assert.ok((await (await api('/api/mcp/audit')).json()).some((item) => item.status === 'denied'));
+    const allAudit = await (await api('/api/mcp/audit')).json();
+    assert.ok(allAudit.some((item) => item.status === 'denied'));
+    // 审计筛选参数：非法值 400，合法组合生效
+    assert.equal((await api('/api/mcp/audit?tool=rm -rf')).status, 400);
+    assert.equal((await api('/api/mcp/audit?status=weird')).status, 400);
+    assert.equal((await api(`/api/mcp/audit?token_id=${token.id}&status=denied`)).status, 200);
+    const filteredAudit = await (await api(`/api/mcp/audit?token_id=${token.id}&status=denied`)).json();
+    assert.ok(filteredAudit.length > 0 && filteredAudit.every((item) => item.token_id === token.id && item.status === 'denied'));
+    // 撤销（幂等保留记录）与删除记录（purge）：活跃令牌 purge → 409
+    assert.equal((await api(`/api/mcp/tokens/${token.id}?purge=1`, 'DELETE')).status, 409);
     assert.equal((await api(`/api/mcp/tokens/${token.id}`, 'DELETE')).status, 200);
     assert.equal((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token.token}` } })).status, 401);
+    const purged = await api(`/api/mcp/tokens/${token.id}?purge=1`, 'DELETE');
+    assert.equal(purged.status, 200); assert.equal((await purged.json()).deleted, true);
+    assert.equal((await (await api('/api/mcp/tokens')).json()).some((row) => row.id === token.id), false);
+    assert.ok((await (await api(`/api/mcp/audit?token_id=${token.id}`)).json()).length > 0, '审计记录在令牌删除后保留');
     assert.equal((await fetch(`${base}/mcp`, { headers: { Origin: 'https://attacker.example' } })).status, 403);
     assert.equal((await api('/mcp/settings')).status, 200);
   } finally { await client?.close(); await stop(child); rmSync(directory, { recursive: true, force: true }); }

@@ -233,10 +233,6 @@ export class ServerList {
     this.bindEvents();
     await Promise.all([this.fetchSharingConfig(), this.fetchServers()]);
     this.renderServerGrid();
-
-    // 设置用户空间的版权年份
-    const yearSpan = document.getElementById('user-copyright-year');
-    if (yearSpan) yearSpan.textContent = new Date().getFullYear().toString();
   }
 
   refreshPageSize(): void {

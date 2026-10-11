@@ -7,6 +7,7 @@
 :root {
   --bg: #0a0a0a;
   --bg-surface: #121212;
+  --bg-inset: #0c0c0c;
   --bg-elevated: #131313;
   --bg-terminal: #0e0e0e;
   --text: #4af626;

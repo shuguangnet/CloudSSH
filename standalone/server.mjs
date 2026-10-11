@@ -180,12 +180,28 @@ async function management(request, pathname) {
   }
   const match = pathname.match(/^\/api\/mcp\/tokens\/([a-f0-9]{24})$/);
   if (match && request.method === 'DELETE') {
-    return Response.json({ revoked: store.revoke(user, match[1]) });
+    const purge = new URL(request.url).searchParams.get('purge') === '1';
+    if (!purge) return Response.json({ revoked: store.revoke(user, match[1]) });
+    try { return Response.json({ deleted: store.remove(user, match[1]) }); }
+    catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
   }
   if (pathname === '/api/mcp/audit' && request.method === 'GET') {
-    const before = Number(new URL(request.url).searchParams.get('before') || Number.MAX_SAFE_INTEGER);
+    const params = new URL(request.url).searchParams;
+    const before = Number(params.get('before') || Number.MAX_SAFE_INTEGER);
     if (!Number.isSafeInteger(before) || before < 1) return Response.json({ error: 'Invalid cursor' }, { status: 400 });
-    return Response.json(store.audits(user, before));
+    const token_id = params.get('token_id');
+    if (token_id && !/^[a-f0-9]{24}$/.test(token_id)) return Response.json({ error: 'Invalid token id' }, { status: 400 });
+    const server_id = params.has('server_id') && params.get('server_id') !== '' ? Number(params.get('server_id')) : null;
+    if (server_id !== null && (!Number.isSafeInteger(server_id) || server_id < 1)) return Response.json({ error: 'Invalid server id' }, { status: 400 });
+    const tool = params.get('tool');
+    if (tool && !['list_servers', 'list_snippets', 'get_server_info', 'list_files', 'read_file', 'download_file'].includes(tool)) {
+      return Response.json({ error: 'Invalid tool' }, { status: 400 });
+    }
+    const status = params.get('status');
+    if (status && !['succeeded', 'failed', 'started', 'unknown', 'denied'].includes(status)) {
+      return Response.json({ error: 'Invalid status' }, { status: 400 });
+    }
+    return Response.json(store.audits(user, { before, token_id, server_id, tool, status }));
   }
   return Response.json({ error: 'Not found' }, { status: 404 });
 }

@@ -17,7 +17,6 @@ export const zhCN = {
   'common.auto': '自动',
   'common.password': '密码',
   'common.privateKey': '私钥',
-  'common.documentation': '文档',
   'feedback.info': '提示',
   'feedback.success': '操作成功',
   'feedback.warning': '请注意',
