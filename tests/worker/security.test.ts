@@ -1178,6 +1178,45 @@ describe('安全 — 一次性 SSH 分享边界', () => {
     expect(invalidToken.status).toBe(400);
   });
 
+  it('反代域名下 claim 生成的 wsUrl 指向浏览器实际 origin（Origin 头优先）', async () => {
+    // 域名 https://ssh.example.com 访问但 BASE_URL=https://cloudssh.test：
+    // wsUrl 必须是 wss://ssh.example.com/...，否则前端同源校验拒绝且
+    // https 页面连 ws:// 会被 mixed-content 拦截
+    const worker = await loadWorker();
+    const shareStub = makeDOStub(() =>
+      Response.json({ ticket: 'b'.repeat(43), serverName: 'production', sessionExpiresAt: Date.now() + 60_000 }));
+    const env = makeEnv({ ENABLE_SSH_SHARING: 'true', sshShareStub: shareStub });
+    env.SSH_SHARE = { idFromName: vi.fn(() => 'share-do'), get: () => shareStub } as any;
+    const response = await worker.fetch(
+      makeRequest('/api/share/claim', {
+        method: 'POST',
+        headers: { Origin: 'https://ssh.example.com' },
+        body: { token: 'a'.repeat(43) },
+      }),
+      env
+    );
+    const payload = (await response.json()) as { wsUrl: string };
+    expect(payload.wsUrl.startsWith('wss://ssh.example.com/api/ssh?')).toBe(true);
+  });
+
+  it('无 Origin 头时 claim 的 wsUrl 退回 X-Forwarded-Host/Proto 链首', async () => {
+    const worker = await loadWorker();
+    const shareStub = makeDOStub(() =>
+      Response.json({ ticket: 'b'.repeat(43), serverName: 'production', sessionExpiresAt: Date.now() + 60_000 }));
+    const env = makeEnv({ ENABLE_SSH_SHARING: 'true', sshShareStub: shareStub });
+    env.SSH_SHARE = { idFromName: vi.fn(() => 'share-do'), get: () => shareStub } as any;
+    const response = await worker.fetch(
+      makeRequest('/api/share/claim', {
+        method: 'POST',
+        headers: { 'X-Forwarded-Host': 'ssh.example.com', 'X-Forwarded-Proto': 'https' },
+        body: { token: 'a'.repeat(43) },
+      }),
+      env
+    );
+    const payload = (await response.json()) as { wsUrl: string };
+    expect(payload.wsUrl.startsWith('wss://ssh.example.com/api/ssh?')).toBe(true);
+  });
+
   it('领取接口只返回短期 WebSocket 票据，不把原始分享凭证放入连接 URL', async () => {
     const worker = await loadWorker();
     const token = 'a'.repeat(43);

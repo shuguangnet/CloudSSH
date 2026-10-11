@@ -399,7 +399,7 @@ async function handleServersRoute(request: Request, url: URL, env: Env): Promise
       return Response.json(
         {
           id: shareId,
-          url: `${url.origin}/#/share/${token}`,
+          url: `${externalRequestOrigin(request, url)}/#/share/${token}`,
           expiresAt,
           maxSessionSeconds: maxSessionMinutes * 60,
         },
@@ -528,8 +528,7 @@ async function handleServersRoute(request: Request, url: URL, env: Env): Promise
     if (!tokenRes.ok) return tokenRes;
 
     const { token } = await tokenRes.json<{ token: string }>();
-    const wsProtocol = env.SELF_HOSTED === 'true' && url.protocol === 'http:' ? 'ws:' : 'wss:';
-    const wsUrl = `${wsProtocol}//${url.host}/api/ssh?token=${token}`;
+    const wsUrl = `${externalRequestOrigin(request, url).replace(/^http/, 'ws')}/api/ssh?token=${token}`;
 
     return Response.json({ wsUrl });
   }
@@ -986,6 +985,41 @@ function parseRequestUrl(input: string): URL | null {
   }
 }
 
+/**
+ * 浏览器实际可达的面板 origin（用于生成 WebSocket / 分享链接地址）。
+ * 反代/CDN 链路下 BASE_URL 通常是内网地址，直接用它生成的地址浏览器不可达
+ * （且 https 页面连 ws:// 会被 mixed-content 拦截）。优先级：
+ *  1) Origin 头（浏览器直接告知页面 origin，最准确）；
+ *  2) X-Forwarded-Proto + X-Forwarded-Host（中转反代标准转发头，链首）；
+ *  3) 与 BASE_URL host 不同的 Host 头（反代透传原始 Host）；
+ *  4) 请求 URL 自身（直连，与 BASE_URL 一致）。
+ * 返回字符串只回给请求者自身且前端有同源校验，伪造头无攻击面。
+ */
+function externalRequestOrigin(request: Request, url: URL): string {
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return parsed.origin;
+    } catch {
+      // fallthrough to forwarded headers
+    }
+  }
+  const first = (value: string | null): string => value?.split(',')[0].trim() ?? '';
+  const forwarded = first(request.headers.get('X-Forwarded-Host'));
+  const host = forwarded || (() => {
+    const h = request.headers.get('Host');
+    return h && h.toLowerCase() !== url.host.toLowerCase() ? h : '';
+  })();
+  if (host) {
+    const proto = first(request.headers.get('X-Forwarded-Proto'));
+    const scheme = proto === 'https' || proto === 'http' ? proto :
+      (forwarded ? 'https' : url.protocol.replace(':', ''));
+    return `${scheme}://${host}`;
+  }
+  return url.origin;
+}
+
 function hasSameWebSocketOrigin(request: Request, url: URL): boolean {
   // 反代域名部署：与登录同源判定同哲学（Origin 与实际 Host 同宿主即放行）
   return sameOriginOrHost(request, url);
@@ -1110,7 +1144,7 @@ async function handleShareClaim(request: Request, url: URL, env: Env): Promise<R
     sessionExpiresAt: number;
   }>();
   return Response.json({
-    wsUrl: `${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}/api/ssh?share_ref=${encodeURIComponent(shareRef)}&share_ticket=${encodeURIComponent(claim.ticket)}`,
+    wsUrl: `${externalRequestOrigin(request, url).replace(/^http/, 'ws')}/api/ssh?share_ref=${encodeURIComponent(shareRef)}&share_ticket=${encodeURIComponent(claim.ticket)}`,
     serverName: claim.serverName,
     sessionExpiresAt: claim.sessionExpiresAt,
   });
