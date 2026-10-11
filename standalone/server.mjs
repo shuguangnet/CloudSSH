@@ -8,7 +8,7 @@ import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
 import { AccessStore, tokenHash } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
-import { savedServers, executeSaved } from './operations.mjs';
+import { savedServers, executeSaved, drainSshChainPool } from './operations.mjs';
 import { AutomationStore } from './automation-store.mjs';
 import { AutomationEngine } from './scheduler.mjs';
 import { createAutomationRoutes } from './automation-api.mjs';
@@ -461,6 +461,7 @@ function shutdown() {
   const timer = setInterval(() => {
     if (activeMcp) return;
     clearInterval(timer);
+    drainSshChainPool();
     env.SSH_SESSION.close(); env.USER_DB.close(); env.SSH_SHARE.close(); store.close(); automationStore.close();
     process.exit(0);
   }, 100);
