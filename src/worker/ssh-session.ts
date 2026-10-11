@@ -78,6 +78,10 @@ import type { AgentMemoryProvider, UnifiedServerMemory } from './agent/types';
 import { DirectTcpipStream } from './direct-tcpip-stream';
 import { detectAndPersistRemoteOS } from './os-detect';
 import { SFTPHandler } from './sftp-handler';
+import { StreamingExecChannel, type StreamExecResult } from './streaming-exec-channel';
+
+/** Dispatch surface shared by captured (agent) and streaming (tar/search) exec channels. */
+type ExecChannelLike = AgentExecChannel | StreamingExecChannel;
 
 const LOCAL_WINDOW_ADJUST_THRESHOLD = 512 * 1024;
 const KEEPALIVE_REQUEST_NAME = new TextEncoder().encode('keepalive@openssh.com');
@@ -219,7 +223,7 @@ export class SSHSession {
   // Agent integration
   private terminalContext: TerminalContext = new TerminalContext();
   private agentCore: AgentCore | null = null;
-  private activeExecChannels: Map<number, AgentExecChannel> = new Map();
+  private activeExecChannels: Map<number, ExecChannelLike> = new Map();
   private directTcpipStreams: Map<number, DirectTcpipStream> = new Map();
   private pendingDirectTcpip: Map<
     number,
@@ -2413,6 +2417,16 @@ export class SSHSession {
       case 'sftp_download':
         await this.sftpHandler.downloadFile(msg.path);
         break;
+      case 'sftp_download_dir':
+        await this.sftpHandler.downloadDirectory(msg.path || '.');
+        break;
+      case 'sftp_search':
+        await this.sftpHandler.searchFiles(
+          typeof msg.path === 'string' ? msg.path : '.',
+          typeof msg.pattern === 'string' ? msg.pattern : '',
+          typeof msg.maxDepth === 'number' ? msg.maxDepth : undefined
+        );
+        break;
       case 'sftp_edit_read':
         await this.sftpHandler.editReadFile(msg.path);
         break;
@@ -2487,7 +2501,14 @@ export class SSHSession {
       },
       this.debugMode,
       (remotePath: string) => this.computeRemoteChecksum(remotePath),
-      this.config.transportType === 'cf_tunnel'
+      this.config.transportType === 'cf_tunnel',
+      (command, options) =>
+        this.streamExecCommand(command, {
+          onChunk: options.onChunk,
+          timeout: options.timeout,
+          signal: options.signal,
+          maxBytes: options.maxBytes,
+        })
     );
 
     const openMsg = sftpChannel.buildOpenSession(channelID);
@@ -2530,7 +2551,10 @@ export class SSHSession {
         return 'stat';
       case 'sftp_download':
       case 'sftp_download_cancel':
+      case 'sftp_download_dir':
         return 'download';
+      case 'sftp_search':
+        return 'search';
       case 'sftp_edit_read':
         return 'edit';
       case 'sftp_upload_start':
@@ -3237,7 +3261,7 @@ export class SSHSession {
   private async terminateExecChannelOnCaptureLimit(
     channelID: number,
     channel: SSHChannel,
-    execCh: AgentExecChannel
+    execCh: ExecChannelLike
   ): Promise<void> {
     this.sendDebug(`Exec channel ${channelID} capture limit exceeded — closing channel`);
     this.activeExecChannels.delete(channelID);
@@ -3258,6 +3282,94 @@ export class SSHSession {
       throw new Error('Headless SSH session is not authenticated');
     }
     return this.executeAgentCommand(command, timeout, signal);
+  }
+
+  /**
+   * 执行命令并以二进制块流式转发 stdout（不经过字符串解码，适用于 tar 等二进制流）。
+   * 调用方通过 onChunk 返回 false 或 maxBytes 触发中止：通道会被强制关闭，
+   * sshd 随之终止远端命令。stderr 以文本返回供错误提示。
+   */
+  async streamExecCommand(
+    command: string,
+    options: {
+      onChunk: (data: Uint8Array) => void;
+      timeout: number;
+      signal?: AbortSignal;
+      maxBytes?: number;
+    }
+  ): Promise<StreamExecResult> {
+    if (this.closed) throw new Error('SSH session is closed');
+    this.recordUserActivity();
+
+    const maxBytes = options.maxBytes ?? Infinity;
+    let received = 0;
+    let capped = false;
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel(this.channelMaxPacketSize);
+    this.channels.set(channelID, channel);
+
+    const execCh = new StreamingExecChannel(channelID, {
+      signal: options.signal,
+      onChunk: (data) => {
+        received += data.length;
+        if (!capped && received <= maxBytes) {
+          options.onChunk(data);
+          return true;
+        }
+        capped = true;
+        return false; // dispatcher 会关闭通道，远端命令被终止
+      },
+    });
+    this.activeExecChannels.set(channelID, execCh);
+
+    let execTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | undefined;
+    const openMsg = channel.buildOpenSession(channelID);
+    await this.sendEncrypted(openMsg);
+
+    try {
+      const opened = await this.waitForExecChannelOpen(execCh, channel, command);
+      if (!opened) return (await execCh.getClosedPromise()) as StreamExecResult;
+
+      await this.sendEncrypted(channel.buildExecRequest(command));
+
+      let aborted = false;
+      const result = await Promise.race([
+        execCh.getClosedPromise(),
+        new Promise<StreamExecResult>((_, reject) => {
+          execTimer = setTimeout(
+            () => reject(new Error(`Exec timeout after ${options.timeout}ms`)),
+            options.timeout
+          );
+          abortHandler = () => {
+            aborted = true;
+            if (execTimer !== null) clearTimeout(execTimer);
+            reject(new Error('Exec aborted'));
+          };
+          options.signal?.addEventListener('abort', abortHandler, { once: true });
+          if (options.signal?.aborted) abortHandler();
+        }),
+      ]);
+
+      if (!channel.isClosed()) {
+        try {
+          await this.sendEncrypted(channel.buildEof());
+          await this.sendEncrypted(channel.buildClose());
+        } catch {
+          // Channel may already be closed by server, ignore
+        }
+      }
+      if (aborted) execCh.resolveAborted();
+      return result;
+    } finally {
+      if (execTimer !== null) clearTimeout(execTimer);
+      if (abortHandler && options.signal) options.signal.removeEventListener('abort', abortHandler);
+      if (!channel.isClosed()) {
+        try { await this.sendEncrypted(channel.buildClose()); } catch { /* Session closing. */ }
+      }
+      this.activeExecChannels.delete(channelID);
+      this.channels.delete(channelID);
+    }
   }
 
   private async executeAgentCommand(
@@ -3342,7 +3454,7 @@ export class SSHSession {
   }
 
   private waitForExecChannelOpen(
-    execCh: AgentExecChannel,
+    execCh: Pick<ExecChannelLike, 'isOpenFailed' | 'isOpenConfirmed'>,
     channel: SSHChannel,
     command: string
   ): Promise<boolean> {

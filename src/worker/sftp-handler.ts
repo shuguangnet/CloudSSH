@@ -53,6 +53,11 @@ type SendJSONFn = (msg: any) => void;
 type SendBinaryFn = (data: Uint8Array) => void;
 type SendDebugFn = (message: string) => void;
 type ComputeChecksumFn = (path: string) => Promise<string | null>;
+/** 二进制流式 exec（同连接上的独立 exec 通道，tar/find 等命令复用）。 */
+export type StreamExecFn = (
+  command: string,
+  options: { onChunk: (data: Uint8Array) => void; timeout: number; signal?: AbortSignal; maxBytes?: number }
+) => Promise<{ exitCode: number; stderr: string; truncated: boolean }>;
 type SFTPOperation =
   | 'init'
   | 'list'
@@ -63,7 +68,8 @@ type SFTPOperation =
   | 'delete'
   | 'rename'
   | 'mkdir'
-  | 'rmdir';
+  | 'rmdir'
+  | 'search';
 
 export class SFTPHandler {
   private channelID: number;
@@ -75,11 +81,14 @@ export class SFTPHandler {
   private sendDebug: SendDebugFn;
   private debugEnabled: boolean;
   private computeChecksum?: ComputeChecksumFn;
+  private streamExec?: StreamExecFn;
   private ready: boolean = false;
   private sftpSendQueue: Array<{ data: Uint8Array; offset: number }> = [];
   private sftpSendQueueHead: number = 0;
   private sftpSendFlushInProgress: boolean = false;
   private downloadCancelled: boolean = false;
+  /** 打包下载进行中时的中止控制器：取消时立即拆掉 exec 通道，而不是等 tar 自然结束。 */
+  private downloadDirAbort: AbortController | null = null;
 
   // Upload state
   private uploadHandle: Uint8Array | null = null;
@@ -172,7 +181,8 @@ export class SFTPHandler {
     sendDebug: SendDebugFn,
     debugEnabled: boolean = false,
     computeChecksum?: ComputeChecksumFn,
-    isTunnel: boolean = false
+    isTunnel: boolean = false,
+    streamExec?: StreamExecFn
   ) {
     this.channelID = channelID;
     this.channel = channel;
@@ -184,6 +194,7 @@ export class SFTPHandler {
     this.debugEnabled = debugEnabled;
     this.computeChecksum = computeChecksum;
     this.isTunnel = isTunnel;
+    this.streamExec = streamExec;
     const uploadPolicy = getSFTPUploadPolicy(isTunnel);
     this.maxInFlightWrites = uploadPolicy.maxInFlightWrites;
     this.progressBytesThreshold = uploadPolicy.progressAckBytes;
@@ -504,6 +515,131 @@ export class SFTPHandler {
     }
   }
 
+  // ---------- directory tar.gz download & remote file search ----------
+
+  /**
+   * 目录打包下载：在同一 SSH 连接上开 exec 通道运行 `tar czf - -C <parent> <name>`，
+   * stdout 二进制流直接经 SFTP WebSocket 回传，复用单文件下载的
+   * sftp_download_start / 二进制帧 / sftp_download_done 协议，前端零改动。
+   */
+  async downloadDirectory(path: string): Promise<void> {
+    // 纯 exec 操作，不依赖 SFTP 子系统握手状态；只要求通道本身可用。
+    if (!this.streamExec) {
+      this.sendError('download', '当前会话不支持目录打包下载');
+      return;
+    }
+    const normalized = normalizeRemotePath(path);
+    if (!normalized || normalized === '/') {
+      this.sendError('download', '不能打包根目录');
+      return;
+    }
+    let command: string;
+    try {
+      command = buildTarCommand(normalized);
+    } catch (message) {
+      this.sendError('download', String(message));
+      return;
+    }
+
+    this.downloadCancelled = false;
+    const archiveName = `${normalized.slice(normalized.lastIndexOf('/') + 1)}.tar.gz`;
+    this.downloadDirAbort = new AbortController();
+    try {
+      this.sendJSON({ type: 'sftp_download_start', filename: archiveName, size: 0 });
+      let bytes = 0;
+      let lastProgressBytes = 0;
+      const result = await this.streamExec(command, {
+        onChunk: (data) => {
+          bytes += data.length;
+          this.sendBinary(data);
+          if (bytes - lastProgressBytes >= 4 * 1024 * 1024) {
+            lastProgressBytes = bytes;
+            this.sendJSON({ type: 'sftp_download_progress', loaded: bytes, total: 0 });
+          }
+        },
+        timeout: 10 * 60 * 1000,
+        maxBytes: MAX_SFTP_FILE_SIZE,
+        signal: this.downloadDirAbort.signal,
+      });
+
+      if (this.downloadCancelled) {
+        this.sendJSON({ type: 'sftp_download_cancelled' });
+        return;
+      }
+      if (result.truncated) {
+        this.sendJSON({ type: 'sftp_download_failed', reason: 'exceeds_size_limit' });
+        this.sendError(
+          'download',
+          `打包后的目录超过 ${formatFileSize(MAX_SFTP_FILE_SIZE)}，已中止`
+        );
+        return;
+      }
+      if (result.exitCode !== 0) {
+        this.sendJSON({ type: 'sftp_download_failed', reason: 'remote_error' });
+        this.sendError(
+          'download',
+          `tar 失败 (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 200) || '远端 tar 不可用或目录不存在'}`
+        );
+        return;
+      }
+      this.sendJSON({ type: 'sftp_download_done', filename: archiveName, size: bytes });
+    } catch (e) {
+      if (this.downloadCancelled) {
+        this.sendJSON({ type: 'sftp_download_cancelled' });
+        return;
+      }
+      this.sendJSON({ type: 'sftp_download_failed', reason: 'error' });
+      this.sendError('download', '打包下载失败: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      this.downloadCancelled = false;
+      this.downloadDirAbort = null;
+    }
+  }
+
+  /**
+   * 远端文件搜索：`find <dir> -xdev -maxdepth N \( -type f -o -type d \) -iname '*pat*'`，
+   * 结果以 sftp_search_result 返回；仅限文本行，不传输内容。
+   */
+  async searchFiles(path: string, pattern: string, maxDepth?: number): Promise<void> {
+    // 纯 exec 操作，不依赖 SFTP 子系统握手状态。
+    if (!this.streamExec) {
+      this.sendError('search', '当前会话不支持远端搜索');
+      return;
+    }
+    const normalized = normalizeRemotePath(path) || '/';
+    let command: string;
+    try {
+      command = buildFindCommand(normalized, pattern, maxDepth);
+    } catch (message) {
+      this.sendError('search', String(message));
+      return;
+    }
+    try {
+      const decoder = new TextDecoder();
+      let text = '';
+      const result = await this.streamExec(command, {
+        onChunk: (data) => {
+          if (text.length < 512 * 1024) text += decoder.decode(data, { stream: true });
+        },
+        timeout: 30 * 1000,
+        maxBytes: 1024 * 1024,
+      });
+      text += decoder.decode();
+      if (result.exitCode !== 0 && !text) {
+        this.sendError('search', `搜索失败: ${result.stderr.trim().slice(0, 200) || `exit ${result.exitCode}`}`);
+        return;
+      }
+      const matches = text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 300);
+      this.sendJSON({ type: 'sftp_search_result', path: normalized, matches });
+    } catch (e) {
+      this.sendError('search', '搜索失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   private async downloadKnownSize(handle: Uint8Array, fileSize: number): Promise<number> {
     let nextReadOffset = 0;
     let nextSendOffset = 0;
@@ -580,6 +716,7 @@ export class SFTPHandler {
 
   cancelDownload(): void {
     this.downloadCancelled = true;
+    this.downloadDirAbort?.abort();
   }
 
   private throwIfDownloadCancelled(): void {
@@ -1147,4 +1284,56 @@ export class SFTPHandler {
       modifiedTime: attrs.mtime || 0,
     };
   }
+}
+
+// ---------- command builders for exec-based SFTP helpers (exported for tests) ----------
+
+/** POSIX 单引号转义：任意内容（含引号、$、空格）都安全。 */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** 规范化远端路径：去尾部斜杠、拒绝空路径与路径穿越哨兵（NUL/换行）。 */
+export function normalizeRemotePath(path: string): string {
+  const trimmed = String(path || '').trim();
+  if (!trimmed || trimmed === '/') return trimmed === '/' ? '/' : '';
+  if (/[\0\n\r]/.test(trimmed)) throw new Error('路径包含非法字符');
+  return trimmed.replace(/\/+$/, '');
+}
+
+/**
+ * 构造 `tar czf - -C <parent> <name>`：归档内为相对路径，解包不会散落绝对路径。
+ * 根目录 / 不可打包；父目录为根时 -C '/' 。
+ */
+export function buildTarCommand(path: string): string {
+  const normalized = normalizeRemotePath(path);
+  if (!normalized || normalized === '/') throw new Error('不能打包根目录');
+  if (normalized.length > 4096) throw new Error('路径过长');
+  const lastSlash = normalized.lastIndexOf('/');
+  const parent = lastSlash === 0 ? '/' : normalized.slice(0, lastSlash);
+  const name = normalized.slice(lastSlash + 1);
+  return `tar czf - -C ${shellQuote(parent)} ${shellQuote(name)}`;
+}
+
+const SEARCH_PATTERN_MAX = 120;
+
+/**
+ * 构造远端搜索命令：find -xdev 防止跨文件系统拖垮 NFS/挂载点，结果封顶 head -n 300。
+ * 模式仅允许安全字符；glob 元字符原样交给 -iname。
+ */
+export function buildFindCommand(path: string, pattern: string, maxDepth?: number): string {
+  const normalized = normalizeRemotePath(path) || '.';
+  const cleaned = String(pattern || '').trim().slice(0, SEARCH_PATTERN_MAX);
+  if (!cleaned) throw new Error('搜索关键字不能为空');
+  if (!/^[\w\u4e00-\u9fa5 .@:+\-()[\]{}*?]+$/.test(cleaned)) {
+    throw new Error('搜索关键字包含不支持的字符');
+  }
+  const rawDepth = maxDepth === undefined ? 4 : Math.floor(Number(maxDepth));
+  const depth = Math.min(8, Math.max(1, Number.isFinite(rawDepth) ? rawDepth : 4));
+  return [
+    `find ${shellQuote(normalized)}`,
+    `-xdev -maxdepth ${depth} \\( -type f -o -type d \\)`,
+    `-iname ${shellQuote(`*${cleaned}*`)}`,
+    `-print 2>/dev/null | head -n 300`,
+  ].join(' ');
 }
