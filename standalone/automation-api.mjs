@@ -256,8 +256,8 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       catch (caught) { return BAD_REQUEST(caught.message); }
       const { identity } = ownerUser(user);
       try {
-        const output = await executeSaved(env, identity, body.server_id, command, 60, SSHSession);
-        return Response.json({ ok: output.exit_code === 0, exit_code: output.exit_code, stdout: output.stdout, stderr: output.stderr });
+        const output = await executeSaved(env, identity, body.server_id, command, 60000, SSHSession);
+        return Response.json({ ok: output.exitCode === 0, exit_code: output.exitCode, stdout: output.stdout, stderr: output.stderr });
       } catch (caught) {
         return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
       }

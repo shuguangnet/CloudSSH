@@ -237,7 +237,7 @@ function makeEngine({ servers = [], execResults = [], probes = [], notifications
     SSHSession: {},
     execute: async (...args) => {
       executed.push(args);
-      const next = execResults.shift() ?? { stdout: 'ok', stderr: '', exit_code: 0 };
+      const next = execResults.shift() ?? { stdout: 'ok', stderr: '', exitCode: 0 };
       if (next instanceof Error) throw next;
       return next;
     },
