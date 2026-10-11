@@ -15,6 +15,7 @@ const base = `http://127.0.0.1:${port}`;
 const env = { ...process.env, COMPOSE_PROJECT_NAME: `cloudssh-smoke-${process.pid}`,
   PORT: String(port), BASE_URL: base, BIND_ADDRESS: '127.0.0.1',
   GITHUB_CLIENT_ID: '', GITHUB_CLIENT_SECRET: '', GITHUB_ALLOWED_USER_IDS: '',
+  CAPTCHA_MODE: 'test',
 };
 function command(cmd, args, input) {
   const result = spawnSync(cmd, args, { env, input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
