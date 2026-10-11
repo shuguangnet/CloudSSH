@@ -480,7 +480,7 @@ function openTerminalServerTool(tool: 'status' | 'docker'): void {
   if (!serverId) return; // 按钮仅在有已保存服务器连接时可见，此处仅作兑底
   const serverName = tab.label || tab.hostInfo?.host || '';
   if (tool === 'status') serverStatusPanel.open(serverId, serverName);
-  else dockerPanel.open(serverId, serverName);
+  else dockerPanel.open(serverId, serverName, () => tabManager?.getActiveTab()?.terminal ?? null);
 }
 
 function initTerminalServerTools(): void {

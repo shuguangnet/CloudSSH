@@ -14,7 +14,16 @@ interface DockerContainer {
   status: string;
   running_for: string;
   ports: string;
+  /** docker stats --no-stream 一次性采样，尽力而为：缺失时不渲染。 */
+  cpu_percent?: string;
+  mem_usage?: string;
+  mem_percent?: string;
+  net_io?: string;
+  block_io?: string;
 }
+
+/** 与后端 CONTAINER_NAME_RE 一致，拼接终端命令前再次校验。 */
+const CONTAINER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -40,7 +49,7 @@ function isRunning(state: string): boolean {
   return state === 'running' || state === 'restarting';
 }
 
-function actionButtons(container: DockerContainer): string {
+function actionButtons(container: DockerContainer, supportsExec: boolean): string {
   const running = isRunning(container.state);
   const button = (action: string, icon: string, label: string, disabled: boolean, danger = false) => `
     <button data-docker-action="${action}" data-docker-container="${escapeHtml(container.name)}" ${disabled ? 'disabled' : ''}
@@ -54,11 +63,12 @@ function actionButtons(container: DockerContainer): string {
       ${button('restart', 'restart_alt', t('docker.restart'), container.state === 'created')}
       ${button('stop', 'stop', t('docker.stop'), !running)}
       ${button('logs', 'receipt_long', t('docker.logs'), false)}
+      ${supportsExec ? button('terminal', 'terminal', t('docker.terminal'), !running) : ''}
       ${button('remove', 'delete', t('docker.delete'), false, true)}
     </div>`;
 }
 
-function containerCard(container: DockerContainer): string {
+function containerCard(container: DockerContainer, supportsExec: boolean): string {
   const badge = stateBadge(container.state);
   const ports = container.ports
     ? container.ports.split(', ').filter(Boolean).map((port) => `<div class="font-mono">${escapeHtml(port)}</div>`).join('')
@@ -84,8 +94,13 @@ function containerCard(container: DockerContainer): string {
         <span class="font-mono min-w-0 break-all">${escapeHtml(container.image)}</span>
         <span class="text-dim">${escapeHtml(t('docker.ports'))}</span>
         <span class="text-on-surface min-w-0">${ports}</span>
+        ${container.cpu_percent !== undefined ? `
+        <span class="text-dim">${escapeHtml(t('docker.cpu'))}</span>
+        <span class="font-mono">${escapeHtml(container.cpu_percent)}</span>
+        <span class="text-dim">${escapeHtml(t('docker.memory'))}</span>
+        <span class="font-mono min-w-0 break-all">${escapeHtml(container.mem_usage || '—')}${container.mem_percent ? ` <span class="text-dim">(${escapeHtml(container.mem_percent)})</span>` : ''}</span>` : ''}
       </div>
-      ${actionButtons(container)}
+      ${actionButtons(container, supportsExec)}
     </div>`;
 }
 
@@ -96,10 +111,13 @@ export class DockerPanel {
   private controller: AbortController | null = null;
   private busy = false;
   private pending = false;
+  /** 终端页打开时可注入命令的活动终端；服务器列表页无终端则为 null。 */
+  private getTerminal: (() => { insertSnippet(command: string, run: boolean): boolean } | null) | null = null;
 
-  open(serverId: number, serverName: string): void {
+  open(serverId: number, serverName: string, getTerminal?: () => { insertSnippet(command: string, run: boolean): boolean } | null): void {
     this.serverId = serverId;
     this.serverName = serverName;
+    this.getTerminal = getTerminal ?? null;
     const modal = document.getElementById('docker-modal');
     const body = document.getElementById('docker-modal-body');
     if (!modal || !body) return;
@@ -209,8 +227,9 @@ export class DockerPanel {
   private render(containers: DockerContainer[]): void {
     const body = document.getElementById('docker-modal-body');
     if (!body) return;
+    const supportsExec = this.getTerminal !== null;
     const cards = containers.length
-      ? containers.map(containerCard).join('')
+      ? containers.map((container) => containerCard(container, supportsExec)).join('')
       : `<div class="py-8 text-center text-xs text-muted">${escapeHtml(t('docker.none'))}</div>`;
     // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     body.innerHTML = `
@@ -231,6 +250,10 @@ export class DockerPanel {
     if (this.serverId === null) return;
     if (action === 'logs') {
       this.openLogs(container);
+      return;
+    }
+    if (action === 'terminal') {
+      this.execIntoContainer(container);
       return;
     }
     if (action === 'remove') {
@@ -265,6 +288,22 @@ export class DockerPanel {
       modalBody?.removeAttribute('inert');
       this.refresh();
     }
+  }
+
+  /** 在当前活动终端里执行 docker exec -it 进入容器，优先 bash、缺失时回落 sh。 */
+  private execIntoContainer(container: string): void {
+    const terminal = this.getTerminal?.() ?? null;
+    if (!terminal) {
+      notify(t('docker.terminalUnavailable'), { variant: 'danger' });
+      return;
+    }
+    if (!CONTAINER_NAME_RE.test(container)) return; // 名称来自 API 响应，仍防御性复验
+    const command = `docker exec -it ${container} sh -c 'exec bash 2>/dev/null || exec sh'`;
+    if (!terminal.insertSnippet(command, true)) {
+      notify(t('docker.terminalUnavailable'), { variant: 'danger' });
+      return;
+    }
+    this.close();
   }
 
   private openLogs(container: string): void {

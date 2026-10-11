@@ -5,7 +5,7 @@ import { validateChannel, sendToChannels } from './notify.mjs';
 import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
 import { collectServerStatus } from './status.mjs';
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand } from './docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines } from './docker.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -293,11 +293,25 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker query already in progress' : 'Too many requests' }, { status: slot.conflict });
       try {
         const { identity } = ownerUser(user);
-        const output = await executeSaved(env, identity, serverId, listContainersScript(), 20000, SSHSession);
+        const output = await executeSaved(env, identity, serverId, listContainersScript(), 20000, SSHSession, undefined, request.signal);
         if (output.exitCode !== 0) {
           return Response.json({ error: (output.stderr || output.stdout || `docker ps exited with ${output.exitCode}`).trim().slice(0, 300) }, { status: 502 });
         }
-        return Response.json({ containers: parseContainerLines(output.stdout) });
+        const containers = parseContainerLines(output.stdout);
+        // Best-effort resource usage for the cards: a failing docker stats must
+        // never break the container list itself.
+        try {
+          const statsOutput = await executeSaved(env, identity, serverId, statsScript(), 25000, SSHSession, undefined, request.signal);
+          if (statsOutput.exitCode === 0) {
+            const stats = parseStatsLines(statsOutput.stdout);
+            for (const container of containers) {
+              if (container.state !== 'running') continue;
+              const usage = stats.get(container.name) || stats.get(container.id);
+              if (usage) Object.assign(container, usage);
+            }
+          }
+        } catch { /* stats unavailable — list still renders */ }
+        return Response.json({ containers });
       } catch (caught) {
         return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 502 });
       } finally {

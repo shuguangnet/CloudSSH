@@ -80,3 +80,28 @@ export function buildDockerLogsCommand(container, tail = 200) {
   }
   return { command: `docker logs --timestamps --tail ${lines} ${shellQuote(container)} 2>&1`, timeout: 20000 };
 }
+
+export function statsScript() {
+  return `docker stats --no-stream --format '{{json .}}'`;
+}
+
+export function parseStatsLines(stdout) {
+  // docker stats reports one JSON object per running container; keyed by the
+  // primary name with full container ID as fallback.
+  const stats = new Map();
+  for (const line of String(stdout || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let raw;
+    try { raw = JSON.parse(trimmed); } catch { continue; }
+    if (!raw || typeof raw !== 'object' || !raw.Name) continue;
+    stats.set(String(raw.Name).replace(/^\/+/, '').split(',')[0], {
+      cpu_percent: String(raw.CPUPerc || ''),
+      mem_usage: String(raw.MemUsage || ''),
+      mem_percent: String(raw.MemPerc || ''),
+      net_io: String(raw.NetIO || ''),
+      block_io: String(raw.BlockIO || ''),
+    });
+  }
+  return stats;
+}
