@@ -61,6 +61,9 @@ export const zhTW = {
   // --- 單管理員密碼登入（與 GitHub 登入互斥的替代認證模式） ---
   'auth.adminLogin': '管理員登入',
   'auth.adminLoginTitle': '管理員登入',
+  'auth.adminUsernameLabel': '管理員帳號',
+  'auth.adminUsernameRequired': '請輸入管理員帳號。',
+  'auth.adminAccountSettings': '帳號設定',
   'auth.adminPasswordLabel': '管理員密碼',
   'auth.adminLoginSubmit': '登入',
   'auth.adminLoginCancel': '取消',
@@ -68,7 +71,7 @@ export const zhTW = {
   'auth.adminRequiredHint': '請使用管理員密碼登入後使用 SSH 和帳號功能。',
   'auth.adminHashInvalidTitle': '管理員密碼設定無效',
   'auth.adminHashInvalid': 'ADMIN_PASSWORD_HASH 格式損壞，登入已停止，請聯絡管理員修復。',
-  'auth.adminLoginFailed': '密碼錯誤',
+  'auth.adminLoginFailed': '帳號或密碼錯誤',
   'auth.adminLoginLocked': '嘗試過於頻繁，請 {seconds} 秒後再試',
   'auth.adminLoginTurnstileFailed': '人機驗證未通過，請重試。',
   'auth.adminLoginUnavailable': '密碼登入目前無法使用（認證模式可能已變更），請重新整理頁面。',

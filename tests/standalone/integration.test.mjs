@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { pbkdf2Sync } from 'node:crypto';
+import { pbkdf2Sync, randomBytes, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
@@ -50,7 +50,7 @@ test('native panel and real MCP client enforce authentication, persistence and r
     const config = await (await fetch(`${base}/api/config`)).json();
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
     assert.equal(login.status, 200);
     const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
     const api = (path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -129,7 +129,7 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     panel = await startPanel(dataDir, port);
     const config = await (await fetch(`${base}/api/config`)).json();
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
     const cookie = login.headers.getSetCookie()[0].split(';')[0];
     const api = (path, method = 'GET', body) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const addServer = async (name, jump_server_id) => {
@@ -199,4 +199,97 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     const blocked = await client.callTool({ name: 'execute_command', arguments: { server_id: id, command: 'rm -rf /' } });
     assert.equal(blocked.isError, true);
   } finally { sftpSocket?.close(); socket?.close(); await client?.close(); await stop(panel); await stop(sshd); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('administrator account migration, account/password changes, invalidation and restart', { timeout: 60000 }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cloudssh-account-'));
+  const port = await freePort(); const base = `http://127.0.0.1:${port}`;
+  const password = 'original-password-123'; const newPassword = 'updated-password-456';
+  execFileSync(process.execPath, ['scripts/setup-standalone.mjs', '--stdin'], { env: { ...process.env, DATA_DIR: directory }, input: password, stdio: ['pipe', 'pipe', 'pipe'] });
+  let child;
+  const derive = async (value) => {
+    const config = await (await fetch(`${base}/api/config`)).json();
+    return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
+  };
+  const login = (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key }) });
+  const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
+  const request = (cookie, path, method = 'GET', body, origin = base) => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  try {
+    child = await startPanel(directory, port);
+    assert.ok(existsSync(join(directory, 'admin-account.json')));
+    assert.equal(JSON.parse(readFileSync(join(directory, 'admin-account.json'), 'utf8')).username, 'admin');
+    assert.equal((await fetch(`${base}/api/admin/account`)).status, 401);
+    const key = await derive(password);
+    assert.equal((await login(undefined, key)).status, 401);
+    assert.equal((await login('wrong-name', key)).status, 401);
+    const valid = await login('admin', key); assert.equal(valid.status, 200);
+    let cookie = cookieOf(valid); const originalCookie = cookie;
+    assert.equal((await request(cookie, '/account/settings')).status, 200);
+    assert.equal((await request(cookie, '/api/admin/account', 'PUT', { username: 'operator', currentKey: key }, 'https://attacker.example')).status, 403);
+    assert.equal((await request(cookie, '/api/admin/account', 'PUT', { username: 'bad name', currentKey: key })).status, 400);
+    assert.equal((await request(cookie, '/api/admin/account', 'PUT', { username: 'operator', currentKey: key, passwordHash: 123 })).status, 400);
+    assert.equal((await request(cookie, '/api/admin/account', 'PUT', { username: 'operator', currentKey: await derive('wrong-password') })).status, 401);
+    const added = await request(cookie, '/api/servers', 'POST', { name: 'preserved', host: '127.0.0.1', port: 2222, username: 'root', auth_method: 'password', credential: 'fixture-only' });
+    assert.equal(added.status, 201);
+    const serverId = (await (await request(cookie, '/api/servers')).json())[0].id;
+    const created = await request(cookie, '/api/mcp/tokens', 'POST', { name: 'preserved until password rotation', server_ids: [serverId], scopes: ['read'], expires_in_days: 1 });
+    assert.equal(created.status, 201); const token = (await created.json()).token;
+    const renamed = await request(cookie, '/api/admin/account', 'PUT', { username: 'operator', currentKey: key });
+    assert.equal(renamed.status, 200); assert.equal((await renamed.json()).loginRequired, false);
+    assert.equal((await request(originalCookie, '/api/auth/me')).status, 200);
+    assert.equal((await login('admin', key)).status, 401);
+    const renamedLogin = await login('operator', key); assert.equal(renamedLogin.status, 200); cookie = cookieOf(renamedLogin);
+    assert.equal((await request(cookie, '/api/admin/account')).status, 200);
+    assert.equal((await request(cookie, '/api/mcp/tokens')).status, 200);
+    assert.equal((await (await request(cookie, '/api/mcp/tokens')).json())[0].revoked_at, null);
+    if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') {
+      const browser = await chromium.launch();
+      try {
+        const context = await browser.newContext();
+        const [name, ...value] = cookie.split('=');
+        await context.addCookies([{ name, value: value.join('='), url: base }]);
+        const page = await context.newPage(); const errors = [];
+        page.on('pageerror', error => errors.push(error.message));
+        await page.goto(`${base}/account/settings`);
+        await page.locator('#save:not([disabled])').waitFor();
+        assert.equal(await page.locator('#username').inputValue(), 'operator');
+        for (const locale of ['en-US', 'zh-TW', 'zh-CN']) {
+          await page.locator('#language').selectOption(locale);
+          assert.equal(await page.locator('html').getAttribute('lang'), locale);
+        }
+        await page.locator('#username').fill('operator2');
+        await page.locator('#current-password').fill(password);
+        await page.locator('#new-password').fill(newPassword);
+        await page.locator('#confirm-password').fill('mismatched-password');
+        await page.locator('#save').click();
+        await page.getByText('两次输入的新密码不一致。', { exact: true }).waitFor();
+        await page.locator('#confirm-password').fill(newPassword);
+        await page.locator('#save').click();
+        await page.getByText('密码已更新，请使用新账号和密码重新登录。', { exact: true }).waitFor();
+        await page.goto(`${base}/?lang=zh-CN`);
+        await page.locator('#admin-login-btn').click();
+        await page.locator('#admin-login-dialog input[name=username]').fill('operator2');
+        await page.locator('#admin-login-dialog input[type=password]').fill(newPassword);
+        await page.locator('#admin-login-dialog .auth-challenge-dialog__button--submit').click();
+        await page.locator('#admin-account-link').waitFor({ state: 'visible' });
+        assert.deepEqual(errors, []);
+      } finally { await browser.close(); }
+    } else {
+      const salt = randomBytes(16); const stretched = pbkdf2Sync(newPassword, salt, 600000, 32, 'sha256');
+      const passwordHash = `pbkdf2$sha256$600000$${salt.toString('base64url')}$${createHash('sha256').update(stretched).digest('base64url')}`;
+      const updated = await request(cookie, '/api/admin/account', 'PUT', { username: 'operator2', currentKey: key, passwordHash });
+      assert.equal(updated.status, 200); assert.equal((await updated.json()).loginRequired, true);
+    }
+    assert.equal((await request(originalCookie, '/api/auth/me')).status, 401);
+    assert.equal((await request(cookie, '/api/admin/account')).status, 401);
+    assert.equal((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
+    assert.equal((await login('operator2', key)).status, 401);
+    const newLogin = await login('operator2', await derive(newPassword)); assert.equal(newLogin.status, 200); cookie = cookieOf(newLogin);
+    assert.equal((await (await request(cookie, '/api/servers')).json())[0].name, 'preserved');
+    assert.ok((await (await request(cookie, '/api/mcp/tokens')).json())[0].revoked_at);
+    await stop(child); child = await startPanel(directory, port);
+    assert.equal((await (await request(cookie, '/api/admin/account')).json()).username, 'operator2');
+    assert.equal((await login('operator2', await derive(newPassword))).status, 200);
+  } finally { await stop(child); rmSync(directory, { recursive: true, force: true }); }
 });

@@ -61,6 +61,9 @@ export const zhCN = {
   // --- 单管理员密码登录（与 GitHub 登录互斥的替代认证模式） ---
   'auth.adminLogin': '管理员登录',
   'auth.adminLoginTitle': '管理员登录',
+  'auth.adminUsernameLabel': '管理员账号',
+  'auth.adminUsernameRequired': '请输入管理员账号。',
+  'auth.adminAccountSettings': '账号设置',
   'auth.adminPasswordLabel': '管理员密码',
   'auth.adminLoginSubmit': '登录',
   'auth.adminLoginCancel': '取消',
@@ -68,7 +71,7 @@ export const zhCN = {
   'auth.adminRequiredHint': '请使用管理员密码登录后使用 SSH 和账号功能。',
   'auth.adminHashInvalidTitle': '管理员密码配置无效',
   'auth.adminHashInvalid': 'ADMIN_PASSWORD_HASH 格式损坏，登录已停止，请联系管理员修复。',
-  'auth.adminLoginFailed': '密码错误',
+  'auth.adminLoginFailed': '账号或密码错误',
   'auth.adminLoginLocked': '尝试过于频繁，请 {seconds} 秒后再试',
   'auth.adminLoginTurnstileFailed': '人机验证未通过，请重试。',
   'auth.adminLoginUnavailable': '密码登录当前不可用（认证模式可能已变更），请刷新页面。',

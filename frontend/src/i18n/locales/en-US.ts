@@ -95,6 +95,9 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   // --- Single-admin password sign-in (alternative auth mode, mutually exclusive with GitHub) ---
   'auth.adminLogin': 'Admin Login',
   'auth.adminLoginTitle': 'Admin Sign In',
+  'auth.adminUsernameLabel': 'Administrator account',
+  'auth.adminUsernameRequired': 'Enter the administrator account.',
+  'auth.adminAccountSettings': 'Account settings',
   'auth.adminPasswordLabel': 'Admin Password',
   'auth.adminLoginSubmit': 'Sign In',
   'auth.adminLoginCancel': 'Cancel',
@@ -103,7 +106,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.adminHashInvalidTitle': 'Admin password configuration is invalid',
   'auth.adminHashInvalid':
     'ADMIN_PASSWORD_HASH is malformed; sign-in is disabled. Ask the administrator to fix it.',
-  'auth.adminLoginFailed': 'Incorrect password',
+  'auth.adminLoginFailed': 'Incorrect account or password',
   'auth.adminLoginLocked': 'Too many attempts. Try again in {seconds} seconds.',
   'auth.adminLoginTurnstileFailed': 'Human verification failed. Please try again.',
   'auth.adminLoginUnavailable':

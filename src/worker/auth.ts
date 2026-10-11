@@ -482,6 +482,8 @@ export async function handleGetMe(request: Request, env: Env): Promise<Response>
  * 时）→ 哨兵 DO 持久化节流（跨 isolate，指数退避封顶 15 分钟）→ 恒时比对。
  */
 export async function handlePasswordLogin(request: Request, env: Env): Promise<Response> {
+  // Keep password/username generation stable across asynchronous login steps.
+  env = { ...env };
   const parsedHash = parseAdminPasswordHash(env.ADMIN_PASSWORD_HASH);
   if (parsedHash === null) {
     return Response.json({ error: 'Password auth not enabled' }, { status: 501 });
@@ -504,7 +506,7 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Forbidden origin' }, { status: 403 });
   }
 
-  let body: { key?: unknown; turnstileToken?: unknown };
+  let body: { key?: unknown; username?: unknown; turnstileToken?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -561,7 +563,8 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Invalid key format' }, { status: 400 });
   }
   const keyDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', keyBytes));
-  if (!timingSafeEqualBytes(keyDigest, parsedHash.verifier)) {
+  if (!timingSafeEqualBytes(keyDigest, parsedHash.verifier) ||
+      (env.ADMIN_USERNAME !== undefined && body.username !== env.ADMIN_USERNAME)) {
     await stub.fetch(
       new Request('http://internal/internal/login-throttle', {
         method: 'POST',
@@ -570,7 +573,7 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
       })
     );
     console.warn(`[Auth] password_login result=denied reason=bad_key ip=${clientIP}`);
-    return Response.json({ error: 'Invalid password' }, { status: 401 });
+    return Response.json({ error: 'Invalid credentials' }, { status: 401 });
   }
 
   // 登录成功：重置节流 → upsert 本地管理员 → 创建会话

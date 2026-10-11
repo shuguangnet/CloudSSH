@@ -77,6 +77,7 @@ export class ConnectionForm {
   private turnstileSitekey = '';
   private turnstileTheme: ColorScheme | null = null;
   /** 密码模式下的浏览器预拉伸参数（/api/config 公开下发）；null = 非密码模式 */
+  private adminUsernameRequired = false;
   private passwordAuthParams: { iterations: number; salt: string } | null = null;
   private adminDialogTurnstileId: string | null = null;
 
@@ -113,7 +114,9 @@ export class ConnectionForm {
         authMode?: 'password' | 'github' | 'anonymous';
         passwordAuth?: { kdf: string; iterations: number; salt: string } | null;
         passwordHashInvalid?: boolean;
+        adminUsernameRequired?: boolean;
       };
+      this.adminUsernameRequired = config.adminUsernameRequired === true;
       this.turnstileEnabled = config.turnstileEnabled;
       this.turnstileSitekey = config.sitekey;
 
@@ -322,6 +325,17 @@ export class ConnectionForm {
     title.id = titleId;
     header.append(icon, title);
 
+    const usernameLabel = document.createElement('label');
+    usernameLabel.className = 'auth-challenge-dialog__label';
+    usernameLabel.textContent = t('auth.adminUsernameLabel');
+    const usernameInput = document.createElement('input');
+    usernameInput.type = 'text';
+    usernameInput.name = 'username';
+    usernameInput.className = 'auth-challenge-dialog__input';
+    usernameInput.autocomplete = 'username';
+    usernameInput.maxLength = 64;
+    usernameInput.setAttribute('aria-label', t('auth.adminUsernameLabel'));
+    usernameLabel.appendChild(usernameInput);
     const label = document.createElement('label');
     label.className = 'auth-challenge-dialog__label';
     label.textContent = t('auth.adminPasswordLabel');
@@ -370,7 +384,9 @@ export class ConnectionForm {
     submitButton.textContent = t('auth.adminLoginSubmit');
     actions.append(cancelButton, submitButton);
 
-    form.append(accent, header, label, passwordInput, turnstileContainer, errorText, actions);
+    if (this.adminUsernameRequired) form.append(accent, header, usernameLabel);
+    else form.append(accent, header);
+    form.append(label, passwordInput, turnstileContainer, errorText, actions);
     dialog.appendChild(form);
     document.body.appendChild(dialog);
 
@@ -385,6 +401,11 @@ export class ConnectionForm {
     const submit = async (): Promise<void> => {
       if (pending) return;
       const password = passwordInput.value;
+      if (this.adminUsernameRequired && !usernameInput.value.trim()) {
+        showError(t('auth.adminUsernameRequired'));
+        usernameInput.focus();
+        return;
+      }
       if (!password) {
         showError(t('auth.validationPassword'));
         passwordInput.focus();
@@ -412,7 +433,7 @@ export class ConnectionForm {
         const response = await fetch('/api/auth/password/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, turnstileToken }),
+          body: JSON.stringify({ key, turnstileToken, ...(this.adminUsernameRequired ? { username: usernameInput.value.trim() } : {}) }),
         });
 
         if (response.ok) {

@@ -98,8 +98,11 @@ export async function buildAdminPasswordHash(
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const stretchedB64url = await stretchAdminPassword(password, bytesToB64url(salt), iterations);
   const stretched = b64urlToBytes(stretchedB64url);
-  const verifier = typeof crypto !== 'undefined' && crypto.subtle
-    ? new Uint8Array(await crypto.subtle.digest('SHA-256', stretched))
-    : sha256(stretched);
+  let verifier: Uint8Array;
+  try {
+    verifier = new Uint8Array(await crypto.subtle.digest('SHA-256', stretched));
+  } catch {
+    verifier = sha256(stretched);
+  }
   return `pbkdf2$sha256$${iterations}$${bytesToB64url(salt)}$${bytesToB64url(verifier)}`;
 }

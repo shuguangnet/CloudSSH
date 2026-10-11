@@ -18,3 +18,8 @@ await build({
     },
   }],
 });
+
+await build({
+  entryPoints: ['standalone/account-entry.ts'], outfile: 'dist/account.js',
+  bundle: true, platform: 'browser', target: 'es2022', format: 'iife', minify: true,
+});

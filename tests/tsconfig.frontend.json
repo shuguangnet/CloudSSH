@@ -5,6 +5,6 @@
     "types": ["node", "vitest/globals"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["./*.test.ts", "./e2e/**/*.ts", "./global-shim.d.ts"],
+  "include": ["./*.test.ts", "./e2e/**/*.ts", "./global-shim.d.ts", "../standalone/account-entry.ts"],
   "exclude": ["node_modules", "dist", "../frontend"]
 }

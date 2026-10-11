@@ -414,8 +414,16 @@ export class ServerList {
     try {
       const response = await fetch('/api/config');
       if (!response.ok) return;
-      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean };
+      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean };
       this.sharingEnabled = config.sshSharingEnabled === true;
+      if (config.adminAccountEnabled && !document.getElementById('admin-account-link')) {
+        const link = document.createElement('a');
+        link.id = 'admin-account-link';
+        link.href = '/account/settings';
+        link.textContent = t('auth.adminAccountSettings');
+        link.className = 'text-xs font-bold text-primary underline';
+        document.getElementById('user-info')?.appendChild(link);
+      }
       if (config.mcpEnabled && !document.getElementById('mcp-settings-link')) {
         const link = document.createElement('a');
         link.id = 'mcp-settings-link';

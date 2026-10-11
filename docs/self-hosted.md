@@ -42,7 +42,9 @@ unset admin_password
 docker compose up -d
 ```
 
-初始化不会覆盖已有密码。轮换时用原项目 `hash-password` 工具生成新校验值，替换卷中的 `admin-password-hash`（权限 600），重启服务；旧浏览器会话和旧 MCP 令牌均失效。
+默认管理员账号为 `admin`（首次初始化可用 `ADMIN_USERNAME` 设置），原有部署升级后密码保持不变。登录后点击用户信息旁的「账号设置」，或访问 `/account/settings`，输入当前密码后即可修改账号或密码。新密码为 12–256 个字符；更改密码会立即使旧登录会话和 MCP 令牌失效，并关闭现有浏览器 SSH 连接，服务器与主机指纹数据保留。只修改账号会保留当前会话和 MCP 令牌。
+
+账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
 
 ## 无 Docker 脚本部署
 
