@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit';
+import { randomUUID } from './random-id';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -1516,7 +1517,7 @@ export class SSHTerminal {
     )
       return;
 
-    const id = crypto.randomUUID();
+    const id = randomUUID();
     this.pendingHeartbeatId = id;
     this.lastPingTime = performance.now();
     socket.send(JSON.stringify({ type: 'ping', id }));

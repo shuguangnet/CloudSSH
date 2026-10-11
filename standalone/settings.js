@@ -71,7 +71,14 @@ $('create-token').addEventListener('submit', async (event) => {
   } catch (error) { notify(error.message); } finally { button.disabled = false; }
 });
 $('copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('token').value); notify(text('copied')); }
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText($('token').value);
+    else {
+      $('token').select();
+      if (!document.execCommand('copy')) throw new Error('Copy failed');
+    }
+    notify(text('copied'));
+  }
   catch { $('token').select(); notify(text('failed')); }
 });
 $('more').addEventListener('click', async () => {

@@ -19,6 +19,8 @@ bash scripts/deploy.sh --docker
 
 仅在受信任内网需要 HTTP 时，可以明确设置 `ALLOW_INSECURE_HTTP=true`、`BIND_ADDRESS=0.0.0.0` 和实际 `BASE_URL`。HTTP 会关闭 Cookie 的 Secure 属性。
 
+若明确使用公网 IP 的 HTTP 地址，同样需要设置上述选项，并将 `BASE_URL` 设为实际地址（例如 `http://5.175.220.95:8788`）。浏览器在 HTTP 下缺少 Web Crypto 时，管理员密码预拉伸通过本地异步 PBKDF2 兼容实现完成，原始密码仍不会发送给后端；HTTP 传输自身不加密。
+
 管理员密码校验值和所有数据库保存在 `cloudssh-data` Docker 卷中。容器使用非 root 用户、只读根文件系统、无 Linux capabilities。升级使用同一个 Compose 项目和数据卷：
 
 ```bash

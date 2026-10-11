@@ -8,6 +8,9 @@
  * 与 `scripts/hash-password.mjs` 的生成口径保持一致。
  */
 
+import { pbkdf2Async } from '@noble/hashes/pbkdf2';
+import { sha256 } from '@noble/hashes/sha256';
+
 function b64urlToBytes(input: string): Uint8Array {
   const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
@@ -54,6 +57,15 @@ export async function stretchAdminPassword(
   const salt = b64urlToBytes(saltB64url);
   if (salt.length < 8) throw new Error('Invalid KDF salt');
 
+  // Web Crypto is restricted to secure contexts. Public HTTP still computes
+  // the identical KDF locally, yielding periodically to keep the UI responsive.
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    const stretched = await pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
+      c: iterations, dkLen: STRETCHED_KEY_BYTES, asyncTick: 10,
+    });
+    return bytesToB64url(stretched);
+  }
+
   const baseKey = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(password),
@@ -87,6 +99,8 @@ export async function buildAdminPasswordHash(
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const stretchedB64url = await stretchAdminPassword(password, bytesToB64url(salt), iterations);
   const stretched = b64urlToBytes(stretchedB64url);
-  const verifier = new Uint8Array(await crypto.subtle.digest('SHA-256', stretched));
+  const verifier = typeof crypto !== 'undefined' && crypto.subtle
+    ? new Uint8Array(await crypto.subtle.digest('SHA-256', stretched))
+    : sha256(stretched);
   return `pbkdf2$sha256$${iterations}$${bytesToB64url(salt)}$${bytesToB64url(verifier)}`;
 }

@@ -1,6 +1,7 @@
 // Agent panel UI — right sidebar for AI Agent interaction
 
 import DOMPurify from 'dompurify';
+import { randomUUID } from '../random-id';
 import { marked, type Tokens } from 'marked';
 import {
   formatTimestampWithRelative,
@@ -600,7 +601,7 @@ export class AgentPanel {
     if (!message) return false;
     if (this.isWaitingConfirmation) return false;
 
-    this.activeRequestId = crypto.randomUUID();
+    this.activeRequestId = randomUUID();
     const isSupersede = this.isAgentRunning;
     if (isSupersede) {
       this.markLastActiveMessageAborted();
@@ -1548,7 +1549,7 @@ export class AgentPanel {
     this.updateInputState();
 
     // 5. 响应链从目标用户轮次之前分支；这不会撤销服务器上已经发生的操作。
-    this.activeRequestId = crypto.randomUUID();
+    this.activeRequestId = randomUUID();
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const payload = {
       type: 'agent_start',

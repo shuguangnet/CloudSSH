@@ -7,6 +7,7 @@
  * 两种后端共用 src/snippet-schema.ts 的限额与校验，行为保持一致。
  */
 
+import { randomUUID } from './random-id';
 import {
   normalizeSnippetInput,
   SNIPPET_CATEGORY_MAX_LENGTH,
@@ -194,7 +195,7 @@ export class LocalSnippetStore implements SnippetStore {
     if (items.length >= SNIPPET_MAX_COUNT) throw new SnippetStoreError('limitReached');
     const now = new Date().toISOString();
     const snippet: CommandSnippet = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       name: normalized.value.name,
       command: normalized.value.command,
       category: normalized.value.category,
