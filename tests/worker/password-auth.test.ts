@@ -394,6 +394,40 @@ describe('密码认证 — 登录端点', () => {
     expect(res.status).toBe(401);
   });
 
+  it('CDN 中转改写 Host：Origin host === X-Forwarded-Host → 通过 Origin 层（401）', async () => {
+    // 生产场景：域名 → 远端 Caddy/CDN → 容器；中转把 Host 改写为上游地址，
+    // 但按约定写入 X-Forwarded-Host 保留外部主机
+    const worker = await loadWorker();
+    const { hash } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, userDbStub: makeUserDbStub() });
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://ssh.example.com', Host: 'localhost:8787', 'X-Forwarded-Host': 'ssh.example.com' },
+        body: { key: 'x'.repeat(43) },
+      }),
+      env
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('伪造 X-Forwarded-Host 与 Origin 一致但真实 Host 不同（跨站）→ 403', async () => {
+    // 浏览器无法设置非 CORS-safelisted 头；能同时伪造 Origin+XFH 的只有
+    // 非浏览器客户端，此处验证伪造 XFH（链首）不匹配时依旧拒绝
+    const worker = await loadWorker();
+    const { hash } = await makeAdminHash('correct-password');
+    const env = makeEnv({ ADMIN_PASSWORD_HASH: hash, userDbStub: makeUserDbStub() });
+    const res = await worker.fetch(
+      makeRequest('/api/auth/password/login', {
+        method: 'POST',
+        headers: { Origin: 'https://evil.example', Host: 'panel.example.com', 'X-Forwarded-Host': 'a.example, evil.example' },
+        body: { key: 'x'.repeat(43) },
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+  });
+
   it('反代域名下跨站 Origin（Host 头不匹配）→ 403', async () => {
     const worker = await loadWorker();
     const { hash } = await makeAdminHash('correct-password');

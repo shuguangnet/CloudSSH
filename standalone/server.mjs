@@ -128,15 +128,19 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 /**
- * Origin 允许判定（CSRF 防护，支持反代/自定义域名部署）：
- * BASE_URL 严格匹配，或 Origin 的 host[:port] 与请求实际 Host 头一致
- * （TLS 在反代终止后协议不可比，退化为宿主比较；浏览器 CSRF 请求的
- * Origin 是攻击者站点而 Host 是面板地址，仍被拒绝）。
+ * Origin 允许判定（CSRF 防护，支持反代/自定义域名/CDN 中转部署）：
+ * BASE_URL 严格匹配；或 Origin 的 host[:port] 与请求实际 Host 头一致；
+ * 或与 X-Forwarded-Host（链首，中转反代改写 Host 时的标准转发头）一致。
+ * 浏览器 CSRF 请求的 Origin 是攻击者站点而 Host/转发头是面板地址，仍被拒。
  */
-function originAllowed(originHeader, hostHeader) {
+function originAllowed(originHeader, hostHeader, forwardedHostHeader) {
   if (!originHeader) return false;
   if (originHeader === env.BASE_URL) return true;
-  try { return new URL(originHeader).host.toLowerCase() === String(hostHeader || '').toLowerCase(); } catch { return false; }
+  let originHost;
+  try { originHost = new URL(originHeader).host.toLowerCase(); } catch { return false; }
+  if (originHost === String(hostHeader || '').toLowerCase()) return true;
+  const first = String(forwardedHostHeader || '').split(',')[0].trim().toLowerCase();
+  return !!first && originHost === first;
 }
 async function sendResponse(res, response) {
   const headers = Object.fromEntries(response.headers);
@@ -160,7 +164,8 @@ async function sendResponse(res, response) {
 async function management(request, pathname) {
   const user = await getAuthenticatedUser(request, env);
   if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
-  if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'))) {
+  if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'), request.headers.get('X-Forwarded-Host'))) {
+    console.warn(`[MCP-mgmt] rejected write: origin=${request.headers.get('Origin')} host=${request.headers.get('Host')} xfh=${request.headers.get('X-Forwarded-Host')}`);
     return Response.json({ error: 'Invalid origin' }, { status: 403 });
   }
   if (pathname === '/api/mcp/tokens' && request.method === 'GET') return Response.json(store.list(user));
@@ -193,7 +198,7 @@ async function accountManagement(request) {
   if (!user || String(user.github_id) !== '-1') return Response.json({ error: 'Unauthorized' }, { status: 401 });
   if (request.method === 'GET') return Response.json({ username: env.ADMIN_USERNAME });
   if (request.method !== 'PUT') return Response.json({ error: 'Method not allowed' }, { status: 405 });
-  if (!originAllowed(request.headers.get('Origin'), request.headers.get('Host'))) return Response.json({ error: 'Invalid origin' }, { status: 403 });
+  if (!originAllowed(request.headers.get('Origin'), request.headers.get('Host'), request.headers.get('X-Forwarded-Host'))) return Response.json({ error: 'Invalid origin' }, { status: 403 });
   const body = await request.json();
   if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'Invalid account settings' }, { status: 400 });
   if (!validUsername(body.username)) return Response.json({ error: 'Invalid account name' }, { status: 400 });
@@ -296,7 +301,10 @@ const server = createServer(async (req, res) => {
     const pathname = requestUrl.pathname;
     if (pathname !== '/api/health' && rateLimited(req.socket.remoteAddress)) return sendJson(res, 429, { error: 'Rate limit exceeded' });
     if (pathname === '/mcp') {
-      if (req.headers.origin && !originAllowed(req.headers.origin, req.headers.host)) return sendJson(res, 403, { error: 'Invalid origin' });
+      if (req.headers.origin && !originAllowed(req.headers.origin, req.headers.host, req.headers['x-forwarded-host'])) {
+        console.warn(`[MCP] rejected: origin=${req.headers.origin} host=${req.headers.host} xfh=${req.headers['x-forwarded-host']}`);
+        return sendJson(res, 403, { error: 'Invalid origin' });
+      }
       const bearer = typeof req.headers.authorization === 'string' ? req.headers.authorization.match(/^Bearer (\S+)$/i)?.[1] : undefined;
       const identity = store.verify(bearer);
       // Mode changes and GitHub allowlist changes invalidate access, just like browser sessions.
