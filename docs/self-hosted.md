@@ -15,7 +15,20 @@ bash scripts/deploy.sh --docker
 
 脚本构建镜像、初始化管理员密码并启动服务。**首次运行会显示一次随机管理员密码，请保存。** 再次运行保留账号和数据。打开 `http://localhost:8787`，使用管理员密码登录。
 
-默认绑定 `127.0.0.1:8787`。远程访问时使用 HTTPS 反向代理，将 `.env` 的 `BASE_URL` 改为浏览器实际访问的地址，例如 `https://ssh.example.com`，再运行脚本。反向代理需支持 WebSocket，并将 `/mcp` 请求超时设为至少 210 秒。`BASE_URL` 必须是完整源地址，不带路径。同源校验同时支持反代域名：浏览器经自定义域名访问时，只要登录/写操作请求的 `Origin` 与该请求实际的 `Host` 一致（反向代理默认保留上游 Host），即可通过校验——`BASE_URL` 与访问域名不同也不会被拒；跨站 `Origin`（与面板地址不同宿主）依旧被拒绝。
+默认绑定 `127.0.0.1:8787`。远程访问时使用 HTTPS 反向代理，将 `.env` 的 `BASE_URL` 改为浏览器实际访问的地址，例如 `https://ssh.example.com`，再运行脚本。反向代理需支持 WebSocket，并将 `/mcp` 请求超时设为至少 210 秒。`BASE_URL` 必须是完整源地址，不带路径。同源校验同时支持反代/自定义域名/CDN 中转部署（任意域名、无需预配置）：登录/写操作请求的 `Origin` 与该请求实际的 `Host` 一致，或与 `X-Forwarded-Host` 链首一致，即可通过校验——`BASE_URL` 与访问域名不同也不会被拒；跨站 `Origin`（与面板地址不同宿主）依旧被拒绝。反代满足任一条件即可：透传原始 Host（Caddy `header_up Host {host}`）、依赖 Caddy v2 `reverse_proxy` 默认追加的 `X-Forwarded-Host`、Cloudflare 代理（回源保留原 Host）。Nginx 默认改写 Host 且不发送 `X-Forwarded-Host`，需要显式配置：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8788;
+    proxy_set_header Host $host;              # 或: proxy_set_header X-Forwarded-Host $host;
+    proxy_http_version 1.1;                   # WebSocket（SSH 终端必需）
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 210s;                  # MCP 长请求
+}
+```
+
+若同源校验仍拒绝登录（403 Forbidden origin），服务端日志会打印 `origin/url/host/xfh` 四元组，据此核对反代头部即可定位。
 
 仅在受信任内网需要 HTTP 时，可以明确设置 `ALLOW_INSECURE_HTTP=true`、`BIND_ADDRESS=0.0.0.0` 和实际 `BASE_URL`。HTTP 会关闭 Cookie 的 Secure 属性。
 
