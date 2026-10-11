@@ -6,7 +6,7 @@ const dictionaries = {
     tasks: '定时任务', tasksIntro: '按 cron 计划在面板后端执行命令，命令快照保存于任务中（编辑片段不影响已建任务）。',
     taskName: '名称', taskServer: '服务器', taskCommand: '命令', taskCron: '计划（cron 表达式）',
     taskTimeout: '超时（秒，30–600）', create: '创建任务', update: '保存修改',
-    notifyOnFailure: '失败时推送通知', cronHint: '五字段：分 时 日 月 周；', scheduleNext: '下次执行', lastRun: '上次结果', statusCol: '状态',
+    notifyOnFailure: '失败时推送通知', notifyOnChange: '输出变化时推送通知', cronHint: '五字段：分 时 日 月 周；', scheduleNext: '下次执行', lastRun: '上次结果', statusCol: '状态',
     presets: { m5: '每 5 分钟', h1: '每小时', d3: '每天 3:00', w1: '每周一 8:00' },
     runNow: '立即运行', history: '运行历史', loadMoreRuns: '加载更早记录',
     runStarted: '开始时间', runStatus: '结果', runDuration: '耗时', runExitCode: '退出码', runError: '错误', runOutput: '输出',
@@ -34,7 +34,7 @@ const dictionaries = {
     tasks: '定時任務', tasksIntro: '按 cron 排程在面板後端執行命令，命令快照儲存於任務中（編輯片段不影響已建任務）。',
     taskName: '名稱', taskServer: '伺服器', taskCommand: '命令', taskCron: '排程（cron 運算式）',
     taskTimeout: '逾時（秒，30–600）', create: '建立任務', update: '儲存變更',
-    notifyOnFailure: '失敗時推送通知', cronHint: '五欄位：分 時 日 月 週；', scheduleNext: '下次執行', lastRun: '上次結果', statusCol: '狀態',
+    notifyOnFailure: '失敗時推送通知', notifyOnChange: '輸出變化時推送通知', cronHint: '五欄位：分 時 日 月 週；', scheduleNext: '下次執行', lastRun: '上次結果', statusCol: '狀態',
     presets: { m5: '每 5 分鐘', h1: '每小時', d3: '每天 3:00', w1: '每週一 8:00' },
     runNow: '立即執行', history: '執行歷史', loadMoreRuns: '載入更早記錄',
     runStarted: '開始時間', runStatus: '結果', runDuration: '耗時', runExitCode: '結束代碼', runError: '錯誤', runOutput: '輸出',
@@ -62,7 +62,7 @@ const dictionaries = {
     tasks: 'Scheduled tasks', tasksIntro: 'Commands run on a cron schedule in the panel backend. The command is snapshotted per task (editing snippets later does not change existing tasks).',
     taskName: 'Name', taskServer: 'Server', taskCommand: 'Command', taskCron: 'Schedule (cron expression)',
     taskTimeout: 'Timeout (s, 30–600)', create: 'Create task', update: 'Save changes',
-    notifyOnFailure: 'Notify on failure', cronHint: 'Five fields: minute hour day month weekday; ', scheduleNext: 'Next run', lastRun: 'Last result', statusCol: 'Status',
+    notifyOnFailure: 'Notify on failure', notifyOnChange: 'Notify when output changes', cronHint: 'Five fields: minute hour day month weekday; ', scheduleNext: 'Next run', lastRun: 'Last result', statusCol: 'Status',
     presets: { m5: 'Every 5 min', h1: 'Hourly', d3: 'Daily 3:00', w1: 'Mondays 8:00' },
     runNow: 'Run now', history: 'Run history', loadMoreRuns: 'Load earlier runs',
     runStarted: 'Started', runStatus: 'Result', runDuration: 'Duration', runExitCode: 'Exit code', runError: 'Error', runOutput: 'Output',
@@ -163,7 +163,7 @@ function renderTasks() {
     action.append(button(text('edit'), () => {
       $('task-id').value = task.id; $('task-name').value = task.name; $('task-server').value = task.server_id;
       $('task-command').value = task.command; $('task-cron').value = task.cron_expr; $('task-timeout').value = task.timeout_seconds;
-      $('task-notify').checked = !!task.notify_on_failure; $('task-enabled').checked = !!task.enabled;
+      $('task-notify').checked = !!task.notify_on_failure; $('task-notify-change').checked = !!task.notify_on_change; $('task-enabled').checked = !!task.enabled;
       $('task-save').textContent = text('update'); $('task-cancel').hidden = false;
       $('task-form').scrollIntoView({ behavior: 'smooth' });
     }));
@@ -394,7 +394,7 @@ $('task-form').addEventListener('submit', async (event) => {
   const body = {
     name: $('task-name').value, server_id: Number($('task-server').value), command: $('task-command').value,
     cron_expr: $('task-cron').value.trim(), timeout_seconds: Number($('task-timeout').value),
-    notify_on_failure: $('task-notify').checked, enabled: $('task-enabled').checked,
+    notify_on_failure: $('task-notify').checked, notify_on_change: $('task-notify-change').checked, enabled: $('task-enabled').checked,
   };
   try {
     if ($('task-id').value) await api(`/api/automation/cron/${$('task-id').value}`, { method: 'PUT', body: JSON.stringify(body) });
@@ -407,7 +407,7 @@ $('task-form').addEventListener('submit', async (event) => {
 function resetTaskForm() {
   $('task-id').value = ''; $('task-form').reset();
   $('task-timeout').value = 120; $('task-cron').value = '*/5 * * * *';
-  $('task-notify').checked = true; $('task-enabled').checked = true;
+  $('task-notify').checked = true; $('task-notify-change').checked = false; $('task-enabled').checked = true;
   $('task-save').textContent = text('create'); $('task-cancel').hidden = true;
 }
 $('task-cancel').addEventListener('click', resetTaskForm);

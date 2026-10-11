@@ -275,6 +275,44 @@ test('scheduler runs due tasks, records history, skips long-overdue runs and adv
   assert.equal(executed.length, before, 'overdue run skipped');
 });
 
+test('notify-on-change establishes a baseline, alerts on change, stays silent on repeat and resets on command edit', async () => {
+  const { store, engine, notifications } = makeEngine({
+    servers: [{ id: 3, name: 'srv', host: '127.0.0.1', port: 22 }],
+    execResults: [
+      { stdout: 'v1', stderr: '', exitCode: 0 }, // baseline
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // changed → notify
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // unchanged → silent
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // after command edit → new baseline, silent
+    ],
+  });
+  const { id } = store.createTask(OWNER, USER, { name: 'job', server_id: 3, command: 'x', cron_expr: '0 0 * * *',
+    timeout_seconds: 60, notify_on_failure: false, notify_on_change: true, enabled: true }, null);
+
+  await engine.runTask(store.taskById(OWNER, id)); // first run only stores the baseline
+  assert.equal(notifications.length, 0);
+  assert.ok(store.taskById(OWNER, id).last_output_sha, 'baseline hash stored on the task');
+
+  await engine.runTask(store.taskById(OWNER, id));
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].message.title, /output changed/);
+  assert.match(notifications[0].message.body, /v2/);
+
+  await engine.runTask(store.taskById(OWNER, id)); // identical output → no alert
+  assert.equal(notifications.length, 1);
+
+  store.updateTask(OWNER, id, { command: 'y' }, null); // editing resets the baseline
+  assert.equal(store.taskById(OWNER, id).last_output_sha, null);
+  await engine.runTask(store.taskById(OWNER, id));
+  assert.equal(notifications.length, 1, 'first run of a new command only re-baselines');
+
+  // Tasks without the flag never notify on output changes.
+  const { id: plainId } = store.createTask(OWNER, USER, { name: 'plain', server_id: 3, command: 'x', cron_expr: '0 0 * * *',
+    timeout_seconds: 60, notify_on_failure: false, notify_on_change: false, enabled: true }, null);
+  await engine.runTask(store.taskById(OWNER, plainId));
+  await engine.runTask(store.taskById(OWNER, plainId));
+  assert.equal(notifications.length, 1, 'notify_on_change disabled → always silent on success');
+});
+
 test('scheduler notifies on failure and manual runs share the same path', async () => {
   const { store, engine, executed, notifications } = makeEngine({
     servers: [{ id: 3, name: 'srv', host: '127.0.0.1', port: 22 }],
@@ -440,11 +478,12 @@ test('automation and key APIs enforce auth and persist across restart', { timeou
     const servers = await (await api('/api/servers')).json();
     const serverId = servers[0].id;
     assert.equal((await api('/api/automation/cron', 'POST', { name: 'other-owner task', server_id: 999999, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: true, enabled: true })).status, 400, 'tasks require an owned server');
-    const created2 = await api('/api/automation/cron', 'POST', { name: 'probe task', server_id: serverId, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: false, enabled: true });
+    const created2 = await api('/api/automation/cron', 'POST', { name: 'probe task', server_id: serverId, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: false, notify_on_change: true, enabled: true });
     assert.equal(created2.status, 201);
     const taskId = (await created2.json()).id;
     const tasks = (await (await api('/api/automation/cron')).json()).tasks;
     assert.equal(tasks[0].server_name, servers[0].name);
+    assert.equal(tasks[0].notify_on_change, 1, 'notify_on_change round-trips through the API');
     assert.ok(tasks[0].next_run_at > Date.now() - 1000);
     assert.equal((await api(`/api/automation/cron/${taskId}`, 'PUT', { name: 'renamed', server_id: serverId, command: 'printf updated', cron_expr: '0 * * * *', timeout_seconds: 90, notify_on_failure: true, enabled: true })).status, 200);
     assert.equal((await api('/api/automation/cron/424242/run', 'POST')).status, 404);

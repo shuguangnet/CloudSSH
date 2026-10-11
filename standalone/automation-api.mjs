@@ -61,7 +61,10 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
     return {
       task: {
         name: body.name, server_id: serverId, command: body.command, cron_expr: cronExpr,
-        timeout_seconds: body.timeout_seconds, notify_on_failure: body.notify_on_failure, enabled: body.enabled,
+        timeout_seconds: body.timeout_seconds,
+        notify_on_failure: body.notify_on_failure,
+        notify_on_change: typeof body.notify_on_change === 'boolean' ? body.notify_on_change : false,
+        enabled: body.enabled,
       },
       owner, identity, servers, cronExpr,
     };

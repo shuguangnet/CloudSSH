@@ -13,9 +13,10 @@ export class AutomationStore {
         owner TEXT NOT NULL, user_id INTEGER NOT NULL, github_id TEXT NOT NULL,
         name TEXT NOT NULL, server_id INTEGER NOT NULL, command TEXT NOT NULL,
         cron_expr TEXT NOT NULL, timeout_seconds INTEGER NOT NULL DEFAULT 120,
-        notify_on_failure INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
+        notify_on_failure INTEGER NOT NULL DEFAULT 1, notify_on_change INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        next_run_at INTEGER, last_run_at INTEGER, last_status TEXT);
+        next_run_at INTEGER, last_run_at INTEGER, last_status TEXT, last_output_sha TEXT);
       CREATE INDEX IF NOT EXISTS cron_tasks_due ON cron_tasks(enabled, next_run_at);
       CREATE TABLE IF NOT EXISTS cron_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, github_id TEXT NOT NULL,
@@ -43,6 +44,11 @@ export class AutomationStore {
         ok INTEGER NOT NULL, latency_ms INTEGER);
       CREATE INDEX IF NOT EXISTS monitor_samples_idx ON monitor_samples(owner, server_id, ts);
     `);
+    // Migrations for databases created before notify-on-change existed.
+    for (const column of ['notify_on_change INTEGER NOT NULL DEFAULT 0', 'last_output_sha TEXT']) {
+      try { this.db.exec(`ALTER TABLE cron_tasks ADD COLUMN ${column}`); }
+      catch (error) { if (!/duplicate column/i.test(String(error))) throw error; }
+    }
   }
 
   ownerKey(user) {
@@ -94,7 +100,7 @@ export class AutomationStore {
     return this.db.prepare('SELECT count(*) AS n FROM cron_tasks WHERE owner=?').get(owner).n;
   }
 
-  createTask(owner, user, { name, server_id, command, cron_expr, timeout_seconds, notify_on_failure, enabled }, nextAt) {
+  createTask(owner, user, { name, server_id, command, cron_expr, timeout_seconds, notify_on_failure, notify_on_change, enabled }, nextAt) {
     if (typeof name !== 'string' || !name.trim() || name.trim().length > TASK_NAME_MAX) {
       throw new Error('Task name must be 1–50 characters');
     }
@@ -107,10 +113,10 @@ export class AutomationStore {
     }
     const now = Date.now();
     const result = this.db.prepare(`INSERT INTO cron_tasks
-      (owner, user_id, github_id, name, server_id, command, cron_expr, timeout_seconds, notify_on_failure, enabled, created_at, updated_at, next_run_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (owner, user_id, github_id, name, server_id, command, cron_expr, timeout_seconds, notify_on_failure, notify_on_change, enabled, created_at, updated_at, next_run_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(owner, user.id, String(user.github_id), name.trim(), server_id, command, cron_expr,
-        timeout_seconds, notify_on_failure ? 1 : 0, enabled ? 1 : 0, now, now, enabled ? nextAt : null);
+        timeout_seconds, notify_on_failure ? 1 : 0, notify_on_change ? 1 : 0, enabled ? 1 : 0, now, now, enabled ? nextAt : null);
     return { id: Number(result.lastInsertRowid) };
   }
 
@@ -124,6 +130,7 @@ export class AutomationStore {
       cron_expr: patch.cron_expr !== undefined ? patch.cron_expr : task.cron_expr,
       timeout_seconds: patch.timeout_seconds !== undefined ? patch.timeout_seconds : task.timeout_seconds,
       notify_on_failure: patch.notify_on_failure !== undefined ? (patch.notify_on_failure ? 1 : 0) : task.notify_on_failure,
+      notify_on_change: patch.notify_on_change !== undefined ? (patch.notify_on_change ? 1 : 0) : task.notify_on_change,
       enabled: patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : task.enabled,
     };
     if (typeof merged.name !== 'string' || !merged.name.trim() || merged.name.trim().length > TASK_NAME_MAX) {
@@ -136,10 +143,14 @@ export class AutomationStore {
     if (!Number.isInteger(merged.timeout_seconds) || merged.timeout_seconds < 30 || merged.timeout_seconds > 600) {
       throw new Error('Timeout must be 30–600 seconds');
     }
+    // Changing the command replaces the output baseline: the first run of the
+    // new command establishes a fresh baseline instead of alerting on the diff.
+    const resetBaseline = merged.command !== task.command;
     this.db.prepare(`UPDATE cron_tasks SET name=?, server_id=?, command=?, cron_expr=?, timeout_seconds=?,
-      notify_on_failure=?, enabled=?, updated_at=?, next_run_at=? WHERE owner=? AND id=?`)
+      notify_on_failure=?, notify_on_change=?, enabled=?, updated_at=?, next_run_at=?,
+      last_output_sha=${resetBaseline ? 'NULL' : 'last_output_sha'} WHERE owner=? AND id=?`)
       .run(merged.name.trim(), merged.server_id, merged.command, merged.cron_expr, merged.timeout_seconds,
-        merged.notify_on_failure, merged.enabled, Date.now(), merged.enabled ? nextAt : null, owner, id);
+        merged.notify_on_failure, merged.notify_on_change, merged.enabled, Date.now(), merged.enabled ? nextAt : null, owner, id);
     return { id };
   }
 
@@ -153,8 +164,13 @@ export class AutomationStore {
     this.db.prepare('UPDATE cron_tasks SET next_run_at=? WHERE id=?').run(next_run_at, id);
   }
 
-  updateTaskStatus(id, { last_run_at, last_status }) {
-    this.db.prepare('UPDATE cron_tasks SET last_run_at=?, last_status=? WHERE id=?').run(last_run_at, last_status, id);
+  updateTaskStatus(id, { last_run_at, last_status, last_output_sha }) {
+    if (last_output_sha === undefined) {
+      this.db.prepare('UPDATE cron_tasks SET last_run_at=?, last_status=? WHERE id=?').run(last_run_at, last_status, id);
+      return;
+    }
+    this.db.prepare('UPDATE cron_tasks SET last_run_at=?, last_status=?, last_output_sha=? WHERE id=?')
+      .run(last_run_at, last_status, last_output_sha, id);
   }
 
   dueTasks(now) {

@@ -1,6 +1,7 @@
 // Automation engine: cron scheduler + uptime prober, driven by AutomationStore state.
 import { savedServers, executeSaved } from './operations.mjs';
 import { sendToChannels } from './notify.mjs';
+import { createHash } from 'node:crypto';
 import { nextRun } from './cron-expr.mjs';
 import { connect } from './sockets.mjs';
 
@@ -136,17 +137,30 @@ export class AutomationEngine {
     } catch (caught) {
       error = briefError(caught);
     }
+    const storedOutput = truncateOutput(output);
     this.store.finishRun(runId, {
       finished_at: this.now(),
       status: ok ? 'succeeded' : 'failed',
       exit_code: output?.exitCode ?? null,
       duration_ms: this.now() - startedAt,
       error,
-      output: truncateOutput(output),
+      output: storedOutput,
     });
-    this.store.updateTaskStatus(task.id, { last_run_at: startedAt, last_status: ok ? 'succeeded' : 'failed' });
+    // Output-change detection hashes the exact truncated snapshot stored in
+    // cron_runs, so notifications always match what the history page shows.
+    // The first successful run only establishes the baseline; failed runs keep
+    // the previous baseline so recovery does not silently reset it.
+    const outputSha = ok && storedOutput !== null
+      ? createHash('sha256').update(storedOutput).digest('hex') : null;
+    this.store.updateTaskStatus(task.id, {
+      last_run_at: startedAt, last_status: ok ? 'succeeded' : 'failed',
+      ...(outputSha !== null ? { last_output_sha: outputSha } : {}),
+    });
     this.store.pruneRuns(task.id, RUN_HISTORY_KEEP);
     if (!ok && task.notify_on_failure) await this.notifyTaskFailure(task, { error, output });
+    if (ok && task.notify_on_change && task.last_output_sha && outputSha && task.last_output_sha !== outputSha) {
+      await this.notifyTaskOutputChange(task, output);
+    }
     return { ok, error, output };
   }
 
@@ -163,6 +177,20 @@ export class AutomationEngine {
       `Time: ${new Date(this.now()).toLocaleString()}`,
     ].filter(Boolean).join('\n');
     return await this.notify(channels, { title: `⏰ CloudSSH task failed: ${task.name}`, body });
+  }
+
+  async notifyTaskOutputChange(task, output) {
+    const channels = this.store.listChannels(task.owner, { enabledOnly: true });
+    if (!channels.length) return [];
+    const serverName = await this.serverName(task.owner, { github_id: task.github_id, user_id: task.user_id }, task.server_id);
+    const detail = (output?.stderr || output?.stdout || '').slice(0, 1500);
+    const body = [
+      `Task: ${task.name}`,
+      `Server: ${serverName} (#${task.server_id})`,
+      detail,
+      `Time: ${new Date(this.now()).toLocaleString()}`,
+    ].filter(Boolean).join('\n');
+    return await this.notify(channels, { title: `🔄 CloudSSH task output changed: ${task.name}`, body });
   }
 
   async ownerServers(owner, identity) {
