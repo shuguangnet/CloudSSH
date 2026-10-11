@@ -134,13 +134,18 @@ WantedBy=multi-user.target
 | `execute_command` | `exec` | 执行命令，返回 stdout、stderr、exit_code，超时 1–180 秒 |
 | `list_files` | `read` | 列出绝对路径目录 |
 | `read_file` | `read` | 返回 base64 编码文件内容，默认 64 KiB、最多 256 KiB |
-| `write_file` | `write` | 原子替换 UTF-8 文件，最多 256 KiB |
+| `write_file` | `write` | 原子替换 UTF-8 文件，单次最多 96000 字节（更大的用 upload_file 分块） |
+| `list_snippets` | 任意有效令牌 | 列出面板保存的命令片段（含完整命令文本），供 AI 查看和选择 |
+| `run_snippet` | `exec` | 逐字执行面板保存的命令片段（复用迁移的一键脚本库），审计记录 snippet_id，同样过极端危险命令拦截 |
+| `download_file` | `read` | 分块拉取任意大小文件：返回 size_bytes、offset 处最多 256 KiB 的 base64 块、块 sha256 与 truncated 标志；循环 offset += chunk_bytes 直到 truncated 为 false，适合拉回大日志 |
+| `upload_file` | `write` | 分块写入任意大小文件：首块 `append=false` 原子创建/替换（保留权限位、不跟随符号链接），后续 `append=true` 追加；每块 base64 最多 128000 字符（解码后 96000 字节），base64 在派发前严格校验 |
+| `get_server_info` | `read` | 一条 SSH 命令返回服务器概览：CPU 型号/核数/使用率、负载、内存/交换、根磁盘、上下行网速、OS 版本、运行时长（约 1–2 秒，与监控面板同源） |
 
 支持已保存的直连、内网服务器、最多三级 SSH 跳板链，以及 Cloudflare Tunnel WebSocket 连接（可使用保存的 Access Service Token）。MCP 通过独立 SSH exec 通道工作，不依赖面板内置 AI 的 API Key。Docker 容器中的 `127.0.0.1` 指容器自身；连接宿主机或其他服务器时使用容器可达地址。
 
 `exec` 明确授予 SSH 账号的任意命令权限，包括服务重启、Docker 管理和安装部署。内置极端危险命令拦截保留，但无法作为权限沙箱。MCP 没有网页确认对话框，运维写操作由令牌权限预先授权；需要限制系统权限时使用专用 SSH 用户与受限 sudo 策略。`read` 允许读取该 SSH 用户可读的任意文件，`write` 允许替换其有权限写入的任意文件。
 
-文件工具面向 Unix/Linux，依赖 `ls/head/base64/mktemp/chmod/mv`；写入保留已有常规文件的权限位，文件所有者为执行 SSH 用户，新文件默认 600，目标符号链接会被替换。读取内容可能在 `max_bytes` 截断；命令输出复用原项目 4 MiB 捕获上限和头尾保留机制。长任务应由 Agent 使用 systemd/tmux 等远端机制管理，再通过后续调用查询。
+文件工具面向 Unix/Linux，依赖 `ls/head/base64/mktemp/chmod/mv`（分块传输另需 `tail/wc/sha256sum`）；写入保留已有常规文件的权限位，文件所有者为执行 SSH 用户，新文件默认 600，目标符号链接会被替换（append 追加遵循标准 shell 语义、会跟随符号链接）。读取内容可能在 `max_bytes` 截断；命令输出复用原项目 4 MiB 捕获上限和头尾保留机制。单次命令长度受 Linux `MAX_ARG_STRLEN`（sshd 以 `bash -c` 执行，单个 argv 最多 128 KiB）与 OpenSSH 256 KiB 包上限约束，因此上传/写入按块投递，下载块 256 KiB（base64 后约 350 KiB，仍在 384 KiB 头尾保留窗口内不丢字节）。长任务应由 Agent 使用 systemd/tmux 等远端机制管理，再通过后续调用查询。
 
 ## 鉴权与审计
 

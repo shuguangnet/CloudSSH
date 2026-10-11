@@ -3,10 +3,39 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { executeSaved, savedServers, validatePath, shellQuote } from './operations.mjs';
 import { tokenHash } from './access-store.mjs';
+import { collectServerStatus } from './status.mjs';
 
 const result = (data, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], isError });
 const serverIdSchema = z.number().int().positive();
 const pathSchema = z.string().min(1).max(4096);
+// Single-call transfer budget. The exec channel keeps the first 128 KiB plus a
+// rolling 256 KiB tail (384 KiB contiguous before anything is dropped); a
+// 256 KiB raw chunk stays under that even after base64 inflation (~350 KiB).
+const TRANSFER_MAX_BYTES = 262144;
+// Command-size budget: OpenSSH rejects transport packets above 256 KiB, and
+// Linux caps a single argv string (sshd runs `bash -c <command>`) at 128 KiB
+// (MAX_ARG_STRLEN), whichever binds first. A base64 payload of 128000 chars
+// plus the shell wrapper stays under the argv limit with margin.
+const TRANSFER_MAX_CHARS = 128000;
+
+async function fetchSnippets(env, identity) {
+  const stub = env.USER_DB.get(env.USER_DB.idFromName(identity.github_id));
+  const response = await stub.fetch(new Request(`http://internal/internal/snippets?user_id=${identity.user_id}`));
+  if (!response.ok) throw new Error('Unable to load command snippets');
+  return await response.json();
+}
+
+/** Strict base64 guard so `base64 -d` on the server can never fail mid-stream
+ * (a failed decode halfway through an append would leave a partial write). */
+function decodeBase64Payload(value) {
+  if (typeof value !== 'string') throw new Error('content_base64 is required');
+  const encoded = value.replace(/\s+/g, '');
+  if (encoded.length > TRANSFER_MAX_CHARS) throw new Error(`content_base64 exceeds ${TRANSFER_MAX_CHARS} characters`);
+  if (encoded.length % 4 !== 0 || (encoded && !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))) {
+    throw new Error('content_base64 is not valid base64');
+  }
+  return { encoded, decoded: Buffer.from(encoded, 'base64') };
+}
 
 export function createMcpServer({ env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal }) {
   const server = new McpServer({ name: 'cloudssh', version: '2.6.2' });
@@ -19,7 +48,7 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
     if (scope && !identity.scopes.includes(scope)) return;
     server.registerTool(name, {
       description: descriptions[name], inputSchema,
-      annotations: { readOnlyHint: name === 'list_servers' || scope === 'read',
+      annotations: { readOnlyHint: name === 'list_servers' || name === 'list_snippets' || scope === 'read',
         destructiveHint: scope === 'exec' || scope === 'write', openWorldHint: true },
     }, async (args, extra) => {
       let started = false;
@@ -29,6 +58,7 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
         store.audit(identity, name, args.server_id, 'started', {
           ...(args.command ? { command_sha256: tokenHash(args.command) } : {}),
           ...(args.path ? { path: args.path } : {}),
+          ...(args.snippet_id !== undefined ? { snippet_id: args.snippet_id } : {}),
         });
         started = true;
         const callSignal = signal ? AbortSignal.any([signal, extra.signal]) : extra.signal;
@@ -78,11 +108,11 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
       instruction: 'The file may be truncated at max_bytes; decode stdout as base64.',
     })));
   tool('write_file', 'write', {
-    server_id: serverIdSchema, path: pathSchema, content: z.string().max(262144),
+    server_id: serverIdSchema, path: pathSchema, content: z.string().max(96000),
   }, (args, check, callSignal) => {
     const path = validatePath(args.path);
     const encoded = Buffer.from(args.content, 'utf8').toString('base64');
-    if (Buffer.byteLength(args.content, 'utf8') > 262144) throw new Error('File content exceeds 256 KiB');
+    if (encoded.length > TRANSFER_MAX_CHARS) throw new Error('File content exceeds the single-call transfer budget; use upload_file chunks');
     // Same-directory temporary file + rename; never follow a target symlink.
     return run(args, `set -eu; target=${path}; dir=$(dirname -- "$target"); ` +
       `tmp=$(mktemp "$dir/.cloudssh-mcp.XXXXXXXX"); trap 'rm -f -- "$tmp"' EXIT; ` +
@@ -90,6 +120,99 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
       `if [ -f "$target" ] && [ ! -L "$target" ]; then chmod --reference="$target" "$tmp"; fi; ` +
       `mv -f -- "$tmp" "$target"; trap - EXIT`, check, callSignal);
   });
+
+  // ==================== 面板命令片段 ====================
+
+  tool('list_snippets', null, {}, async () => {
+    const snippets = await fetchSnippets(env, identity);
+    return { snippets: snippets.map((item) => ({
+      id: item.id, name: item.name, category: item.category || '', command: item.command,
+    })) };
+  });
+
+  tool('run_snippet', 'exec', {
+    server_id: serverIdSchema, snippet_id: z.number().int().positive(),
+    timeout_ms: z.number().int().min(1000).max(180000).optional(),
+  }, async (args, check, callSignal) => {
+    const snippets = await fetchSnippets(env, identity);
+    const snippet = snippets.find((item) => item.id === args.snippet_id);
+    if (!snippet) throw new Error(`Snippet ${args.snippet_id} not found for this user`);
+    const blocked = isBlockedCommand(snippet.command);
+    if (blocked.blocked) throw new Error(`Snippet command blocked: ${blocked.reason}`);
+    const data = await run(args, snippet.command, check, callSignal);
+    return { ...data, snippet_id: snippet.id, snippet_name: snippet.name };
+  });
+
+  // ==================== 大文件传输（分块） ====================
+
+  tool('download_file', 'read', {
+    server_id: serverIdSchema, path: pathSchema,
+    offset: z.number().int().min(0).max(2 ** 48).default(0),
+    max_bytes: z.number().int().min(1).max(TRANSFER_MAX_BYTES).default(TRANSFER_MAX_BYTES),
+  }, (args, check, callSignal) => {
+    const path = validatePath(args.path);
+    // tail -c +N is 1-based: byte `offset` of the file is N = offset + 1.
+    return run(args,
+      `set -eu; f=${path}; test -f "$f"; ` +
+      `size=$(wc -c < "$f" | tr -d '[:space:]'); echo "SIZE:$size"; ` +
+      `tmp=$(mktemp); trap 'rm -f -- "$tmp"' EXIT; ` +
+      `tail -c +${args.offset + 1} -- "$f" | head -c ${args.max_bytes} > "$tmp"; ` +
+      `echo "CHUNK:$(wc -c < "$tmp" | tr -d '[:space:]')"; ` +
+      `echo "SHA256:$(sha256sum "$tmp" 2>/dev/null | cut -d" " -f1)"; ` +
+      `base64 "$tmp"`, check, callSignal).then((data) => {
+        if (data.exit_code !== 0) return data; // e.g. missing file: wrapper marks failed with stderr
+        const lines = (data.stdout || '').split(/\r?\n/);
+        const sizeLine = lines.shift() || '';
+        const chunkLine = lines.shift() || '';
+        const shaLine = lines.shift() || '';
+        const size = Number(sizeLine.replace(/^SIZE:/, ''));
+        const chunkBytes = Number(chunkLine.replace(/^CHUNK:/, ''));
+        if (!sizeLine.startsWith('SIZE:') || !chunkLine.startsWith('CHUNK:') || !shaLine.startsWith('SHA256:') ||
+            !Number.isFinite(size) || !Number.isFinite(chunkBytes)) {
+          throw new Error('Unexpected download output; the remote file tools may be unavailable');
+        }
+        const sha256 = shaLine.slice('SHA256:'.length) || null; // null when sha256sum is unavailable
+        const content = lines.join('\n').replace(/\n$/, '');
+        return {
+          size_bytes: size, offset: args.offset, chunk_bytes: chunkBytes,
+          truncated: args.offset + chunkBytes < size,
+          content_base64: content, content_sha256: sha256, encoding: 'base64', exit_code: data.exit_code,
+          instruction: chunkBytes > 0 && args.offset + chunkBytes < size
+            ? 'More data follows: call download_file again with offset += chunk_bytes and verify each chunk against content_sha256.'
+            : 'Decode content_base64 as base64; compare content_sha256 after decoding to verify integrity.',
+        };
+      });
+  });
+
+  tool('upload_file', 'write', {
+    server_id: serverIdSchema, path: pathSchema,
+    content_base64: z.string().min(0).max(TRANSFER_MAX_CHARS),
+    append: z.boolean().default(false),
+  }, (args, check, callSignal) => {
+    const path = validatePath(args.path);
+    const { encoded, decoded } = decodeBase64Payload(args.content_base64);
+    const payload = `printf '%s' ${shellQuote(encoded)} | base64 -d`;
+    const command = args.append
+      // Append keeps standard shell semantics: the target must already exist
+      // (create it with a non-append call first); symlinks are followed.
+      ? `set -eu; target=${path}; test -f "$target"; ${payload} >> "$target"; wc -c < "$target" | tr -d '[:space:]'`
+      // First chunk: same atomic temp+rename path as write_file.
+      : `set -eu; target=${path}; dir=$(dirname -- "$target"); ` +
+        `tmp=$(mktemp "$dir/.cloudssh-mcp.XXXXXXXX"); trap 'rm -f -- "$tmp"' EXIT; ` +
+        `${payload} > "$tmp"; ` +
+        `if [ -f "$target" ] && [ ! -L "$target" ]; then chmod --reference="$target" "$tmp"; fi; ` +
+        `mv -f -- "$tmp" "$target"; trap - EXIT; echo "BYTES:${decoded.byteLength}"`;
+    return run(args, command, check, callSignal).then((data) => ({
+      ...data, bytes_written: decoded.byteLength, append: Boolean(args.append),
+      instruction: 'Chunked upload: call with append=false for the first chunk, then append=true; ' +
+        'keep each content_base64 within 128000 characters. Verify with download_file or sha256sum afterwards.',
+    }));
+  });
+
+  // ==================== 服务器信息概览 ====================
+
+  tool('get_server_info', 'read', { server_id: serverIdSchema }, async (args, check, callSignal) =>
+    collectServerStatus(env, identity, args.server_id, execute, SSHSession, callSignal, check));
   return server;
 }
 
@@ -98,7 +221,12 @@ const descriptions = {
   execute_command: 'Execute a shell command on an authorized server. Exec scope grants arbitrary SSH-user privileges. Do not blindly retry uncertain outcomes.',
   list_files: 'List an absolute directory on an authorized server (requires Unix ls).',
   read_file: 'Read up to max_bytes from a remote file as base64 (requires Unix head/base64).',
-  write_file: 'Atomically replace a remote UTF-8 file with up to 256 KiB. Existing mode is retained; ownership belongs to the SSH user. Requires Unix mktemp/base64/chmod/mv.',
+  write_file: 'Atomically replace a remote UTF-8 file with up to 96000 bytes per call. Existing mode is retained; ownership belongs to the SSH user. Requires Unix mktemp/base64/chmod/mv. Use upload_file for larger or binary content.',
+  list_snippets: 'List the command snippets saved in the panel for this account, with their full commands. Use with run_snippet to reuse the one-click scripts.',
+  run_snippet: 'Run one of the command snippets saved in the panel (see list_snippets for IDs). Requires exec scope; the snippet command runs verbatim on the chosen server.',
+  download_file: 'Download a remote file in verifiable chunks: returns size_bytes, one base64 chunk of up to 256 KiB at offset, its sha256 and a truncated flag. Repeat with offset += chunk_bytes until truncated is false. Requires Unix tail/head/base64/sha256sum.',
+  upload_file: 'Upload or append a file in up to 96000-byte decoded chunks (base64). First call with append=false atomically creates/replaces the target (mode retained, symlinks not followed); continue with append=true. Verify with download_file or sha256sum afterwards.',
+  get_server_info: 'One-shot server overview over SSH: CPU model/cores/usage, load average, memory, swap, root disk usage, network rates, OS version and uptime (takes about 1-2 s due to CPU sampling).',
 };
 
 export async function handleMcp(req, res, context, body) {

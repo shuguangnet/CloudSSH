@@ -183,12 +183,15 @@ export function parseStatusOutput(stdout) {
 /**
  * Runs the collection script on one saved server and returns the parsed
  * metrics plus the wall-clock latency of the whole SSH round trip.
+ * `authorize` rechecks token validity inside executeSaved after SSH
+ * authentication (MCP passes its revocation recheck; panel routes keep the
+ * default no-op because session auth was already enforced at the route).
  */
-export async function collectServerStatus(env, identity, serverId, executeSaved, SSHSession, signal) {
+export async function collectServerStatus(env, identity, serverId, executeSaved, SSHSession, signal, authorize = () => {}) {
   const startedAt = Date.now();
   let result;
   try {
-    result = await executeSaved(env, identity, serverId, buildStatusScript(), 20000, SSHSession, () => {}, signal);
+    result = await executeSaved(env, identity, serverId, buildStatusScript(), 20000, SSHSession, authorize, signal);
   } catch (caught) {
     // SSH-layer failures (fingerprint not trusted, auth refused, timeout…)
     // are upstream problems → 502.

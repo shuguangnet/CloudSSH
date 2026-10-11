@@ -89,7 +89,7 @@ test('native panel and real MCP client enforce authentication, persistence and r
     });
     client = new Client({ name: 'integration', version: '1' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token.token}` } } }));
-    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['list_files', 'list_servers', 'read_file']);
+    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']);
     const listed = JSON.parse((await client.callTool({ name: 'list_servers', arguments: {} })).content[0].text);
     assert.equal(listed.servers[0].id, id);
     assert.equal(JSON.stringify(listed).includes('fixture-only'), false);
@@ -194,6 +194,56 @@ test('real SSH: panel WebSocket, host trust, headless MCP commands, file I/O and
     await call('write_file', { server_id: id, path: target, content: 'hello\n世界\n' });
     const read = await call('read_file', { server_id: id, path: target });
     assert.equal(Buffer.from(read.stdout, 'base64').toString(), 'hello\n世界\n');
+
+    // 面板命令片段：list_snippets 可见，run_snippet 逐字执行
+    await api('/api/snippets', 'POST', { name: 'whoami fixture', command: 'printf snippet-ok', category: 'ops' });
+    const snippetList = await call('list_snippets', {});
+    const created = snippetList.snippets.find((item) => item.name === 'whoami fixture');
+    assert.ok(created, JSON.stringify(snippetList));
+    const snippetRun = await call('run_snippet', { server_id: id, snippet_id: created.id });
+    assert.equal(snippetRun.stdout, 'snippet-ok');
+    assert.equal(snippetRun.snippet_name, 'whoami fixture');
+
+    // 分块下载：300 KiB 随机数据，逐块校验 sha256，末块 truncated=false
+    const blobPath = join(directory, 'blob.bin');
+    const blob = randomBytes(300 * 1024);
+    writeFileSync(blobPath, blob);
+    const localHash = (buffer) => createHash('sha256').update(buffer).digest('hex');
+    let offset = 0; const downloaded = [];
+    for (;;) {
+      const chunk = await call('download_file', { server_id: id, path: blobPath, offset, max_bytes: 262144 });
+      const raw = Buffer.from(chunk.content_base64, 'base64');
+      assert.equal(chunk.size_bytes, blob.length);
+      assert.equal(chunk.chunk_bytes, raw.length);
+      assert.equal(chunk.content_sha256, localHash(raw));
+      downloaded.push(raw); offset += raw.length;
+      if (!chunk.truncated) break;
+      assert.ok(offset < blob.length + 1024, 'download did not terminate');
+    }
+    assert.equal(Buffer.concat(downloaded).toString('hex'), blob.toString('hex'));
+
+    // 分块上传：首块原子创建，后续 append，末尾 sha256 与木地一致
+    const uploadPath = join(directory, 'upload.bin');
+    const payload = randomBytes(300 * 1024);
+    const payloadB64 = payload.toString('base64');
+    for (let position = 0, index = 0; position < payloadB64.length; position += 128000, index++) {
+      const uploaded = await call('upload_file', {
+        server_id: id, path: uploadPath,
+        content_base64: payloadB64.slice(position, position + 128000), append: index > 0,
+      });
+      assert.equal(uploaded.exit_code, 0);
+    }
+    const remoteHash = await call('execute_command', { server_id: id, command: `sha256sum -- ${JSON.stringify(uploadPath)}` });
+    assert.match(remoteHash.stdout, new RegExp(`^${localHash(payload)}`));
+
+    // 服务器信息概览：一条命令拿到 CPU/内存/磁盘/OS
+    const info = await call('get_server_info', { server_id: id });
+    assert.ok(info.cpu.cores >= 1, JSON.stringify(info));
+    assert.ok(info.memory.total_bytes > 0);
+    assert.ok(info.disk.total_bytes > 0);
+    assert.ok(typeof info.os === 'string' && info.os.length > 0);
+    assert.ok(info.uptime_seconds >= 0);
+
     const forwarded = await call('execute_command', { server_id: jumped, command: 'printf jump-ok' });
     assert.equal(forwarded.stdout, 'jump-ok');
     const blocked = await client.callTool({ name: 'execute_command', arguments: { server_id: id, command: 'rm -rf /' } });
