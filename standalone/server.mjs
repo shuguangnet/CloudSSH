@@ -21,6 +21,7 @@ installWorkerGlobals();
 const { worker, SSHSessionDO, UserDBDO, SSHShareDO, SSHSession,
   getAuthenticatedUser, parseAdminPasswordHash, isBlockedCommand } = await import('../dist/worker.mjs');
 import { originAllowed as originAllowedFor } from './origin.mjs';
+import { createBatchRoutes } from './batch.mjs';
 
 const dataDir = resolve(process.env.DATA_DIR || './data');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -71,6 +72,7 @@ dashboardEngine.start();
 const automationRoutes = createAutomationRoutes({
   env, SSHSession, store: automationStore, engine: automationEngine, dashboard: dashboardEngine, executeSaved, getAuthenticatedUser,
 });
+const batchRoutes = createBatchRoutes({ env, getAuthenticatedUser, SSHSession });
 // PWA assets are copied to dist/public by scripts/build-standalone.mjs; icons are
 // immutable, the service worker must always revalidate.
 const PUBLIC_FILES = {
@@ -470,6 +472,7 @@ const server = createServer(async (req, res) => {
       req.on('close', () => { clearInterval(heartbeat); unsubscribe(); });
       return;
     }
+    if (pathname.startsWith('/api/batch/')) return sendResponse(res, await batchRoutes(request, pathname));
     if (pathname.startsWith('/api/automation/') || pathname.startsWith('/api/ssh/keys/') || pathname.startsWith('/api/docker/') || pathname.startsWith('/api/dashboard/')) {
       const response = await automationRoutes(request, pathname, requestUrl);
       if (response) return sendResponse(res, response);

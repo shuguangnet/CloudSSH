@@ -15,6 +15,7 @@ import { TabManager } from './tab-manager';
 import type { SSHHostInfo, SSHTerminal } from './terminal';
 import { serverStatusPanel, initServerStatusPanel } from './server-status';
 import { dockerPanel, initDockerPanel } from './server-docker';
+import { initBatchPanel } from './batch-panel';
 import { dashboardPanel } from './dashboard';
 import {
   applyBuiltInTheme,
@@ -1124,6 +1125,7 @@ async function init(): Promise<void> {
   mobileTerminalController.start();
   initServerStatusPanel();
   initDockerPanel();
+  initBatchPanel();
   initTerminalServerTools();
   void fetch('/api/config').then(async (response) => {
     if (!response.ok) return;

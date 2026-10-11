@@ -224,3 +224,48 @@ export async function executeSaved(env, identity, serverId, command, timeout, SS
   releaseChain(env, entry);
   return result;
 }
+
+/**
+ * executeSaved 的流式变体：stdout 块经 onChunk 实时回调（字节级，不解码），
+ * 其余语义（池化复用、陈旧链重试、中止放回池、故障链驱逐）与 executeSaved 一致。
+ * 首个输出块到达后不再重试——重试会把已回传的字节重放一遍。
+ */
+export async function executeSavedStream(env, identity, serverId, command, options, SSHSession, authorize = () => {}) {
+  const { onChunk, timeout, signal, maxBytes } = options;
+  let delivered = false;
+  const guardedChunk = (data) => { delivered = true; onChunk(data); };
+  const run = (entry) => {
+    // 与 runOnChain 相同的兜底：exec 超时后仍不返回则拆链，避免僵尸通道。
+    const hardKill = setTimeout(() => closeChain(entry), timeout + 20000);
+    hardKill.unref?.();
+    return entry.finalSession
+      .streamExecCommand(command, { onChunk: guardedChunk, timeout, signal, maxBytes })
+      .finally(() => clearTimeout(hardKill));
+  };
+  if (signal?.aborted) throw new Error('Operation cancelled');
+  authorize();
+  const { entry, reused } = await acquireChain(env, identity, serverId, SSHSession, signal);
+  let result;
+  try {
+    result = await run(entry);
+  } catch (caught) {
+    const message = String(caught?.message || caught);
+    if (reused && !delivered && /not authenticated/i.test(message)) {
+      closeChain(entry);
+      const fresh = await acquireChain(env, identity, serverId, SSHSession, signal);
+      try {
+        const retried = await run(fresh.entry);
+        releaseChain(env, fresh.entry);
+        return retried;
+      } catch (second) {
+        closeChain(fresh.entry);
+        throw second;
+      }
+    }
+    if (signal?.aborted) releaseChain(env, entry);
+    else closeChain(entry);
+    throw caught;
+  }
+  releaseChain(env, entry);
+  return result;
+}
