@@ -1,5 +1,9 @@
 import { normalizeAIBaseUrl } from '../ai-endpoint';
 import {
+  normalizeMobileShortcutsPayload,
+  SHORTCUTS_MAX_BYTES,
+} from '../mobile-shortcuts-schema';
+import {
   MAX_CUSTOM_THEMES,
   normalizeThemeData,
   normalizeUserThemePayload,
@@ -158,6 +162,12 @@ export default {
 
       if (url.pathname === '/api/user/theme') {
         return handleThemeRoute(request, env);
+      }
+
+      // ==================== 移动端快捷键配置 Routes (需认证) ====================
+
+      if (url.pathname === '/api/user/mobile-shortcuts') {
+        return handleMobileShortcutsRoute(request, env);
       }
 
       // ==================== known_hosts Routes (需认证) ====================
@@ -656,6 +666,84 @@ async function handleThemeRoute(request: Request, env: Env): Promise<Response> {
       : `http://internal/internal/theme?user_id=${user.id}`;
     return stub.fetch(
       new Request(targetUrl, {
+        method: 'DELETE',
+      })
+    );
+  }
+
+  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+}
+
+// ==================== 移动端快捷键配置 routes ====================
+
+async function handleMobileShortcutsRoute(request: Request, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+
+  const stub = getUserDBStub(env, user.github_id);
+
+  if (request.method === 'GET') {
+    return stub.fetch(
+      new Request(`http://internal/internal/mobile-shortcuts?user_id=${user.id}`, {
+        method: 'GET',
+      })
+    );
+  }
+
+  if (request.method === 'PUT') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json<unknown>();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const rawSerialized = JSON.stringify(body);
+    if (new TextEncoder().encode(rawSerialized).byteLength > SHORTCUTS_MAX_BYTES) {
+      return Response.json({ error: 'Shortcuts payload is too large' }, { status: 413 });
+    }
+
+    const normalized = normalizeMobileShortcutsPayload(body);
+    if (!normalized) {
+      return Response.json({ error: 'Invalid shortcuts data' }, { status: 400 });
+    }
+
+    return stub.fetch(
+      new Request('http://internal/internal/mobile-shortcuts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id, shortcuts_data: JSON.stringify(normalized) }),
+      })
+    );
+  }
+
+  if (request.method === 'DELETE') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    return stub.fetch(
+      new Request(`http://internal/internal/mobile-shortcuts?user_id=${user.id}`, {
         method: 'DELETE',
       })
     );

@@ -2647,7 +2647,8 @@ html[data-theme="standard-light"] .drawer-segmented-lens {
   }
 
   /* 桌面端兜底：任何 .mobile-only 元素都不得显示（移动端媒体查询未命中时生效） */
-  html[data-ui-style="liquid"] .terminal-header-actions > .mobile-only:not(.hidden) {
+  html[data-ui-style="liquid"] .terminal-header-actions > .mobile-only:not(.hidden),
+  html[data-ui-style="liquid"] .user-space-header-actions > .mobile-only:not(.hidden) {
     display: none;
   }
 
@@ -2714,7 +2715,7 @@ html[data-theme="standard-light"] .drawer-segmented-lens {
 
   /* 岛内功能按钮：全圆角微药丸透镜 */
   html[data-ui-style="liquid"] .user-space-header-actions .theme-toolbar-button,
-  html[data-ui-style="liquid"] .user-space-header-actions .user-space-menu-action {
+  html[data-ui-style="liquid"] .user-space-header-actions .user-space-menu-action:not(.mobile-only) {
     border-radius: 9999px;
     width: 32px;
     height: 32px;
@@ -5427,3 +5428,100 @@ body:has(#status-panel.is-open) .status-panel-backdrop {
   text-decoration: none;
 }
 body.terminal-active .share-back-link { opacity: 0.85; }
+
+/* ==================== 移动端快捷键配置弹窗 ==================== */
+
+.mobile-shortcuts-active-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+}
+
+.mobile-shortcut-active-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: calc(var(--control-radius) - 2px);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.mobile-shortcut-chip-label {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-code);
+}
+
+.mobile-shortcut-chip-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mobile-shortcut-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mobile-shortcut-chip-btn:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--on-surface);
+}
+
+.mobile-shortcut-chip-btn.is-danger:hover:not(:disabled) {
+  background: rgba(255, 60, 60, 0.15);
+  color: var(--error);
+}
+
+.mobile-shortcut-chip-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.mobile-shortcut-preset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--bg-surface);
+  color: var(--on-surface);
+  font: 600 11px / 1 var(--font-code);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.mobile-shortcut-preset-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.mobile-shortcut-preset-btn.is-selected {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  border-color: var(--primary);
+  color: var(--primary);
+}

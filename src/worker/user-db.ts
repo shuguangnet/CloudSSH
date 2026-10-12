@@ -3,6 +3,7 @@ import { ServerMemoryStore } from './server-memory-store';
 import { SnapshotStore } from './snapshot-store';
 import { base64ToBytes, bytesToBase64, isValidSnapshotPath, isSnapshotKind } from '../snapshot-policy';
 import { normalizeSnippetInput, SNIPPET_MAX_COUNT } from '../snippet-schema';
+import { normalizeMobileShortcutsPayload } from '../mobile-shortcuts-schema';
 import { normalizeUserThemePayload } from '../theme-schema';
 import {
   ALLOWED_LOCATION_HINTS,
@@ -204,6 +205,12 @@ export class UserDBDO {
         user_id     INTEGER PRIMARY KEY REFERENCES users(id),
         theme_data  TEXT NOT NULL,
         updated_at  TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS user_mobile_shortcuts (
+        user_id         INTEGER PRIMARY KEY REFERENCES users(id),
+        shortcuts_data  TEXT NOT NULL,
+        updated_at      TEXT DEFAULT (datetime('now'))
       );
 
       CREATE TABLE IF NOT EXISTS known_hosts (
@@ -520,6 +527,25 @@ export class UserDBDO {
         const userId = parseInt(userIdStr, 10);
         if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
         return this.handleDeleteTheme(userId, url.searchParams.get('theme_id'));
+      }
+
+      // --- 移动端快捷键配置 ---
+      if (path === '/internal/mobile-shortcuts' && request.method === 'GET') {
+        const userIdStr = url.searchParams.get('user_id');
+        if (!userIdStr) return Response.json({ error: 'Missing user_id' }, { status: 400 });
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
+        return this.handleGetMobileShortcuts(userId);
+      }
+      if (path === '/internal/mobile-shortcuts' && request.method === 'PUT') {
+        return this.handlePutMobileShortcuts(request);
+      }
+      if (path === '/internal/mobile-shortcuts' && request.method === 'DELETE') {
+        const userIdStr = url.searchParams.get('user_id');
+        if (!userIdStr) return Response.json({ error: 'Missing user_id' }, { status: 400 });
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
+        return this.handleDeleteMobileShortcuts(userId);
       }
       // --- One-time-token 消费 ---
       if (path === '/internal/connect-token/consume' && request.method === 'POST') {
@@ -1776,6 +1802,50 @@ export class UserDBDO {
     }
 
     this.db.exec('DELETE FROM user_themes WHERE user_id = ?', userId);
+    return Response.json({ success: true });
+  }
+
+  // ==================== 移动端快捷键配置 ====================
+
+  private handleGetMobileShortcuts(userId: number): Response {
+    type ShortcutRow = { shortcuts_data: string };
+    const rows = this.query<ShortcutRow>(
+      'SELECT shortcuts_data FROM user_mobile_shortcuts WHERE user_id = ?',
+      userId
+    );
+    if (rows.length === 0) {
+      return Response.json({ shortcuts: null });
+    }
+    try {
+      const parsed = JSON.parse(rows[0].shortcuts_data);
+      const normalized = normalizeMobileShortcutsPayload(parsed);
+      if (!normalized) {
+        return Response.json({ shortcuts: null });
+      }
+      return Response.json(normalized);
+    } catch {
+      return Response.json({ shortcuts: null });
+    }
+  }
+
+  private async handlePutMobileShortcuts(request: Request): Promise<Response> {
+    const { user_id, shortcuts_data } = await request.json<{
+      user_id: number;
+      shortcuts_data: string;
+    }>();
+
+    this.db.exec(
+      `INSERT INTO user_mobile_shortcuts (user_id, shortcuts_data, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(user_id) DO UPDATE SET shortcuts_data = excluded.shortcuts_data, updated_at = excluded.updated_at`,
+      user_id,
+      shortcuts_data
+    );
+
+    return Response.json({ success: true });
+  }
+
+  private handleDeleteMobileShortcuts(userId: number): Response {
+    this.db.exec('DELETE FROM user_mobile_shortcuts WHERE user_id = ?', userId);
     return Response.json({ success: true });
   }
 

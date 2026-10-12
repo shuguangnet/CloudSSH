@@ -3,6 +3,7 @@ import {
   applyMobileModifier,
   diffTextareaInput,
   isIOSLike,
+  isMobileTerminalKey,
   isTerminalFocusReport,
   mobileTerminalKeySequence,
 } from '../frontend/src/mobile-input';
@@ -30,6 +31,27 @@ describe('移动端 IME 输入补偿', () => {
     expect(isIOSLike({ userAgent: 'Mozilla/5.0', platform: 'MacIntel', maxTouchPoints: 0 })).toBe(
       false
     );
+    expect(
+      isIOSLike({
+        userAgent: 'Mozilla/5.0',
+        maxTouchPoints: 5,
+        userAgentData: { platform: 'macOS' },
+      })
+    ).toBe(true);
+    expect(
+      isIOSLike({
+        userAgent: 'Mozilla/5.0',
+        maxTouchPoints: 5,
+        userAgentData: { platform: 'iOS' },
+      })
+    ).toBe(true);
+    expect(
+      isIOSLike({
+        userAgent: 'Mozilla/5.0',
+        maxTouchPoints: 0,
+        userAgentData: { platform: 'macOS' },
+      })
+    ).toBe(false);
   });
 });
 
@@ -63,12 +85,51 @@ describe('移动端一次性修饰键', () => {
     expect(applyMobileModifier('x', null)).toEqual({ data: 'x', consumed: false });
   });
 
+  it('Shift 支持字母大写、符号映射与 Tab 转 Backtab', () => {
+    expect(applyMobileModifier('a', 'shift')).toEqual({ data: 'A', consumed: true });
+    expect(applyMobileModifier('z', 'shift')).toEqual({ data: 'Z', consumed: true });
+    expect(applyMobileModifier('1', 'shift')).toEqual({ data: '!', consumed: true });
+    expect(applyMobileModifier('/', 'shift')).toEqual({ data: '?', consumed: true });
+    expect(applyMobileModifier('\t', 'shift')).toEqual({ data: '\x1b[Z', consumed: true });
+  });
+
   it('根据 application cursor mode 和修饰键生成与 xterm 一致的功能键序列', () => {
     expect(mobileTerminalKeySequence('arrow_up', false, null)).toBe('\x1b[A');
     expect(mobileTerminalKeySequence('arrow_up', true, null)).toBe('\x1bOA');
     expect(mobileTerminalKeySequence('arrow_left', true, 'ctrl')).toBe('\x1b[1;5D');
+    expect(mobileTerminalKeySequence('arrow_right', false, 'shift')).toBe('\x1b[1;2C');
     expect(mobileTerminalKeySequence('home', true, 'alt')).toBe('\x1b[1;3H');
     expect(mobileTerminalKeySequence('page_up', false, 'ctrl')).toBe('\x1b[5;5~');
     expect(mobileTerminalKeySequence('escape', false, 'alt')).toBe('\x1b\x1b');
+
+    // Delete 与 Insert
+    expect(mobileTerminalKeySequence('delete', false, null)).toBe('\x1b[3~');
+    expect(mobileTerminalKeySequence('delete', false, 'shift')).toBe('\x1b[3;2~');
+    expect(mobileTerminalKeySequence('insert', false, null)).toBe('\x1b[2~');
+
+    // F1–F12 功能键
+    expect(mobileTerminalKeySequence('f1', false, null)).toBe('\x1bOP');
+    expect(mobileTerminalKeySequence('f2', false, null)).toBe('\x1bOQ');
+    expect(mobileTerminalKeySequence('f3', false, null)).toBe('\x1bOR');
+    expect(mobileTerminalKeySequence('f3', false, 'shift')).toBe('\x1b[1;2R');
+    expect(mobileTerminalKeySequence('f3', false, 'ctrl')).toBe('\x1b[1;5R');
+    expect(mobileTerminalKeySequence('f4', false, null)).toBe('\x1bOS');
+    expect(mobileTerminalKeySequence('f5', false, null)).toBe('\x1b[15~');
+    expect(mobileTerminalKeySequence('f5', false, 'shift')).toBe('\x1b[15;2~');
+    expect(mobileTerminalKeySequence('f10', false, null)).toBe('\x1b[21~');
+    expect(mobileTerminalKeySequence('f12', false, null)).toBe('\x1b[24~');
+
+    // 常用快捷宏
+    expect(mobileTerminalKeySequence('ctrl_c', false, null)).toBe('\x03');
+    expect(mobileTerminalKeySequence('ctrl_d', false, null)).toBe('\x04');
+    expect(mobileTerminalKeySequence('backtab', false, null)).toBe('\x1b[Z');
+  });
+
+  it('isMobileTerminalKey 正确识别全部扩展终端功能键', () => {
+    expect(isMobileTerminalKey('f3')).toBe(true);
+    expect(isMobileTerminalKey('delete')).toBe(true);
+    expect(isMobileTerminalKey('insert')).toBe(true);
+    expect(isMobileTerminalKey('arrow_up')).toBe(true);
+    expect(isMobileTerminalKey('custom_key')).toBe(false);
   });
 });

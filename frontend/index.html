@@ -123,6 +123,23 @@
               <option value="__custom__" data-i18n="theme.custom">Custom</option>
             </select>
             <div data-language-switcher></div>
+            <button
+              id="mobile-shortcuts-config-btn"
+              type="button"
+              class="user-space-menu-action mobile-only hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="mobileShortcuts.title"
+              title="自定义快捷键"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                aria-hidden="true"
+                >keyboard</span
+              >
+              <span class="user-space-action-label" data-i18n="mobileShortcuts.title"
+                >自定义快捷键</span
+              >
+            </button>
           </div>
           <button
             id="user-space-more-btn"
@@ -214,6 +231,7 @@
                     >AI Agent 设置</span
                   >
                 </button>
+
               </div>
             </nav>
             <div class="app-sidebar-footer">
@@ -1412,6 +1430,11 @@
               <span class="material-symbols-outlined" aria-hidden="true"
                 >terminal</span
               ><span data-i18n="snippets.title">Command snippets</span>
+            </button>
+            <button id="mobile-shortcuts-terminal-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >keyboard</span
+              ><span data-i18n="mobileShortcuts.title">自定义快捷键</span>
             </button>
             <button id="mobile-sftp-btn" type="button">
               <span class="material-symbols-outlined" aria-hidden="true"

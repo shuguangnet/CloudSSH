@@ -3,6 +3,7 @@ import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
 import { initI18n, onLocaleChange, t, type TranslationKey } from './i18n';
 import { MobileTerminalController } from './mobile-terminal';
+import { MobileShortcutsManager } from './mobile-shortcuts-manager';
 import { ServerList } from './server-list';
 import {
   type ClaimedShare,
@@ -38,8 +39,10 @@ let connectionForm: ConnectionForm | null = null;
 let serverList: ServerList | null = null;
 let isLoggedIn = false;
 let sharedSessionMode = false;
+const mobileShortcutsManager = new MobileShortcutsManager();
 const mobileTerminalController = new MobileTerminalController(
-  () => tabManager?.getActiveTab()?.terminal ?? null
+  () => tabManager?.getActiveTab()?.terminal ?? null,
+  mobileShortcutsManager
 );
 const snippetManager = new SnippetManager({
   getTerminal: () => tabManager?.getActiveTab()?.terminal ?? null,
@@ -243,6 +246,7 @@ function initTerminalTab(): void {
   // 匿名模式直连：确保 AI Agent 入口隐藏
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
 
   // 隐藏标签栏（URL 直连模式只有一个标签，不需要标签栏）
   const tabBar = document.getElementById('tab-bar');
@@ -287,6 +291,8 @@ function showAuthSection(): void {
   // 匿名模式/退出登录：隐藏 AI Agent 按钮（桌面分段条与移动端菜单）
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
+  mobileShortcutsManager.setLoggedIn(false);
 
   if (!connectionForm) {
     connectionForm = new ConnectionForm({
@@ -315,6 +321,8 @@ function showUserSpace(user: {
   // Show agent toggle button for logged-in users
   document.getElementById('agent-toggle-btn')?.classList.remove('hidden');
   document.getElementById('mobile-agent-btn')?.classList.remove('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.remove('hidden');
+  mobileShortcutsManager.setLoggedIn(true);
 
   serverList = new ServerList(
     user,
@@ -400,6 +408,7 @@ function showTerminalWithNewTab(
 
   const tm = getTabManager();
   const tab = tm.createTab(displayLabel, hostInfo);
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.toggle('hidden', !isLoggedIn || sharedSessionMode);
 
   return { tab, terminal: tab.terminal };
 }
@@ -434,6 +443,7 @@ function showSharedTerminal(claim: ClaimedShare): void {
   isLoggedIn = false;
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
   document.getElementById('snippet-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-snippets-btn')?.classList.add('hidden');
   const tabBar = document.getElementById('tab-bar');
@@ -633,6 +643,10 @@ const aiConfigPanel = new AIConfigPanel();
 
 document.getElementById('ai-config-btn')?.addEventListener('click', () => {
   aiConfigPanel.show();
+});
+
+document.getElementById('mobile-shortcuts-config-btn')?.addEventListener('click', () => {
+  mobileShortcutsManager.showModal();
 });
 
 const askAISelectionButton = document.getElementById('ask-ai-selection-btn');

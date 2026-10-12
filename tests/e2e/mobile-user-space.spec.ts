@@ -199,3 +199,27 @@ test('移动端 AI 设置弹窗完整位于可视区域内', async ({ page }) =>
   expect(layout.overflowY).toBe('auto');
   expect(layout.inputFontSize).toBe('16px');
 });
+
+test('移动端用户空间提供自定义快捷键入口且桌面端隐藏', async ({ page }) => {
+  await page.goto('/?lang=zh-CN');
+
+  // 1. 移动端视口（375x667）下，点击用户空间更多菜单可看到自定义快捷键入口
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.locator('#user-space-more-btn').click();
+  const mobileShortcutBtn = page.locator('#mobile-shortcuts-config-btn');
+  await expect(mobileShortcutBtn).toBeVisible();
+
+  // 点击打开弹窗
+  await mobileShortcutBtn.click();
+  const modal = page.locator('#mobile-shortcuts-modal');
+  await expect(modal).toBeVisible();
+  await expect(page.locator('#mobile-shortcuts-presets')).toBeVisible();
+
+  // 关闭弹窗
+  await page.locator('#mobile-shortcuts-modal .panel-close-btn').click();
+  await expect(modal).toBeHidden();
+
+  // 2. 切换到桌面端视口（1280x800），该按钮必须被严格隐藏
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(mobileShortcutBtn).toBeHidden();
+});

@@ -1,5 +1,10 @@
+import {
+  buildDefaultMobileShortcuts,
+  PRESET_SHORTCUT_MAP,
+} from '../../src/mobile-shortcuts-schema';
 import { onLocaleChange, t } from './i18n';
-import type { MobileModifier, MobileTerminalKey } from './mobile-input';
+import { isMobileTerminalKey, type MobileModifier } from './mobile-input';
+import type { MobileShortcutsManager } from './mobile-shortcuts-manager';
 import type { SSHTerminal } from './terminal';
 import { notify } from './ui-feedback';
 
@@ -8,19 +13,6 @@ type TerminalGetter = () => SSHTerminal | null;
 const VIEWPORT_FIT_STABLE_DELAY_MS = 120;
 const SOFT_KEYBOARD_MIN_OCCLUSION_PX = 120;
 const MOBILE_LAYOUT_QUERY = '(max-width: 767px), (max-width: 1180px) and (pointer: coarse)';
-
-const TERMINAL_KEY_ACTIONS = new Set<MobileTerminalKey>([
-  'escape',
-  'tab',
-  'arrow_up',
-  'arrow_down',
-  'arrow_right',
-  'arrow_left',
-  'home',
-  'end',
-  'page_up',
-  'page_down',
-]);
 
 export class MobileTerminalController {
   private viewportFrame: number | null = null;
@@ -42,7 +34,10 @@ export class MobileTerminalController {
     this.hideMoreMenu();
   };
 
-  constructor(private readonly getTerminal: TerminalGetter) {
+  constructor(
+    private readonly getTerminal: TerminalGetter,
+    private readonly shortcutsManager?: MobileShortcutsManager
+  ) {
     this.moreMenu = document.getElementById('mobile-more-menu');
     this.modifierButtons = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[data-mobile-modifier]')
@@ -74,45 +69,160 @@ export class MobileTerminalController {
       void this.requestLandscape();
       this.hideMoreMenu();
     });
+    document.getElementById('mobile-shortcuts-terminal-btn')?.addEventListener('click', () => {
+      this.shortcutsManager?.showModal();
+      this.hideMoreMenu();
+    });
 
-    document.querySelectorAll<HTMLButtonElement>('[data-terminal-key]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const key = button.dataset.terminalKey || '';
-        const terminal = this.getTerminal();
-        if (terminal && TERMINAL_KEY_ACTIONS.has(key as MobileTerminalKey)) {
-          terminal.sendMobileKey(key as MobileTerminalKey);
-        } else if (terminal && key) {
-          terminal.sendInput(key);
+    const scrollContainer = document.querySelector<HTMLElement>(
+      '#mobile-terminal-toolbar .mobile-terminal-toolbar-scroll'
+    );
+    if (scrollContainer) {
+      scrollContainer.addEventListener('click', (event) => {
+        const target = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('button');
+        if (!target || !scrollContainer.contains(target)) return;
+
+        if (target.id === 'mobile-copy-btn') {
+          void this.handleCopyAction();
+          return;
         }
-        this.syncModifierButtons();
+        if (target.id === 'mobile-paste-btn') {
+          void this.getTerminal()?.pasteFromClipboard();
+          return;
+        }
+        if (target.id === 'mobile-keyboard-hide-btn') {
+          this.getTerminal()?.blur();
+          return;
+        }
+
+        if (target.dataset.mobileModifier) {
+          const terminal = this.getTerminal();
+          if (!terminal) return;
+          const modifier = target.dataset.mobileModifier as MobileModifier;
+          terminal.setMobileModifier(terminal.getMobileModifier() === modifier ? null : modifier);
+          this.syncModifierButtons();
+          terminal.focus();
+          return;
+        }
+
+        if (target.dataset.terminalKey) {
+          const key = target.dataset.terminalKey;
+          const terminal = this.getTerminal();
+          if (terminal && isMobileTerminalKey(key)) {
+            terminal.sendMobileKey(key);
+          } else if (terminal && key) {
+            terminal.sendInput(key);
+          }
+          this.syncModifierButtons();
+          return;
+        }
+
+        if (target.dataset.terminalText) {
+          const text = decodeURIComponent(target.dataset.terminalText);
+          const terminal = this.getTerminal();
+          if (terminal && text) {
+            terminal.sendInput(text);
+          }
+          this.syncModifierButtons();
+          return;
+        }
       });
-    });
+    }
 
-    this.modifierButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        const terminal = this.getTerminal();
-        if (!terminal) return;
-        const modifier = button.dataset.mobileModifier as MobileModifier;
-        terminal.setMobileModifier(terminal.getMobileModifier() === modifier ? null : modifier);
-        this.syncModifierButtons();
-        terminal.focus();
-      });
-    });
+    if (this.shortcutsManager) {
+      this.shortcutsManager.onChange(() => this.renderToolbar());
+    }
+    this.renderToolbar();
 
-    document.getElementById('mobile-copy-btn')?.addEventListener('click', () => {
-      void this.handleCopyAction();
+    onLocaleChange(() => {
+      this.updateOrientationLabel();
+      this.renderToolbar();
     });
-    document.getElementById('mobile-paste-btn')?.addEventListener('click', () => {
-      void this.getTerminal()?.pasteFromClipboard();
-    });
-    document.getElementById('mobile-keyboard-hide-btn')?.addEventListener('click', () => {
-      this.getTerminal()?.blur();
-    });
-
-    onLocaleChange(() => this.updateOrientationLabel());
     this.updateOrientationLabel();
     this.syncTerminalState();
     this.scheduleViewportUpdate();
+  }
+
+  private renderToolbar(): void {
+    const scrollContainer = document.querySelector<HTMLElement>(
+      '#mobile-terminal-toolbar .mobile-terminal-toolbar-scroll'
+    );
+    if (!scrollContainer) return;
+
+    const shortcuts = this.shortcutsManager
+      ? this.shortcutsManager.getShortcuts()
+      : buildDefaultMobileShortcuts().shortcuts;
+
+    scrollContainer.replaceChildren();
+
+    for (const item of shortcuts) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+
+      if (item.type === 'modifier') {
+        btn.dataset.mobileModifier = item.id;
+        btn.setAttribute('aria-pressed', 'false');
+        btn.textContent = item.label || item.id;
+      } else if (item.type === 'action') {
+        if (item.id === 'copy') {
+          btn.id = 'mobile-copy-btn';
+          btn.dataset.i18nTitle = 'terminal.copySelection';
+          btn.title = t('terminal.copySelection');
+          btn.setAttribute('aria-pressed', 'false');
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-outlined';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = 'content_copy';
+          btn.appendChild(icon);
+        } else if (item.id === 'paste') {
+          btn.id = 'mobile-paste-btn';
+          btn.dataset.i18nTitle = 'terminal.paste';
+          btn.title = t('terminal.paste');
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-outlined';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = 'content_paste';
+          btn.appendChild(icon);
+        } else if (item.id === 'keyboard_hide') {
+          btn.id = 'mobile-keyboard-hide-btn';
+          btn.dataset.i18nTitle = 'terminal.hideKeyboard';
+          btn.title = t('terminal.hideKeyboard');
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-outlined';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = 'keyboard_hide';
+          btn.appendChild(icon);
+        }
+      } else if (item.type === 'text') {
+        btn.dataset.terminalText = encodeURIComponent(item.value || '');
+        btn.textContent = item.label || 'Cmd';
+      } else {
+        // key
+        btn.dataset.terminalKey = item.id;
+        const preset = PRESET_SHORTCUT_MAP.get(item.id);
+        if (preset?.icon) {
+          if (preset.i18nTitle) {
+            btn.dataset.i18nTitle = preset.i18nTitle;
+            btn.title = t(preset.i18nTitle as any);
+          }
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-outlined';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = preset.icon;
+          btn.appendChild(icon);
+        } else {
+          btn.textContent = item.label || preset?.label || item.id;
+        }
+      }
+
+      scrollContainer.appendChild(btn);
+    }
+
+    this.modifierButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-mobile-modifier]')
+    );
+    this.syncModifierButtons();
+    this.syncCopyButton();
   }
 
   private scheduleViewportUpdate(): void {
@@ -163,11 +273,11 @@ export class MobileTerminalController {
 
   private syncModifierButtons(): void {
     const active = this.getTerminal()?.getMobileModifier() ?? null;
-    this.modifierButtons.forEach((button) => {
+    for (const button of this.modifierButtons) {
       const pressed = button.dataset.mobileModifier === active;
       button.classList.toggle('is-active', pressed);
       button.setAttribute('aria-pressed', String(pressed));
-    });
+    }
   }
 
   private syncTerminalState(): void {

@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 快照写入是可降级能力：留档失败不会阻断正常的覆盖/删除操作。
 - 版本号待人工指定后发布（遵循「AI 不自主递增版本号」的项目规范）。
 
+## [2.6.4] - 2026-10-12
+
+### Changed
+
+- **移动端快捷键与输入模块代码结构优化**：
+  - **按键序列映射表模块化**：将波浪号功能键、F1–F4 键、光标导航键与 Shift 符号映射提取为常量 Map 字典，避免按键事件处理时频繁创建临时对象，消除多层嵌套三元表达式。
+  - **平台环境检测现代化**：解耦已弃用的 `navigator.platform`，新增 `IOSNavigatorLike` 接口支持现代 `userAgentData.platform` 并安全回退，消除静态分析与编译弃用告警。
+  - **快捷键校验逻辑拆分**：将高认知复杂度的 `normalizeMobileShortcutsPayload` 函数拆解为按键载荷提取、预设项规范化、自定义项校验等单一职责纯函数，提高代码可读性与可维护性。
+  - **代码清理与遍历优化**：清理未使用的类型导入，改用 `for...of` 遍历修饰键按钮，补齐现代平台检测单测用例。
+
+## [2.6.3] - 2026-10-12
+
+### Added
+
+- **移动端终端快捷键自定义与云端同步（#160）**：
+  - **终端按键与 `Shift` 修饰键协议扩展**：`MobileModifier` 新增 `shift` 一次性锁定修饰键（支持字母大写、符号上档映射、`Shift + Tab` 转换为 Backtab `\x1b[Z` 及与功能键/方向键的标准 xterm 组合，如 `Shift + F3` → `\x1b[1;2R`）；`MobileTerminalKey` 新增 `delete` (`\x1b[3~`)、`insert` (`\x1b[2~`)、`backtab`、`f1` ~ `f12` 功能键及 `^C` / `^D` / `^Z` / `^L` 常用组合宏。
+  - **可视化配置弹窗与双入口联动**：支持对当前工具栏按键自由排序（左/右移）、移除、从分类预设库点选切换、添加自定义短指令按键及一键「恢复默认」；配置入口挂载于移动端用户空间顶栏菜单与已登录终端更多菜单（PC 端、匿名模式与一次性分享会话严格隐藏）。
+  - **UserDBDO 云端持久化与双写缓存**：新增前后端共享校验模式 `src/mobile-shortcuts-schema.ts` 与 `user_mobile_shortcuts` 表（`GET / PUT / DELETE /api/user/mobile-shortcuts`，含同源 `Origin` 校验、最多 40 项与 16KB 载荷上限）；前端采用「云端权威 + 本地缓存镜像」策略实现 0 延迟首屏渲染与退出登录自动清理。
+
+### Changed
+
+- **测试与多语言回归覆盖**：同步补齐 `zh-CN` / `zh-TW` / `en-US` 多语言词条，新增后端路由鉴权与 Schema 校验测试、前端快捷键管理器测试及 Playwright 移动端用户空间 E2E 回归测试。
 ## [2.6.2] - 2026-10-10
 
 ### Fixed

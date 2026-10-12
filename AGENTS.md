@@ -102,6 +102,7 @@ src/
 ├── snapshot-policy.ts      # Config snapshot shared contract (limits, kind enum, path validation, base64 codec)
 ├── theme-schema.ts   # Theme V4 shared validation（外观/背景/效果/版式模块、白名单与读性遮罩下限）
 ├── snippet-schema.ts # Command snippet shared validation, limits, and normalization (UserDBDO + localStorage)
+├── mobile-shortcuts-schema.ts # 移动端终端快捷键共享定义、预设池与 Schema 校验纯函数
 └── types.ts          # Shared TypeScript type definitions
 
 frontend/
@@ -125,6 +126,7 @@ frontend/
 │   ├── drawer-segmented.ts # Apple macOS 26 液态抽屉分段切换器（SFTP/自定义命令/Agent 药丸胶囊与双边异步物理弹簧滑块）
 │   ├── auth-challenge-dialog.ts # RFC 4256 multi-round authentication prompt UI
 │   ├── mobile-terminal.ts # Mobile viewport, shortcut toolbar, clipboard and landscape controller
+│   ├── mobile-shortcuts-manager.ts # 移动端快捷键管理器与可视化配置弹窗（云端同步 + 本地镜像双写）
 │   ├── mobile-input.ts    # Pure iOS IME diff and one-shot modifier helpers
 │   ├── known-hosts.ts     # 已验证主机指纹消息校验、本地/云端 TOFU 持久化
 │   ├── device-identity.ts # 分享会话秒级恢复设备非可导出 ECDSA P-256 身份密钥生成与持久化校验
@@ -287,6 +289,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/shares/:id/audit` | GET | Yes | Read the paginated audit log for an owned share |
 | `/api/share/claim` | POST | No | Atomically claim a capability token and return a short-lived WebSocket ticket |
 | `/api/user/theme` | GET/PUT/DELETE | Yes | 获取/同步用户多套自定义主题库，或删除单个/全部自定义主题 |
+| `/api/user/mobile-shortcuts` | GET/PUT/DELETE | Yes | 获取、保存或重置用户移动端终端快捷键配置（行级隔离存储于 UserDBDO） |
 | `/api/known-hosts` | GET/POST/DELETE | Yes | Known host fingerprint CRUD (TOFU) |
 | `/api/snippets` | GET/POST | Yes | List or create command snippets (per-user, max 100) |
 | `/api/snapshots` | GET/DELETE | Yes | 配置快照历史：`?server_id=N&path=P` 列路径版本、`?mode=paths` 列路径摘要+用量；DELETE 按 `id`/`path`/`all` 删除。**只读+删除，写入仅由已认证 SSH 会话经 DO internal 路由完成** |
