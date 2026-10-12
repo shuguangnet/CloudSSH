@@ -106,7 +106,7 @@ test('native panel and real MCP client enforce authentication, persistence and r
       assert.match(html.headers.get('content-security-policy') || '', /frame-ancestors 'self'/, `${path} CSP 允许同源嵌入`);
       assert.match(await html.text(), new RegExp(`data-page="${page_}"`), `${path} 标注 data-page`);
     }
-    if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') await t.test('browser settings create and revoke tokens under CSP in three languages', async () => {
+    if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') await t.test('browser settings create, edit, disable, batch delete and purge tokens under CSP', async () => {
       const browser = await chromium.launch();
       try {
         const context = await browser.newContext();
@@ -125,17 +125,56 @@ test('native panel and real MCP client enforce authentication, persistence and r
         await page.locator('#name').fill('browser agent');
         await page.locator('#create-token button').click();
         await page.locator('#created').waitFor({ state: 'visible' });
-        assert.match(await page.locator('#token').inputValue(), /^cssh_/);
+        const browserToken = await page.locator('#token').inputValue();
+        assert.match(browserToken, /^cssh_/);
         for (const locale of ['zh-CN', 'zh-TW', 'en-US']) {
           await page.locator('#language').selectOption(locale);
           assert.equal(await page.locator('html').getAttribute('lang'), locale);
         }
         const row = page.locator('#tokens tr').filter({ hasText: 'browser agent' });
-        await row.getByRole('button', { name: 'Revoke' }).click();
-        await row.getByText('Revoked', { exact: true }).waitFor();
-        // 删除记录：确认后从列表移除
-        await row.getByRole('button', { name: 'Delete' }).click();
-        await row.waitFor({ state: 'detached' });
+        // 修改：弹窗预填当前主机与权限，保存后列表同步（英文界面下的按钮名）
+        await row.getByRole('button', { name: 'Edit' }).click();
+        await page.locator('#token-edit[open]').waitFor();
+        assert.equal(await page.locator('#edit-name').inputValue(), 'browser agent');
+        assert.equal(await page.locator('#edit-servers input:checked').count(), 1);
+        assert.equal(await page.locator('input[name=edit-scope][value=read]').isChecked(), true);
+        await page.locator('#edit-name').fill('edited agent');
+        await page.locator('input[name=edit-scope][value=write]').check();
+        await page.locator('#edit-token button[type=submit]').click();
+        await page.locator('#token-edit[open]').waitFor({ state: 'detached' });
+        const edited = page.locator('#tokens tr').filter({ hasText: 'edited agent' });
+        await edited.waitFor();
+        assert.equal(await edited.locator('td').nth(3).textContent(), 'read, write');
+        // 表单校验：缺少权限时留在弹窗内提示
+        await edited.getByRole('button', { name: 'Edit' }).click();
+        await page.locator('input[name=edit-scope]:checked').first().uncheck();
+        await page.locator('input[name=edit-scope]:checked').first().uncheck();
+        await page.locator('#edit-token button[type=submit]').click();
+        await page.locator('#edit-message').getByText('Select servers and permissions').waitFor();
+        await page.locator('#edit-cancel').click();
+        await page.locator('#token-edit[open]').waitFor({ state: 'detached' });
+        // 临时禁用：徽章切换、令牌立即失效，重新启用后恢复
+        await edited.getByRole('button', { name: 'Disable' }).click();
+        await edited.locator('.badge', { hasText: 'Disabled' }).waitFor();
+        assert.equal((await fetch(`${base}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${browserToken}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_servers', arguments: {} } }) })).status, 401, '禁用令牌立即失效');
+        await edited.getByRole('button', { name: 'Enable' }).click();
+        await edited.locator('.badge', { hasText: 'Active' }).waitFor();
+        // 调用审计：真实调用一次后可在页面上清理
+        await fetch(`${base}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${browserToken}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_servers', arguments: {} } }) });
+        await page.reload();
+        await page.locator('#audit tr td').first().waitFor();
+        await page.locator('#audit-purge').click();
+        await page.locator('#audit tr .empty').waitFor();
+        // 批量删除：活跃令牌被跳过且按钮禁用，撤销后可一键清理
+        await page.locator('#token-select-all').check();
+        assert.equal(await page.locator('#token-batch-delete').isEnabled(), true);
+        await page.locator('#token-batch-delete').click();
+        await page.locator('#message').getByText('Deleted 0, skipped 2').waitFor(); // 仍有效的记录不会被误删
+        await edited.getByRole('button', { name: 'Revoke' }).click();
+        await edited.locator('.badge', { hasText: 'Revoked' }).waitFor();
+        await page.locator('#token-select-all').check();
+        await page.locator('#token-batch-delete').click();
+        await edited.waitFor({ state: 'detached' });
         assert.deepEqual(errors, []);
       } finally { await browser.close(); }
     });

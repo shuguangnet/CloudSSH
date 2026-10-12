@@ -41,12 +41,14 @@
       <select id="token-status-filter" data-i18n-label="status">
         <option value="" data-i18n="allStatuses">全部状态</option>
         <option value="active" data-i18n="active">有效</option>
+        <option value="disabled" data-i18n="disabled">已禁用</option>
         <option value="revoked" data-i18n="revoked">已撤销</option>
         <option value="expired" data-i18n="expired">已过期</option>
       </select>
+      <button id="token-batch-delete" type="button" class="danger" data-i18n="batchDelete" disabled>批量删除</button>
       <span class="toolbar__count" id="token-count"></span>
     </div>
-    <div class="scroll"><table><thead><tr><th data-i18n="name">名称</th><th data-i18n="servers">授权服务器</th><th data-i18n="permissions">权限</th><th data-i18n="expires">到期时间</th><th data-i18n="status">状态</th><th></th></tr></thead><tbody id="tokens"></tbody></table></div></section>
+    <div class="scroll"><table><thead><tr><th class="select-col"><input id="token-select-all" type="checkbox" data-i18n-label="selectAll"></th><th data-i18n="name">名称</th><th data-i18n="servers">授权服务器</th><th data-i18n="permissions">权限</th><th data-i18n="expires">到期时间</th><th data-i18n="status">状态</th><th></th></tr></thead><tbody id="tokens"></tbody></table></div></section>
   <section><h2 data-i18n="audit">调用审计</h2><p data-i18n="auditHint">记录调用状态和命令摘要，不保存命令输出、令牌或服务器凭据。</p>
     <div class="toolbar">
       <select id="audit-token-filter" data-i18n-label="name"></select>
@@ -61,7 +63,38 @@
         <option value="unknown">unknown</option>
       </select>
       <button id="audit-reset" type="button" class="ghost" data-i18n="reset">重置</button>
+      <button id="audit-purge" type="button" class="danger" data-i18n="purge">清理审计</button>
     </div>
     <div class="scroll"><table><thead><tr><th data-i18n="time">时间</th><th data-i18n="name">令牌</th><th data-i18n="servers">服务器</th><th>Tool</th><th data-i18n="status">状态</th></tr></thead><tbody id="audit"></tbody></table></div>
     <div class="actions"><button id="more" type="button" class="ghost" data-i18n="more">加载更早记录</button></div></section>
-</main></body></html>
+</main>
+<dialog id="token-edit" aria-labelledby="edit-title">
+  <form id="edit-token">
+    <h3 id="edit-title" data-i18n="editTitle">修改访问令牌</h3>
+    <p id="edit-message" role="status" aria-live="polite"></p>
+    <label class="field"><span data-i18n="name">名称</span><input id="edit-name" maxlength="100" required autocomplete="off"></label>
+    <fieldset><legend data-i18n="servers">授权服务器</legend>
+      <div class="server-picker">
+        <div class="server-picker__bar">
+          <label class="choice choice--mini"><input id="edit-select-all" type="checkbox"><span data-i18n="selectAll">全选</span></label>
+          <span class="server-picker__count" id="edit-server-count">0/0</span>
+          <input id="edit-server-search" type="search" data-i18n-placeholder="searchServers" placeholder="搜索服务器…（名称 / 主机 / 标签）" autocomplete="off">
+        </div>
+        <div class="server-picker__grid" id="edit-servers" role="group" data-i18n-label="servers"></div>
+        <p class="server-picker__empty" id="edit-servers-empty" hidden data-i18n="noMatch">没有匹配的服务器</p>
+      </div>
+    </fieldset>
+    <fieldset><legend data-i18n="permissions">权限</legend>
+      <div class="scope-row">
+        <label class="choice"><input name="edit-scope" type="checkbox" value="read"><span data-i18n="read">读取目录与文件</span></label>
+        <label class="choice"><input name="edit-scope" type="checkbox" value="write"><span data-i18n="write">写入文件</span></label>
+        <label class="choice"><input name="edit-scope" type="checkbox" value="exec"><span data-i18n="exec">执行任意命令（拥有 SSH 账号的系统权限）</span></label>
+      </div>
+    </fieldset>
+    <div class="actions">
+      <button type="submit" class="primary" data-i18n="save">保存</button>
+      <button type="button" id="edit-cancel" class="ghost" data-i18n="cancel">取消</button>
+    </div>
+  </form>
+</dialog>
+</body></html>

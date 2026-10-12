@@ -226,6 +226,52 @@ async function management(request, pathname) {
     try { return Response.json({ deleted: store.remove(user, match[1]) }); }
     catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
   }
+  // 先于 /tokens/:id 匹配：批量删除与审计清理都是固定路径。
+  if (pathname === '/api/mcp/tokens/batch-delete' && request.method === 'POST') {
+    const body = await request.json().catch(() => null);
+    const ids = body?.ids;
+    if (!Array.isArray(ids) || !ids.length || ids.length > 100 || !ids.every((id) => typeof id === 'string' && /^[a-f0-9]{24}$/.test(id))) {
+      return Response.json({ error: 'ids must be a non-empty array of at most 100 token ids' }, { status: 400 });
+    }
+    return Response.json(store.removeMany(user, ids));
+  }
+  if (pathname === '/api/mcp/audit/purge' && request.method === 'POST') {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'Invalid purge request' }, { status: 400 });
+    try { return Response.json({ deleted: store.purgeAudits(user, body) }); }
+    catch (error) { return Response.json({ error: error.message }, { status: 400 }); }
+  }
+  // 修改名称/授权主机/权限，以及临时禁用与恢复。
+  if (match && request.method === 'PATCH') {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'Invalid token settings' }, { status: 400 });
+    if (body.server_ids !== undefined) {
+      const servers = await savedServers(env, { github_id: String(user.github_id), user_id: user.id });
+      if (!Array.isArray(body.server_ids) || body.server_ids.some((id) => !servers.some((server) => server.id === id))) {
+        return Response.json({ error: 'Only your saved servers may be authorized' }, { status: 400 });
+      }
+    }
+    if (body.disabled !== undefined && typeof body.disabled !== 'boolean') {
+      return Response.json({ error: 'disabled must be a boolean' }, { status: 400 });
+    }
+    const changesStyle = body.name !== undefined || body.server_ids !== undefined || body.scopes !== undefined;
+    if (!changesStyle && body.disabled === undefined) return Response.json({ error: 'Nothing to update' }, { status: 400 });
+    try {
+      let token = null;
+      if (changesStyle) {
+        token = store.update(user, match[1], { name: body.name, server_ids: body.server_ids, scopes: body.scopes });
+        if (!token) return Response.json({ error: 'Token not found' }, { status: 404 });
+      }
+      if (body.disabled !== undefined) {
+        token = store.setDisabled(user, match[1], body.disabled);
+        if (!token) return Response.json({ error: 'Token not found' }, { status: 404 });
+      }
+      return Response.json(token);
+    } catch (error) {
+      // invalid = 输入非法（400）；其余为状态冲突（409，已撤销/已过期）。
+      return Response.json({ error: error.message }, { status: error.code === 'invalid' ? 400 : 409 });
+    }
+  }
   if (pathname === '/api/mcp/audit' && request.method === 'GET') {
     const params = new URL(request.url).searchParams;
     const before = Number(params.get('before') || Number.MAX_SAFE_INTEGER);
@@ -370,7 +416,7 @@ const server = createServer(async (req, res) => {
           env.GITHUB_ALLOWED_USER_IDS.split(',').map((id) => id.trim()).includes(identity?.github_id));
       if (!identity || !ownerAllowed || identity.auth_generation !== authGeneration) {
         res.setHeader('WWW-Authenticate', 'Bearer realm="CloudSSH MCP"');
-        return sendJson(res, 401, { error: 'Invalid, expired or revoked access token' });
+        return sendJson(res, 401, { error: 'Invalid, expired, revoked or disabled access token' });
       }
       if (activeMcp >= 64 || (inflight.get(identity.id) || 0) >= 4) return sendJson(res, 429, { error: 'Too many concurrent MCP requests' });
       if (!['POST', 'GET', 'DELETE'].includes(req.method)) return sendJson(res, 405, { error: 'Method not allowed' });

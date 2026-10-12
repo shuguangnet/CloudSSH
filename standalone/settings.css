@@ -67,3 +67,23 @@
 #created textarea { min-height: 88px; background: var(--bg-terminal); font-size: .84rem; }
 #created pre { margin: 10px 0 0; background: var(--bg-terminal); }
 #created .actions { margin-top: 12px; }
+
+/* 令牌选择列 + 修改弹窗 */
+.select-col { width: 34px; }
+.select-col input, td input.token-select { margin: 0; vertical-align: middle; }
+.toolbar button { margin: 0; }
+
+dialog#token-edit {
+  width: min(680px, 92vw); padding: 20px 22px; border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius); background: var(--bg-surface); color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+}
+dialog#token-edit::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#token-edit h3 { margin: 0 0 12px; }
+dialog#token-edit .field { display: block; margin-bottom: 14px; }
+dialog#token-edit .field span { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: .88rem; }
+dialog#token-edit .field input { width: 100%; margin: 0; }
+dialog#token-edit fieldset { margin: 0 0 14px; }
+dialog#token-edit .server-picker__grid { max-height: 200px; }
+dialog#token-edit .actions { margin-top: 16px; }
+#edit-message { min-height: 1.4em; margin: 0 0 8px; color: var(--error); font-size: .88rem; }

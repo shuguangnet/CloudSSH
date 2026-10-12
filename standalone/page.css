@@ -247,6 +247,7 @@ td.empty { color: var(--text-dim, var(--text-muted)); text-align: center; paddin
 .badge.ok { color: var(--ok); background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 28%, transparent); }
 .badge.err { color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); border-color: color-mix(in srgb, var(--error) 32%, transparent); }
 .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.badge.info { color: var(--accent-secondary); background: color-mix(in srgb, var(--accent-secondary) 12%, transparent); border-color: color-mix(in srgb, var(--accent-secondary) 30%, transparent); }
 .badge.muted { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 10%, transparent); border-color: var(--border-strong); }
 
 /* ---------- misc ---------- */

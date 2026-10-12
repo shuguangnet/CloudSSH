@@ -40,7 +40,7 @@ function decodeBase64Payload(value) {
 export function createMcpServer({ env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal }) {
   const server = new McpServer({ name: 'cloudssh', version: '2.6.2' });
   const authorize = (serverId, scope) => {
-    if (!store.isActive(identity.id)) throw new Error('Token expired or revoked');
+    if (!store.isActive(identity.id)) throw new Error('Token expired or disabled');
     if (serverId !== undefined && !identity.server_ids.includes(serverId)) throw new Error('Server is not authorized for this token');
     if (scope && !identity.scopes.includes(scope)) throw new Error('Operation is not authorized for this token');
   };
