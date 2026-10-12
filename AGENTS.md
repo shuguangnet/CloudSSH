@@ -55,7 +55,8 @@ src/
 │   ├── share-audit-writer.ts    # 分享审计事件投递、防抖刷新与关闭留痕
 │   ├── direct-tcpip-stream.ts # RFC 4254 direct-tcpip 背压字节流，用于嵌套 SSH 跳板链
 │   ├── tunnel-stream.ts       # 出站 Cloudflare 隧道 WebSocket 全双工流适配器
-│   ├── sftp-handler.ts    # SFTP ops, bounded upload/resume/checksum, concurrent download, recursive deletion
+│   ├── sftp-handler.ts    # SFTP ops, bounded upload/resume/checksum, concurrent download, recursive deletion, pre-write snapshots
+│   ├── snapshot-store.ts  # UserDBDO-owned config snapshots (rollback history, per-path/user eviction)
 │   ├── user-db.ts    # UserDBDO - user/server/命令片段存储（含标签、OS、跳板关系与片段持久化）
 │   ├── server-tags.ts # 服务器标签规范化与 SQLite JSON 序列化
 │   ├── os-detect.ts  # 远端操作系统输出解析、规范 key 与持久化白名单
@@ -97,6 +98,7 @@ src/
 ├── agent-task-schema.ts    # 任务中断恢复检查点契约校验（短期有界操作事实）
 ├── share-resume-schema.ts  # One-time share session re-attach challenge and resume token schema
 ├── sftp-upload-policy.ts   # Browser/Worker shared bounded upload windows, write concurrency and progress ACK policy
+├── snapshot-policy.ts      # Config snapshot shared contract (limits, kind enum, path validation, base64 codec)
 ├── theme-schema.ts   # Theme V4 shared validation（外观/背景/效果/版式模块、白名单与读性遮罩下限）
 ├── snippet-schema.ts # Command snippet shared validation, limits, and normalization (UserDBDO + localStorage)
 └── types.ts          # Shared TypeScript type definitions
@@ -284,6 +286,8 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/user/theme` | GET/PUT/DELETE | Yes | 获取/同步用户多套自定义主题库，或删除单个/全部自定义主题 |
 | `/api/known-hosts` | GET/POST/DELETE | Yes | Known host fingerprint CRUD (TOFU) |
 | `/api/snippets` | GET/POST | Yes | List or create command snippets (per-user, max 100) |
+| `/api/snapshots` | GET/DELETE | Yes | 配置快照历史：`?server_id=N&path=P` 列路径版本、`?mode=paths` 列路径摘要+用量；DELETE 按 `id`/`path`/`all` 删除。**只读+删除，写入仅由已认证 SSH 会话经 DO internal 路由完成** |
+| `/api/snapshots/content` | GET | Yes | 读取单份快照内容（`?server_id=N&id=M`，base64 返回，≤2MiB） |
 | `/api/snippets/:id` | PUT/DELETE | Yes | Update or delete a command snippet (ownership scoped by user_id) |
 | `/api/ai/config` | GET/PUT | Yes | Get or save AI LLM config |
 | `/api/ai/models` | POST | Yes | Proxy model list from user's LLM provider |
@@ -435,6 +439,7 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 41. **SFTP 上传续传、校验与目录删除** - 上传按远端已写入大小续传，失败或取消时保留部分文件；浏览器通过 `sha256-stream.ts` 流式计算完整文件（含续传前缀）哈希，不得恢复整文件内存读取。上传完成后在远端校验工具可用时比对 SHA-256，不可用时不因校验本身阻止成功。直连/隧道窗口与 ACK 必须使用共享策略（见 #38），4 秒 ACK 等待恢复仍受最大窗口限制，不得无限放开。非空目录删除先尝试 `rmdir`，通用 `Failure` 才触发递归遍历；它不是 `ENOTEMPTY` 的确切证明，权限等失败仍应报告。目录句柄必须关闭，跳过 `.` / `..`，符号链接按文件删除而非递归进入。
 
 42. **主面板左侧导航栏（替代用户下拉菜单）** - 主面板的功能/设置分组入口（自动化、MCP、账号设置、AI Agent 设置、退出登录）位于左侧常驻边栏 `#app-sidebar`（`frontend/index.html`：`header + .user-space-body > aside#app-sidebar + .user-space-content`），不再使用右上角用户下拉菜单（`#user-menu`/`#user-menu-btn` 已删除，`main.ts` 无菜单开关逻辑）。**ID 契约**：`menu-automation`/`menu-mcp`/`menu-account`/`ai-config-btn`/`logout-btn`/`user-info` 各 ID 必须保留——`server-list.ts` 的能力门控（`syncUserMenuGroups` 查询 `#app-sidebar .sidebar-group`，组内无可见项时整组隐藏）与 `main.ts` 事件绑定按 ID 直取。移动端（<768px）侧边栏转为 header 下方横向滚动条带（分组标签隐藏、用户块+退出内联末尾），more 面板只剩主题/语言。两个已踩过的布局坑：①桌面 `.sidebar-item { width: 100% }` 在移动端横向布局（`flex-direction: row`）中会与容器宽度循环计算，导致首项被撑满、后续项溢出并与 footer 重叠拦截点击——移动端媒体查询必须显式复位 `.app-sidebar .sidebar-item, .sidebar-user { width: auto }`；②横向 overflow 滚动容器中 footer 不能用 `margin-left: auto` 贴右（内容溢出时错位覆盖前置项），应作为普通末尾组排列。`.sidebar-group.hidden`/`.sidebar-item.hidden` 需显式 `display: none`（Tailwind `.hidden` 会被本文件的 `display: flex` 覆盖，同 #37）。
+43. **配置快照与回滚（Config Snapshots）** - SFTP 覆盖写入、在线编辑保存与删除前，自动把远端旧内容留档，用户可按路径查看历史版本并回滚（「改坏 sshd_config / nginx.conf 能回滚」）。**最关键的顺序不变量**：`SFTPHandler.uploadStart` 的 cover 路径必须**先** `captureSnapshot()` **再**带 `SSH_FXF_TRUNC` 打开文件——TRUNC 一旦执行旧内容即永久消失、再也无法留档；`tests/worker/sftp-snapshot.test.ts` 用调用序断言守护该顺序。断点续传（`resumeOffset > 0`）不截断旧内容，因此**不留档**。留档失败一律**吞掉**（`captureSnapshot` 内 try/catch）：快照是可降级增强能力，绝不能让正常写入失败。回滚（`restoreSnapshot`）走**同目录临时文件 + `rename` 原子替换**，绝不直接 TRUNC 覆盖（避免写入中途断链产生半截文件）；rename 失败时清理临时文件并报错；写入前对当前内容再留一版（`kind='restore'`），因此**回滚本身可逆**。**SFTPHandler 仍是纯 SSH 层**：不引入 env/用户/数据库依赖，留档能力以 `SnapshotFn` 回调注入（同 `computeChecksum` / `streamExec` 的既有注入方式），由 `SSHSession.saveSnapshot` 转发到 UserDBDO。**归属与隔离**：快照存于 UserDBDO 的 `file_snapshots`（`user_id + server_id + path` 行级隔离，所有查询带 `user_id`），公开路由 `/api/snapshots` **只读 + 删除**（写入只允许已认证 SSH 会话经 DO internal 路由）；跨 DO 边界用 **base64** 传内容（快照可能是二进制，JSON 无法携带字节，上限 `SNAPSHOT_MAX_BYTES` = 2MiB）。`SnapshotStore` **不得依赖 `lastRowId` / `changes`** —— DO SqlStorage 与 standalone 的 `SQLiteStorage` shim 返回形状不同（后两者均不提供），必须用事务内 `SELECT ... ORDER BY id DESC LIMIT 1` 回查与「先 SELECT 计数再 DELETE」判断影响行数（第一版实现用了 `lastRowId`/`changes`，被 `snapshot-store.test.ts` 用真实 SQLite 抓出）。淘汰在同一事务内完成：每路径保留 `SNAPSHOT_KEEP_PER_PATH`(10) 份 + 每用户总量 `SNAPSHOT_KEEP_PER_USER`(200) 份，跨路径全局淘汰最旧（防大量不同路径各留 10 份撑爆存储）。**禁用范围**：匿名会话（无 serverId）与一次性分享会话（`sessionPolicy.source === 'share'`）不落快照——前者无归属、后者按安全策略禁止持久化；服务器被删除时其快照一并清理，避免悬空数据。前端历史版本入口在 SFTP 文件右键菜单（仅已保存服务器可见），回滚走 WebSocket `sftp_snapshot_restore`（复用**已就绪**的 SFTP 通道；跨会话/跨服务器的回滚需新建 SSH 链，不在当前范围内）。
 
 ## Deployment Notes
 

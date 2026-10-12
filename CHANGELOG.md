@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **配置快照与一键回滚**：SFTP 覆盖写入、在线编辑保存与删除文件前，自动把远端旧内容留档为「历史版本」。可在 SFTP 文件右键菜单中查看某路径的版本列表、预览任一版本内容，并一键回滚。回滚采用同目录临时文件 + `rename` 原子替换，避免写入中途断链留下半截文件；回滚前会对当前内容再留一版，因此回滚本身可逆。历史版本按「每路径最近 10 份 + 每用户 200 份」在同一事务内自动淘汰，二进制配置（证书、keystore）同样支持（单份上限 2 MiB）。快照按 `user_id + server_id` 行级隔离存储于 UserDBDO，公开 API 只读 + 删除，写入仅允许已认证 SSH 会话经 DO 内部路由完成；匿名连接与一次性分享会话不落快照，服务器删除时其快照一并清理。
+
+### Notes
+
+- 快照写入是可降级能力：留档失败不会阻断正常的覆盖/删除操作。
+- 版本号待人工指定后发布（遵循「AI 不自主递增版本号」的项目规范）。
+
 ## [2.6.2] - 2026-10-10
 
 ### Fixed

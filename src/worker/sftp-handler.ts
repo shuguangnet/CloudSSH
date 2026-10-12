@@ -1,4 +1,5 @@
 import { getSFTPUploadPolicy } from '../sftp-upload-policy';
+import { shouldSnapshot } from '../snapshot-policy';
 import type { SSHChannel } from '../ssh/channel';
 import { SFTPClient } from '../ssh/sftp';
 import {
@@ -33,6 +34,7 @@ export const MAX_IN_FLIGHT_DIRECT_WRITES = getSFTPUploadPolicy(false).maxInFligh
 export const MAX_IN_FLIGHT_UPLOAD_WRITES = MAX_IN_FLIGHT_DIRECT_WRITES; // 兼容别名
 const MAX_SFTP_FILE_SIZE = 500 * 1024 * 1024; // 500MB limit
 const EDITOR_MAX_FILE_SIZE = 2 * 1024 * 1024; // 在线编辑仅限小文本文件
+const SNAPSHOT_READ_CHUNK = 128 * 1024; // 快照读取分块，与下载分块保持一致
 const BINARY_SNIFF_BYTES = 8192; // 与 Git 一致的空字节嗅探窗口
 
 /**
@@ -53,6 +55,18 @@ type SendJSONFn = (msg: any) => void;
 type SendBinaryFn = (data: Uint8Array) => void;
 type SendDebugFn = (message: string) => void;
 type ComputeChecksumFn = (path: string) => Promise<string | null>;
+/**
+ * 配置快照回调：在远端文件被覆盖前把旧内容交给上层留档。
+ *
+ * SFTPHandler 本身是纯 SSH 层（不知道 env / 用户 / 数据库），
+ * 所以留档能力以回调注入，与 computeChecksum / streamExec 的注入方式一致。
+ */
+export type SnapshotFn = (
+  path: string,
+  content: Uint8Array,
+  kind: 'upload' | 'edit' | 'restore' | 'delete',
+  mtime: number
+) => Promise<void>;
 /** 二进制流式 exec（同连接上的独立 exec 通道，tar/find 等命令复用）。 */
 export type StreamExecFn = (
   command: string,
@@ -69,6 +83,7 @@ type SFTPOperation =
   | 'rename'
   | 'mkdir'
   | 'rmdir'
+  | 'restore'
   | 'search';
 
 export class SFTPHandler {
@@ -82,6 +97,7 @@ export class SFTPHandler {
   private debugEnabled: boolean;
   private computeChecksum?: ComputeChecksumFn;
   private streamExec?: StreamExecFn;
+  private snapshot?: SnapshotFn;
   private ready: boolean = false;
   private sftpSendQueue: Array<{ data: Uint8Array; offset: number }> = [];
   private sftpSendQueueHead: number = 0;
@@ -182,7 +198,8 @@ export class SFTPHandler {
     debugEnabled: boolean = false,
     computeChecksum?: ComputeChecksumFn,
     isTunnel: boolean = false,
-    streamExec?: StreamExecFn
+    streamExec?: StreamExecFn,
+    snapshot?: SnapshotFn
   ) {
     this.channelID = channelID;
     this.channel = channel;
@@ -195,6 +212,7 @@ export class SFTPHandler {
     this.computeChecksum = computeChecksum;
     this.isTunnel = isTunnel;
     this.streamExec = streamExec;
+    this.snapshot = snapshot;
     const uploadPolicy = getSFTPUploadPolicy(isTunnel);
     this.maxInFlightWrites = uploadPolicy.maxInFlightWrites;
     this.progressBytesThreshold = uploadPolicy.progressAckBytes;
@@ -808,6 +826,73 @@ export class SFTPHandler {
     }
   }
 
+  /**
+   * 读取整份远端文件（用于留档）。读取失败/超限/二进制视为“不可留档”，
+   * 返回 null 而不是抛错：留档是增强能力，不能阻断正常写入。
+   *
+   * 只读前 snapshot-policy 定义的 SNAPSHOT_MAX_BYTES 字节，先 stat 知道大小就避免了拉取大文件。
+   */
+  private async readFileForSnapshot(path: string): Promise<{ content: Uint8Array; mtime: number } | null> {
+    try {
+      const statResp = await this.sftp.stat(path);
+      if (statResp[0] !== SSH_FXP_ATTRS) return null;
+      const attrs = this.sftp.parseAttrsResponse(statResp);
+      if (getFileTypeFromPermissions(attrs.permissions ?? 0) !== 'file') return null;
+      const size = attrs.size ?? -1;
+      // 目录/设备文件与超过快照上限的文件不留档。
+      if (!shouldSnapshot(size) || size < 0) return null;
+
+      const openResp = await this.sftp.openFile(path, SSH_FXF_READ);
+      if (openResp[0] !== SSH_FXP_HANDLE) return null;
+      const handle = this.sftp.parseHandleResponse(openResp);
+      try {
+        const chunks: Uint8Array[] = [];
+        let loaded = 0;
+        // 按 size 精确读取；服务端偏移中提前 EOF 也接受（文件在读取过程中被改小）。
+        while (loaded < size) {
+          const want = Math.min(size - loaded, SNAPSHOT_READ_CHUNK);
+          const resp = await this.sftp.readFile(handle, loaded, want);
+          if (resp[0] === SSH_FXP_STATUS) {
+            const status = this.sftp.parseStatusResponse(resp);
+            if (status.code === SSH_FX_EOF) break;
+            return null;
+          }
+          if (resp[0] !== SSH_FXP_DATA) return null;
+          const data = this.sftp.parseDataResponse(resp);
+          if (data.length === 0) break;
+          chunks.push(data);
+          loaded += data.length;
+        }
+        const content = new Uint8Array(loaded);
+        let offset = 0;
+        for (const chunk of chunks) {
+          content.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return { content, mtime: attrs.mtime ?? -1 };
+      } finally {
+        // 句柄必须释放，否则远端会耗尽 SFTP handle 配额。
+        try { await this.sftp.closeHandle(handle); } catch { /* best effort */ }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 覆盖写入前留档。失败一律吞掉：留档失败不能阻断用户的写入操作。
+   */
+  private async captureSnapshot(path: string, kind: 'upload' | 'edit' | 'delete' | 'restore'): Promise<void> {
+    if (!this.snapshot) return;
+    const captured = await this.readFileForSnapshot(path);
+    if (!captured) return;
+    try {
+      await this.snapshot(path, captured.content, kind, captured.mtime);
+    } catch {
+      /* 留档是可降级能力 */
+    }
+  }
+
   private async readBlock(handle: Uint8Array, offset: number, length: number): Promise<Uint8Array> {
     const chunks: Uint8Array[] = [];
     let loaded = 0;
@@ -903,6 +988,13 @@ export class SFTPHandler {
           this.sendError('upload', '检查目标文件失败');
           return;
         }
+      }
+
+      // 覆盖写入（TRUNC）会永久丢弃旧内容，因此在开文件前先留档——
+      // 这是「改坏 sshd_config / nginx.conf 能回滚」的核心时机。
+      // 断点续传不截断旧内容（保留前缀追加），不属于破坏性覆盖，故不留档。
+      if (overwrite && !isResuming) {
+        await this.captureSnapshot(path, 'upload');
       }
 
       // 断点续传时使用 WRITE | CREAT（不带 TRUNC，保留已有文件前缀并从 offset 追加）
@@ -1078,6 +1170,88 @@ export class SFTPHandler {
   }
 
   // Delete file
+  /**
+   * 回滚：把快照内容写回目标路径。
+   *
+   * 采用「同目录临时文件 + rename」的原子写法，而不是直接 TRUNC 覆盖：
+   * - 写入过程中如果链接断掉，目标文件仍是回滚前的完整内容（不会变成半截文件）；
+   * - rename 在同一文件系统内是原子的，避免出现“写入一半”的中间态。
+   *
+   * 写入前会对当前内容再留一版快照（kind='restore'），
+   * 因此回滚本身也是可逆的（“手滑回滚了”还能再改回来）。
+   */
+  async restoreSnapshot(path: string, content: Uint8Array): Promise<void> {
+    if (!this.ready) {
+      this.sendError('restore', 'SFTP 未就绪');
+      return;
+    }
+
+    try {
+      await this.captureSnapshot(path, 'restore');
+
+      const realPath = await this.resolveRealPath(path);
+      const tempPath = `${realPath}.cloudssh-restore-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+      // attrs 为 0（不指定属性），权限由远端 umask 决定，与普通上传保持一致。
+      const openResp = await this.sftp.openFile(
+        tempPath,
+        SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_EXCL
+      );
+      if (openResp[0] !== SSH_FXP_HANDLE) {
+        const status = this.sftp.parseStatusResponse(openResp);
+        this.sendError('restore', '创建临时文件失败: ' + status.message);
+        return;
+      }
+      const handle = this.sftp.parseHandleResponse(openResp);
+
+      try {
+        let offset = 0;
+        while (offset < content.length) {
+          const chunk = content.subarray(offset, Math.min(offset + SNAPSHOT_READ_CHUNK, content.length));
+          const resp = await this.sftp.writeFile(handle, offset, chunk);
+          if (resp[0] === SSH_FXP_STATUS) {
+            const status = this.sftp.parseStatusResponse(resp);
+            if (status.code !== SSH_FX_OK) throw new Error(status.message);
+          }
+          offset += chunk.length;
+        }
+      } finally {
+        try { await this.sftp.closeHandle(handle); } catch { /* best effort */ }
+      }
+
+      const renameResp = await this.sftp.rename(tempPath, realPath);
+      if (renameResp[0] === SSH_FXP_STATUS) {
+        const status = this.sftp.parseStatusResponse(renameResp);
+        if (status.code !== SSH_FX_OK) {
+          // rename 失败则清理临时文件，不留垃圾。
+          try { await this.sftp.removeFile(tempPath); } catch { /* best effort */ }
+          this.sendError('restore', '回滚失败: ' + status.message);
+          return;
+        }
+      }
+
+      this.sendJSON({ type: 'sftp_restore_result', path, success: true, size: content.length });
+    } catch (e) {
+      this.sendError('restore', '回滚失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  /** 解析远端真实路径（符号链接目标），失败时回退原路径。 */
+  private async resolveRealPath(path: string): Promise<string> {
+    try {
+      const resp = await this.sftp.realpath(path);
+      if (resp[0] === SSH_FXP_NAME) {
+        const entries = this.sftp.parseNameResponse(resp);
+        if (entries.length > 0 && typeof entries[0].filename === 'string' && entries[0].filename) {
+          return entries[0].filename;
+        }
+      }
+    } catch {
+      /* 回退到原路径 */
+    }
+    return path;
+  }
+
   async deletePath(path: string): Promise<void> {
     if (!this.ready) {
       this.sendError('delete', 'SFTP 未就绪');
@@ -1085,6 +1259,8 @@ export class SFTPHandler {
     }
 
     try {
+      // 删除是不可逆的，留档后才有恢复可能（仅针对普通文件）。
+      await this.captureSnapshot(path, 'delete');
       const resp = await this.sftp.removeFile(path);
       const type = resp[0];
 

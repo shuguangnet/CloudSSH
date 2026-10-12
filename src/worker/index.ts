@@ -172,6 +172,12 @@ export default {
         return handleSnippetsRoute(request, url, env);
       }
 
+      // ==================== 配置快照 Routes (需认证) ====================
+
+      if (url.pathname === '/api/snapshots' || url.pathname.startsWith('/api/snapshots/')) {
+        return handleSnapshotsRoute(request, url, env);
+      }
+
       // ==================== AI Config Routes (需认证) ====================
 
       if (url.pathname === '/api/ai/config' || url.pathname === '/api/ai/models') {
@@ -712,8 +718,59 @@ async function handleKnownHostsRoute(request: Request, url: URL, env: Env): Prom
   return Response.json({ error: 'Method not allowed' }, { status: 405 });
 }
 
-// ==================== 命令片段 routes ====================
+/**
+ * 配置快照公开路由。
+ *
+ * 只做「归属校验 + 转发到 UserDBDO」，真正的隔离在 DO 层（user_id + server_id
+ * 双向匹配），与 known-hosts / snippets 的既有模式一致。
+ * 内容接口单独拆到 /api/snapshots/content，避免列表接口携带 Blob。
+ */
+async function handleSnapshotsRoute(request: Request, url: URL, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+  const stub = getUserDBStub(env, user.github_id);
 
+  // GET /api/snapshots?server_id=N[&path=/x][&mode=paths]  → 版本列表
+  if (url.pathname === '/api/snapshots' && request.method === 'GET') {
+    const qs = new URLSearchParams({ user_id: String(user.id) });
+    for (const key of ['server_id', 'path', 'mode']) {
+      const value = url.searchParams.get(key);
+      if (value !== null) qs.set(key, value);
+    }
+    return stub.fetch(new Request(`http://internal/internal/snapshots?${qs}`, { method: 'GET' }));
+  }
+
+  // GET /api/snapshots/content?server_id=N&id=M  → 单份快照内容
+  if (url.pathname === '/api/snapshots/content' && request.method === 'GET') {
+    const qs = new URLSearchParams({ user_id: String(user.id) });
+    for (const key of ['server_id', 'id']) {
+      const value = url.searchParams.get(key);
+      if (value !== null) qs.set(key, value);
+    }
+    return stub.fetch(
+      new Request(`http://internal/internal/snapshots/content?${qs}`, { method: 'GET' })
+    );
+  }
+
+  // DELETE /api/snapshots  → 删除单份（id）/ 单路径（path）/ 全部（all）
+  if (url.pathname === '/api/snapshots' && request.method === 'DELETE') {
+    const body = await request.json<Record<string, unknown>>();
+    body.user_id = user.id;
+    return stub.fetch(
+      new Request('http://internal/internal/snapshots', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+  }
+
+  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+}
+
+// ==================== 命令片段 routes ====================
 async function handleSnippetsRoute(request: Request, url: URL, env: Env): Promise<Response> {
   const user = await getAuthenticatedUser(request, env);
   if (!user) {

@@ -6,6 +6,7 @@ import {
   shouldFallbackToDownload,
 } from './sftp-editor-session';
 import { onLocaleChange, t, translateDocument } from './i18n';
+import { openSnapshotPanel } from './snapshot-panel';
 import {
   escapeHtml,
   formatSize,
@@ -40,10 +41,19 @@ export interface SFTPFileEntry {
 }
 
 export type GetSFTPWebSocketUrlFn = () => string | null;
+/**
+ * 当前会话对应的已保存服务器 id；匿名连接或分享会话为 null。
+ *
+ * 用 getter 而非值：标签页可以克隆到另一台服务器（hostInfo 会被替换），
+ * 快照归属必须始终取最新值。
+ */
+export type GetServerIdFn = () => number | null;
 
 export const UPLOAD_CHUNK_SIZE = 32 * 1024; // 32KB — 对齐 OpenSSH (DEFAULT_COPY_BUFLEN=32768) 与 FileZilla 工业标准
 const DOWNLOAD_URL_REVOKE_DELAY_MS = 1000;
 const SFTP_HEARTBEAT_INTERVAL_MS = 30000;
+/** 回滚超时：写入最大 2MB，慢链路下给足余量。 */
+const RESTORE_TIMEOUT_MS = 60000;
 
 export { shouldFallbackToDownload, type EditReadErrorCode };
 
@@ -64,6 +74,7 @@ export class SFTPPanel {
   private selectionAnchorIndex: number | null = null;
   private pendingDeleteCount = 0;
   private getWebSocketUrl: GetSFTPWebSocketUrlFn;
+  private getServerId: GetServerIdFn;
   private ws: WebSocket | null = null;
   private connectingPromise: Promise<void> | null = null;
   private sftpWsRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -93,6 +104,11 @@ export class SFTPPanel {
   private downloadCancelRequested: boolean = false;
   private downloadQueueGeneration: number = 0;
   private readonly editorCoordinator: SFTPEditorCoordinator;
+  /** 在途的回滚请求：WebSocket 结果回来时把成败交回快照面板。 */
+  private pendingRestore: {
+    callback: (ok: boolean, message?: string) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   get activeEditor(): ActiveEditorSession | null {
     return this.editorCoordinator.getActiveEditor();
@@ -113,8 +129,9 @@ export class SFTPPanel {
     }
   };
 
-  constructor(getWebSocketUrl: GetSFTPWebSocketUrlFn) {
+  constructor(getWebSocketUrl: GetSFTPWebSocketUrlFn, getServerId: GetServerIdFn = () => null) {
     this.getWebSocketUrl = getWebSocketUrl;
+    this.getServerId = getServerId;
     this.container = this.createPanel();
     document.body.appendChild(this.container);
 
@@ -739,6 +756,13 @@ export class SFTPPanel {
         }
         break;
       }
+      case 'sftp_restore_result':
+        if (typeof msg.path === 'string' && msg.success === true) {
+          this.pendingRestore?.callback(true);
+          this.pendingRestore = null;
+          this.refresh();
+        }
+        break;
       case 'sftp_error':
         this.handleSFTPError(msg);
         break;
@@ -747,6 +771,17 @@ export class SFTPPanel {
 
   private handleSFTPError(msg: any): void {
     const operation = typeof msg.operation === 'string' ? msg.operation : '';
+
+    // 回滚失败：把错误交回等待中的快照面板，不落到通用错误横幅
+    // （面板自己会把提示写在自身状态行，避免两处同时弹出）。
+    if (operation === 'restore') {
+      const pending = this.pendingRestore;
+      this.pendingRestore = null;
+      if (pending) {
+        pending.callback(false, typeof msg.message === 'string' ? msg.message : '');
+        return;
+      }
+    }
 
     // 编辑器打开失败：由 openEditorForFile 统一 notify，避免双重报错；
     // 无待决请求时才落到面板错误横幅
@@ -1038,6 +1073,18 @@ export class SFTPPanel {
             );
           },
         });
+        // 历史版本仅在已保存服务器（有 serverId）时可用：快照按 server_id 归属存储。
+        if (this.getServerId() !== null) {
+          items.push({
+            label: t('sftp.snapshotOpen'),
+            icon: 'history',
+            action: () => {
+              this.openSnapshotHistory(
+                this.currentPath === '/' ? `/${entry.name}` : `${this.currentPath}/${entry.name}`
+              );
+            },
+          });
+        }
       }
     }
     if (selected.some((selectedEntry) => !selectedEntry.isDir)) {
@@ -1120,6 +1167,46 @@ export class SFTPPanel {
   }
 
   private hideContextMenu(): void {
+    const menu = document.getElementById('sftp-context-menu');
+    if (menu) menu.remove();
+  }
+
+  /**
+   * 打开「历史版本」面板（SFTP 覆盖/删除前的自动留档）。
+   *
+   * 回滚动作不直接调 JS 写文件，而是发 `sftp_snapshot_restore`：
+   * 由服务端用同目录临时文件 + rename 原子写回，避免半截文件。
+   */
+  private openSnapshotHistory(path: string): void {
+    const serverId = this.getServerId();
+    if (serverId === null) return;
+    void openSnapshotPanel({
+      serverId,
+      path,
+      requestRestore: (snapshotId, onResult) => {
+        if (!this.sftpReady) {
+          onResult(false, t('sftp.disconnected'));
+          return;
+        }
+        if (this.pendingRestore) {
+          onResult(false, t('sftp.snapshotBusy'));
+          return;
+        }
+        // 回滚可能涉及 2MB 写入，给足够宽的超时，避免慢链路误判失败。
+        const timer = setTimeout(() => {
+          if (this.pendingRestore) {
+            this.pendingRestore = null;
+            onResult(false, t('sftp.snapshotRestoreFailed', { message: 'timeout' }));
+          }
+        }, RESTORE_TIMEOUT_MS);
+        this.pendingRestore = { callback: onResult, timer };
+        this.sendJSON({ type: 'sftp_snapshot_restore', snapshotId });
+      },
+      refresh: () => this.refresh(),
+    });
+  }
+
+  private hideContextMenuById(): void {
     const menu = document.getElementById('sftp-context-menu');
     if (menu) menu.remove();
   }
@@ -2110,6 +2197,12 @@ export class SFTPPanel {
   dispose(): void {
     this.localeCleanup?.();
     this.localeCleanup = null;
+    // 在途回滚：面板即将销毁，通知等待方失败并清掉超时器，避免悬挂回调。
+    if (this.pendingRestore) {
+      clearTimeout(this.pendingRestore.timer);
+      this.pendingRestore.callback(false, t('sftp.disconnected'));
+      this.pendingRestore = null;
+    }
     this.resetUploadQueue();
     this.resetDownloadQueue();
     this.editorCoordinator.dispose();

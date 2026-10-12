@@ -6,6 +6,7 @@ import {
   KEX_ALGORITHM_ECDH_NISTP256,
 } from '../ssh/algorithms';
 import { SSHAuth } from '../ssh/auth';
+import { bytesToBase64, base64ToBytes, isValidSnapshotPath } from '../snapshot-policy';
 import {
   type ChannelDataChunk,
   SSH_CHANNEL_DEFAULT_MAX_PACKET_SIZE,
@@ -2461,6 +2462,9 @@ export class SSHSession {
       case 'sftp_rmdir':
         await this.sftpHandler.removeDirectory(msg.path);
         break;
+      case 'sftp_snapshot_restore':
+        await this.handleSnapshotRestore(msg);
+        break;
       case 'sftp_close':
         this.closeSFTPChannel();
         break;
@@ -2508,7 +2512,8 @@ export class SSHSession {
           timeout: options.timeout,
           signal: options.signal,
           maxBytes: options.maxBytes,
-        })
+        }),
+      (path, content, kind, mtime) => this.saveSnapshot(path, content, kind, mtime)
     );
 
     const openMsg = sftpChannel.buildOpenSession(channelID);
@@ -2569,6 +2574,8 @@ export class SSHSession {
         return 'mkdir';
       case 'sftp_rmdir':
         return 'rmdir';
+      case 'sftp_snapshot_restore':
+        return 'restore';
       default:
         return 'protocol';
     }
@@ -2577,7 +2584,7 @@ export class SSHSession {
   private async auditSFTPRequest(msg: Record<string, unknown>): Promise<boolean> {
     if (this.config.sessionPolicy?.source !== 'share') return true;
     const operation = this.getSFTPOperation(typeof msg.type === 'string' ? msg.type : undefined);
-    const auditable = new Set(['download', 'edit', 'upload', 'delete', 'rename', 'mkdir', 'rmdir']);
+    const auditable = new Set(['download', 'edit', 'upload', 'delete', 'rename', 'mkdir', 'rmdir', 'restore']);
     if (!auditable.has(operation)) return true;
     if (msg.type === 'sftp_upload_end') return true;
 
@@ -3525,6 +3532,104 @@ export class SSHSession {
       return null;
     }
     return null;
+  }
+
+  /**
+   * 把远端旧内容交给 UserDBDO 留档（配置回滚）。
+   *
+   * 仅登录用户且为已保存服务器（有 serverId）时生效：
+   * 匿名会话与一次性分享会话不写快照——前者无归属，后者按安全策略
+   * 禁止任何持久化写入（对齐 allowSftp 之外的额外约束）。
+   */
+  private async saveSnapshot(
+    path: string,
+    content: Uint8Array,
+    kind: 'upload' | 'edit' | 'restore' | 'delete',
+    mtime: number
+  ): Promise<void> {
+    const env = this.env;
+    const uid = this.userId;
+    const gid = this.githubId;
+    const serverId = this.config.serverId;
+    if (!env || !uid || !gid || !serverId) return;
+    // 分享会话不落快照（分享的所有者审批不覆盖接收者的写入行为）。
+    if (this.config.sessionPolicy?.source === 'share') return;
+    try {
+      const stub = env.USER_DB.get(env.USER_DB.idFromName(gid));
+      await stub.fetch(
+        new Request('http://internal/internal/snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: Number(uid),
+            server_id: serverId,
+            path,
+            kind,
+            mtime,
+            content_base64: bytesToBase64(content),
+          }),
+        })
+      );
+    } catch {
+      /* 留档是可降级能力，失败不影响写入主流程 */
+    }
+  }
+
+  /**
+   * 执行回滚：从 UserDBDO 取出快照内容，写回远端目标路径。
+   *
+   * 安全边界：
+   * - 必须登录且为已保存服务器（与留档对称，匿名/分享会话不可用）；
+   * - 快照归属由 UserDBDO 二次校验（user_id + server_id 双向匹配），
+   *   前端传入的 snapshotId 无法越权读取他人快照；
+   * - 目标路径以快照中记录的 path 为准，不信任前端单独指定的路径；
+   * - 分享会话整体禁用（与 MCP/Agent 的 sessionPolicy 约束一致）。
+   */
+  private async handleSnapshotRestore(msg: any): Promise<void> {
+    if (!this.sftpHandler) {
+      this.sendSFTPError('restore', 'SFTP 未就绪');
+      return;
+    }
+    const env = this.env;
+    const uid = this.userId;
+    const gid = this.githubId;
+    const serverId = this.config.serverId;
+    if (!env || !uid || !gid || !serverId) {
+      this.sendSFTPError('restore', '回滚仅对已保存服务器且已登录的会话可用');
+      return;
+    }
+    if (this.config.sessionPolicy?.source === 'share') {
+      this.sendSFTPError('restore', '分享会话中不支持回滚');
+      return;
+    }
+    const snapshotId = Number(msg.snapshotId);
+    if (!Number.isSafeInteger(snapshotId) || snapshotId < 1) {
+      this.sendSFTPError('restore', '无效的快照编号');
+      return;
+    }
+
+    try {
+      const stub = env.USER_DB.get(env.USER_DB.idFromName(gid));
+      const res = await stub.fetch(
+        new Request(
+          `http://internal/internal/snapshots/content?user_id=${Number(uid)}` +
+          `&server_id=${serverId}&id=${snapshotId}`
+        )
+      );
+      if (!res.ok) {
+        this.sendSFTPError('restore', '快照不存在或无权访问');
+        return;
+      }
+      const body = (await res.json()) as { path?: string; content_base64?: string };
+      const content = base64ToBytes(body.content_base64);
+      if (!isValidSnapshotPath(body.path) || content === null) {
+        this.sendSFTPError('restore', '快照内容损坏');
+        return;
+      }
+      await this.sftpHandler.restoreSnapshot(body.path, content);
+    } catch (e) {
+      this.sendSFTPError('restore', '回滚失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   private sendAgentFrame(msg: any): void {

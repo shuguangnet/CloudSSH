@@ -1,5 +1,7 @@
 import { normalizeAIBaseUrl } from '../ai-endpoint';
 import { ServerMemoryStore } from './server-memory-store';
+import { SnapshotStore } from './snapshot-store';
+import { base64ToBytes, bytesToBase64, isValidSnapshotPath, isSnapshotKind } from '../snapshot-policy';
 import { normalizeSnippetInput, SNIPPET_MAX_COUNT } from '../snippet-schema';
 import { normalizeUserThemePayload } from '../theme-schema';
 import {
@@ -121,16 +123,19 @@ export class UserDBDO {
   private static readonly MAX_CONNECT_TOKENS = 1000;
   private derivedKeyCache: Map<number, CryptoKey> = new Map();
   private memoryStore: ServerMemoryStore;
+  private snapshotStore: SnapshotStore;
 
   constructor(state: DurableObjectState, env: Env) {
     this.env = env;
     this.db = (state.storage as any).sql;
     this.initSchema();
-    this.memoryStore = new ServerMemoryStore(this.db,
-      callback => typeof (state.storage as any).transactionSync === 'function'
-        ? (state.storage as any).transactionSync(callback) : callback(),
+    const transaction = <T>(callback: () => T): T =>
+      typeof (state.storage as any).transactionSync === 'function'
+        ? (state.storage as any).transactionSync(callback) : callback();
+    this.memoryStore = new ServerMemoryStore(this.db, transaction,
       (value, userId) => this.encryptCredential(value, userId),
       (value, userId) => this.decryptCredential(value, userId));
+    this.snapshotStore = new SnapshotStore(this.db, transaction);
   }
 
   /**
@@ -556,6 +561,48 @@ export class UserDBDO {
         const snippetId = parseInt(snippetMatch[1], 10);
         if (request.method === 'PUT') return this.handleUpdateSnippet(snippetId, request);
         if (request.method === 'DELETE') return this.handleDeleteSnippet(snippetId, request);
+      }
+
+      // --- 配置快照（SFTP 覆盖前留档 / 回滚） ---
+      if (path === '/internal/snapshots' && request.method === 'POST') {
+        return this.handleCreateSnapshot(request);
+      }
+      if (path === '/internal/snapshots' && request.method === 'GET') {
+        const userIdStr = url.searchParams.get('user_id');
+        if (!userIdStr) return Response.json({ error: 'Missing user_id' }, { status: 400 });
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
+        const serverId = parseInt(url.searchParams.get('server_id') || '', 10);
+        if (isNaN(serverId)) return Response.json({ error: 'Invalid server_id' }, { status: 400 });
+        const path_ = url.searchParams.get('path');
+        if (url.searchParams.get('mode') === 'paths') {
+          return Response.json({
+            snapshots: this.snapshotStore.listPaths(userId, serverId),
+            usage: this.snapshotStore.usage(userId),
+          });
+        }
+        if (!path_ || !isValidSnapshotPath(path_)) {
+          return Response.json({ error: 'Invalid path' }, { status: 400 });
+        }
+        return Response.json({ snapshots: this.snapshotStore.list(userId, serverId, path_) });
+      }
+      if (path === '/internal/snapshots/content' && request.method === 'GET') {
+        const userIdStr = url.searchParams.get('user_id');
+        const serverId = parseInt(url.searchParams.get('server_id') || '', 10);
+        const id = parseInt(url.searchParams.get('id') || '', 10);
+        if (!userIdStr || isNaN(serverId) || isNaN(id)) {
+          return Response.json({ error: 'Missing or invalid parameters' }, { status: 400 });
+        }
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
+        const detail = this.snapshotStore.get(userId, serverId, id);
+        if (!detail) return Response.json({ error: 'Snapshot not found' }, { status: 404 });
+        // 内容以 base64 返回：跨 DO 边界传二进制用 JSON 更稳妥，且大小有 2MiB 上限。
+        return Response.json({ ...detail, content: null,
+          content_base64: bytesToBase64(detail.content) });
+      }
+      if (path === '/internal/snapshots' && request.method === 'DELETE') {
+        return this.handleDeleteSnapshot(request);
       }
 
       // --- AI 配置管理 ---
@@ -1282,6 +1329,8 @@ export class UserDBDO {
     this.db.exec('DELETE FROM server_work_logs WHERE server_id = ?', serverId);
     this.db.exec('DELETE FROM server_knowledge WHERE server_id = ?', serverId);
     this.memoryStore.cleanup(serverId);
+    // 服务器删除后其配置快照不再可回滚（无连接目标），一并清理避免悬空数据。
+    this.snapshotStore.removeServer(body.user_id, serverId);
     this.db.exec('DELETE FROM servers WHERE id = ?', serverId);
     return Response.json({ success: true });
   }
@@ -2126,6 +2175,72 @@ export class UserDBDO {
     const { user_id } = await request.json<{ user_id: number }>();
     this.db.exec('DELETE FROM command_snippets WHERE user_id = ? AND id = ?', user_id, snippetId);
     return Response.json({ success: true });
+  }
+
+  // ==================== 配置快照（SFTP 覆盖前留档 / 回滚） ====================
+
+  /**
+   * 写入一份快照。调用方（SSHSession，已认证会话）负责提供 user_id 与 server_id；
+   * 这里只做归属校验（服务器必须属于该用户）与限长。
+   */
+  private async handleCreateSnapshot(request: Request): Promise<Response> {
+    const body = await request.json<{
+      user_id?: number; server_id?: number; path?: string; kind?: string;
+      mtime?: number; content_base64?: string;
+    }>();
+    const userId = body.user_id;
+    const serverId = body.server_id;
+    if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(serverId)) {
+      return Response.json({ error: 'Missing or invalid identifiers' }, { status: 400 });
+    }
+    if (!this.serverOwnedBy(serverId!, userId!)) {
+      return Response.json({ error: 'Server not found' }, { status: 404 });
+    }
+    if (!isValidSnapshotPath(body.path)) {
+      return Response.json({ error: 'Invalid path' }, { status: 400 });
+    }
+    if (!isSnapshotKind(body.kind)) {
+      return Response.json({ error: 'Invalid snapshot kind' }, { status: 400 });
+    }
+    const content = base64ToBytes(body.content_base64);
+    if (content === null) {
+      return Response.json({ error: 'Invalid content encoding' }, { status: 400 });
+    }
+    const meta = await this.snapshotStore.create(
+      userId!, serverId!, body.path, content, body.kind, body.mtime ?? -1
+    );
+    // 超限（过大/非法）时返回 success:false 而非错误：留档失败不应中断覆盖流程。
+    return Response.json({ success: meta !== null, snapshot: meta });
+  }
+
+  private async handleDeleteSnapshot(request: Request): Promise<Response> {
+    const body = await request.json<{
+      user_id?: number; server_id?: number; id?: number; path?: string; all?: boolean;
+    }>();
+    const userId = body.user_id;
+    const serverId = body.server_id;
+    if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(serverId)) {
+      return Response.json({ error: 'Missing or invalid identifiers' }, { status: 400 });
+    }
+    if (!this.serverOwnedBy(serverId!, userId!)) {
+      return Response.json({ error: 'Server not found' }, { status: 404 });
+    }
+    if (Number.isSafeInteger(body.id)) {
+      return Response.json({ success: this.snapshotStore.remove(userId!, serverId!, body.id!) });
+    }
+    if (body.all === true) {
+      return Response.json({ removed: this.snapshotStore.clearPath(userId!, serverId!, null) });
+    }
+    if (!isValidSnapshotPath(body.path)) {
+      return Response.json({ error: 'Invalid path' }, { status: 400 });
+    }
+    return Response.json({ removed: this.snapshotStore.clearPath(userId!, serverId!, body.path) });
+  }
+
+  /** 服务器归属校验：快照的一切读写都必须先通过这里。 */
+  private serverOwnedBy(serverId: number, userId: number): boolean {
+    const rows = this.query<UserIdRow>('SELECT user_id FROM servers WHERE id = ?', serverId);
+    return rows.length > 0 && rows[0].user_id === userId;
   }
 
   // ==================== AI 配置管理 ====================
