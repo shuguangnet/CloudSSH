@@ -35,6 +35,7 @@ tests/
 ├── terminal-shortcuts.test.ts     # 终端快捷键（Cmd+F 搜索、Cmd+K 清屏）
 ├── terminal-size.test.ts          # 终端尺寸归一化与范围越界校验
 ├── terminal-status.test.ts        # SSH 状态事件翻译
+├── status-view.test.ts            # 服务器状态指标/速率/时长的字节与百分比格式化
 ├── terminal-text.test.ts          # 终端文本处理
 ├── theme.test.ts                  # 内置/自定义主题
 └── README.md

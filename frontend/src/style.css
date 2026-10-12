@@ -3148,6 +3148,188 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
   top: var(--drawer-top);
 }
 
+/* ========== 实时状态抽屉（终端状态栏） ==========
+   与三大抽屉共用同一份几何来源（--drawer-top / clamp 宽度），但在移动端
+   占满整个可视高度：它承载的是一屏指标而不是列表，右侧留白没有意义。
+   它不参与抽屉互斥（不注册到分段控制条），因此仅靠右滑入 + 半透明遮罩。 */
+.status-panel-backdrop {
+  position: fixed;
+  top: var(--drawer-top);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 88;
+  display: none;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.status-panel {
+  position: fixed;
+  top: var(--drawer-top);
+  right: 0;
+  z-index: 89;
+  display: none;
+  flex-direction: column;
+  width: min(clamp(360px, 32vw, 520px), 100vw);
+  max-width: 100vw;
+  min-width: 0;
+  height: calc(100% - var(--drawer-top));
+  background: var(--bg-surface, var(--bg));
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -8px 0 28px -12px rgba(0, 0, 0, 0.45);
+  color: var(--on-surface);
+  transition: transform 0.22s ease-out;
+}
+
+/* body:has() 让遮罩只在抽屉真正展开时出现，无需 JS 同步类名 */
+body:has(#status-panel.is-open) .status-panel-backdrop {
+  display: block;
+}
+
+.status-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated, var(--bg));
+}
+
+.status-panel-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.status-panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--accent-secondary);
+}
+
+.status-panel-host {
+  font-size: 11px;
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-panel-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.status-panel-badge[data-state='live'] {
+  color: var(--accent-secondary);
+  border-color: var(--accent-secondary);
+}
+
+.status-panel-badge[data-state='stale'] {
+  color: var(--warning, #e6a23c);
+  border-color: var(--warning, #e6a23c);
+}
+
+.status-panel-badge[data-state='error'] {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.status-panel-note {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.status-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  overscroll-behavior: contain;
+}
+
+/* ========== 状态栏实时胶囊 ==========
+   状态栏本身是 11px 的等宽行，胶囊必须能挤进同一行而不引起换行抖动：
+   统一 18px 高、图标 12px、文本 tabular-nums，数值位数变化时宽度不跳。 */
+#term-live-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  margin: -1px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#term-live-pills.hidden {
+  display: none;
+}
+
+#term-live-pills:hover .term-live-pill,
+#term-live-pills[aria-expanded='true'] .term-live-pill {
+  border-color: var(--accent-secondary);
+  color: var(--accent-secondary);
+}
+
+.term-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.term-live-pill .material-symbols-outlined {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.term-live-pill-text {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.term-live-pill[data-level='warn'] {
+  color: var(--warning, #e6a23c);
+  border-color: var(--warning, #e6a23c);
+}
+
+.term-live-pill[data-level='danger'] {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* 陈旧：保留最后一次读数但降透明度，与“实时”在视觉上区分开 */
+#term-live-pills[data-state='stale'] .term-live-pill {
+  opacity: 0.55;
+}
+
+#term-live-pills[data-state='error'] .term-live-pill {
+  color: var(--error);
+  border-color: var(--error);
+}
+
 .agent-header-btn,
 .panel-close-btn {
   display: inline-flex;
@@ -4657,6 +4839,42 @@ html[data-ui-motion="none"] :is(.flicker, .scanlines, .scanline) {
     max-width: 100vw;
     height: var(--visual-viewport-height);
     border-left: 0;
+  }
+
+  /* 实时状态抽屉：移动端全屏，并让出顶部安全区。
+     高度用 --visual-viewport-height 而非 100%：软键盘弹出时抽屉不应被推到
+     可视区之外（该变量由 mobile-terminal.ts 持续同步）。 */
+  .status-panel {
+    width: 100vw;
+    max-width: 100vw;
+    height: var(--visual-viewport-height);
+    border-left: 0;
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  .status-panel-header {
+    min-height: 48px;
+  }
+
+  /* 状态栏胶囊在窄屏只能容纳 2–3 个，其余交给抽屉完整展示：
+     横向可滚动而不是换行，避免把终端内容往下顶。 */
+  #term-live-pills {
+    flex: 0 0 auto;
+    overflow-x: auto;
+    scrollbar-width: none;
+    max-width: 100%;
+    gap: 4px;
+  }
+
+  #term-live-pills::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* 移动端软键盘弹出时状态栏整体隐藏，胶囊随之隐藏，不单独开例外。 */
+  .term-live-pill {
+    padding: 0 4px;
   }
 
   .sftp-panel-toolbar {

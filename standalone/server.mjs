@@ -15,6 +15,7 @@ import { setVapidProvider } from './notify.mjs';
 import { AutomationEngine } from './scheduler.mjs';
 import { DashboardEngine } from './dashboard.mjs';
 import { createAutomationRoutes } from './automation-api.mjs';
+import { createLiveStatusHub } from './live-status.mjs';
 
 process.umask(0o077);
 installWorkerGlobals();
@@ -69,8 +70,9 @@ const dashboardEngine = new DashboardEngine({
   log: (message) => console.error(`[dashboard] ${message}`),
 });
 dashboardEngine.start();
+const liveStatusHub = createLiveStatusHub({ env, SSHSession, executeSaved });
 const automationRoutes = createAutomationRoutes({
-  env, SSHSession, store: automationStore, engine: automationEngine, dashboard: dashboardEngine, executeSaved, getAuthenticatedUser,
+  env, SSHSession, store: automationStore, engine: automationEngine, dashboard: dashboardEngine, executeSaved, getAuthenticatedUser, liveStatus: liveStatusHub,
 });
 const batchRoutes = createBatchRoutes({ env, getAuthenticatedUser, SSHSession });
 // PWA assets are copied to dist/public by scripts/build-standalone.mjs; icons are
@@ -573,6 +575,7 @@ let closing = false;
 function shutdown() {
   if (closing) return; closing = true;
   automationEngine.stop();
+  liveStatusHub.stopAll();
   server.close(); wss.close();
   for (const client of wss.clients) client.close(1001, 'Service shutting down');
   // Give bounded operations time to finish; never replay calls on restart.

@@ -1500,6 +1500,17 @@
                   >用户：-</span
                 >
                 <span id="term-port">端口：-</span>
+                <!-- 实时状态胶囊：由 live-status.ts 渲染，点击开合右侧状态抽屉。
+                     仅在自托管部署且连接的是已保存服务器时出现，条件与顶栏状态按钮一致。 -->
+                <button
+                  id="term-live-pills"
+                  type="button"
+                  class="hidden"
+                  aria-expanded="false"
+                  aria-controls="status-panel"
+                  data-i18n-aria-label="server.status.liveToggle"
+                  aria-label="实时状态"
+                ></button>
               </div>
               <div>
                 <span id="term-info"></span>
@@ -1634,6 +1645,52 @@
           >
           <span data-i18n="terminal.askAISelection">询问 AI 助手</span>
         </button>
+
+        <!-- 实时状态抽屉：连上已保存服务器并收到首帧后自动展开，顶部胶囊可随时开合。
+             它不参与 SFTP / 命令片段 / Agent 的互斥分组，可盖在终端之上独立存在。 -->
+        <div id="status-panel-backdrop" class="status-panel-backdrop"></div>
+        <aside
+          id="status-panel"
+          class="status-panel"
+          role="dialog"
+          aria-modal="false"
+          aria-hidden="true"
+          aria-labelledby="status-panel-title"
+        >
+          <div class="status-panel-header">
+            <span
+              class="material-symbols-outlined text-[var(--accent-secondary)]"
+              style="font-size: 18px"
+              aria-hidden="true"
+              >monitoring</span
+            >
+            <div class="status-panel-heading">
+              <span
+                id="status-panel-title"
+                class="status-panel-title"
+                data-i18n="server.status.title"
+                >服务器状态</span
+              >
+              <span id="status-panel-host" class="status-panel-host"></span>
+            </div>
+            <span
+              id="status-panel-badge"
+              class="status-panel-badge"
+              data-state="connecting"
+              >正在连接</span
+            >
+            <button
+              id="status-panel-close-btn"
+              type="button"
+              class="panel-close-btn"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="status-panel-body" class="status-panel-body custom-scrollbar"></div>
+        </aside>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

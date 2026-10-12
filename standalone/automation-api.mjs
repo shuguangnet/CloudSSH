@@ -19,7 +19,7 @@ function ownerUser(user) {
   return { owner: String(user.github_id), identity: { github_id: String(user.github_id), user_id: user.id } };
 }
 
-export function createAutomationRoutes({ env, SSHSession, store, engine, dashboard = null, executeSaved, getAuthenticatedUser }) {
+export function createAutomationRoutes({ env, SSHSession, store, engine, dashboard = null, executeSaved, getAuthenticatedUser, liveStatus = null }) {
   // On-demand collections open a real SSH exec; keep at most one in flight per
   // server and space requests out so a polling UI cannot hammer it.
   const statusQueries = new Map();
@@ -286,6 +286,35 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, dashboa
       } finally {
         slot.release();
       }
+    }
+
+    // ---------- live status (terminal status bar, self-hosted only) ----------
+    //
+    // Two transports over one shared sampler, because the status bar must work
+    // on every deployment rather than only where SSE survives the hop:
+    //   GET /api/automation/status/live/:id       → one JSON frame (long-poll)
+    //   GET /api/automation/status/live/:id/stream → text/event-stream
+    //
+    // Both share one sampler per (owner, server), so N viewers of the same
+    // server cost one SSH session, and the sampling stops when the last viewer
+    // detaches. Anonymous terminals are refused here (no owner, no audit trail)
+    // — the frontend renders the local-only skeleton in that case.
+    match = pathname.match(/^\/api\/automation\/status\/live\/(\d+)(\/stream)?$/);
+    if (match && request.method === 'GET') {
+      if (!liveStatus) return Response.json({ error: 'Live status requires the self-hosted deployment' }, { status: 404 });
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const { identity } = ownerUser(user);
+      const session = liveStatus.subscribe({
+        owner: String(user.github_id), identity, serverId,
+        intervalMs: url.searchParams.get('interval'),
+      });
+      if (match[2]) return liveStatus.streamResponse(session, request);
+      return await liveStatus.longPoll(session, request);
     }
 
     // ---------- Docker container management (per saved server) ----------

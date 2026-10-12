@@ -14,6 +14,7 @@ import { SnippetManager } from './snippet-manager';
 import { TabManager } from './tab-manager';
 import type { SSHHostInfo, SSHTerminal } from './terminal';
 import { serverStatusPanel, initServerStatusPanel } from './server-status';
+import { initLiveStatus, statusDrawer, syncLiveStatus } from './live-status';
 import { dockerPanel, initDockerPanel } from './server-docker';
 import { initBatchPanel } from './batch-panel';
 import { dashboardPanel } from './dashboard';
@@ -477,6 +478,9 @@ function syncTerminalServerTools(): void {
   for (const id of ['terminal-status-btn', 'mobile-status-btn', 'terminal-docker-btn', 'mobile-docker-btn']) {
     document.getElementById(id)?.classList.toggle('hidden', !eligible);
   }
+  // 实时状态与这些按钮同一可见性条件：非自托管 / URL 直连 / 未保存服务器时停表，
+  // 状态栏胶囊随之消失（后端也不会为匿名连接开采样器）。
+  syncLiveStatus(eligible ? tab!.hostInfo!.serverId! : null, tab?.label || tab?.hostInfo?.host || '');
 }
 
 function openTerminalServerTool(tool: 'status' | 'docker'): void {
@@ -1118,12 +1122,18 @@ async function init(): Promise<void> {
   });
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && statusDrawer.isOpen()) {
+      // 实时状态抽屉是覆盖层：Esc 先收它，再轮到左侧三大抽屉的状态同步。
+      statusDrawer.hide();
+      return;
+    }
     if (e.key === 'Escape') {
       setTimeout(() => syncDrawerSegmentedControl(), 50);
     }
   });
   mobileTerminalController.start();
   initServerStatusPanel();
+  initLiveStatus();
   initDockerPanel();
   initBatchPanel();
   initTerminalServerTools();
