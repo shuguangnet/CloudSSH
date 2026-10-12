@@ -3,6 +3,8 @@ import {
   SNAPSHOT_KEEP_PER_USER,
   SNAPSHOT_LIST_MAX,
   SNAPSHOT_MAX_BYTES,
+  base64ToBytes,
+  bytesToBase64,
   isValidSnapshotPath,
   isSnapshotKind,
   shouldSnapshot,
@@ -45,7 +47,7 @@ type SnapshotRow = {
   created_at: number;
 };
 
-type SnapshotContentRow = SnapshotRow & { content: Uint8Array | ArrayBuffer | null };
+type SnapshotContentRow = SnapshotRow & { content: string | null };
 
 /** sha256 hex（快照内容指纹，用于「回滚到这一版」的去重与校验）。 */
 export async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -55,10 +57,16 @@ export async function sha256Hex(data: Uint8Array): Promise<string> {
     .join('');
 }
 
+/**
+ * 解码库中存取的快照内容。
+ *
+ * 内容始终以 base64 TEXT 存储（见建表注释）——不使用 BLOB 是为了绕开
+ * node:sqlite 在 Node 22 下把 0 长度 Uint8Array 绑定成 NULL 的问题。
+ * 解码失败按空内容处理，不抛出，避免一条脏数据让整个历史列表不可用。
+ */
 function toBytes(value: SnapshotContentRow['content']): Uint8Array {
-  if (value == null) return new Uint8Array(0);
-  if (value instanceof Uint8Array) return value;
-  return new Uint8Array(value);
+  const decoded = base64ToBytes(value);
+  return decoded ?? new Uint8Array(0);
 }
 
 function toMeta(row: SnapshotRow): SnapshotMeta {
@@ -87,7 +95,11 @@ export class SnapshotStore {
           user_id     INTEGER NOT NULL,
           server_id   INTEGER NOT NULL,
           path        TEXT NOT NULL,
-          content     BLOB NOT NULL,
+          -- 内容以 base64 TEXT 存储而非 BLOB：node:sqlite 在 Node 22 下会把
+          -- 跨 realm 的 0 长度 Uint8Array 绑定为 NULL，触发 NOT NULL 约束失败
+          -- （Node 24 无此问题）。0 字节配置文件的快照会因此静默丢失。
+          -- base64 完全规避 TypedArray 绑定差异，且跨 DO 边界本来就用 base64。
+          content     TEXT NOT NULL,
           size        INTEGER NOT NULL,
           sha256      TEXT NOT NULL,
           mtime       INTEGER NOT NULL DEFAULT -1,
@@ -141,7 +153,7 @@ export class SnapshotStore {
           `INSERT INTO file_snapshots
              (user_id, server_id, path, content, size, sha256, mtime, kind, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          userId, serverId, path, content, bytes, sha256,
+          userId, serverId, path, bytesToBase64(content), bytes, sha256,
           Number.isSafeInteger(mtime) ? mtime : -1, kind, createdAt
         );
         insertedId = Number(

@@ -120,6 +120,28 @@ describe('配置快照存储', () => {
     }
   });
 
+  it('0 字节文件也能留档（node:sqlite 跨版本 BLOB 绑定陷阱）', async () => {
+    // 回归：Node 22 下 node:sqlite 会把跨 realm 的 0 长度 Uint8Array 绑定为 NULL，
+    // 若 content 列是 BLOB NOT NULL，则空文件快照插入必失败 —— 而留档失败被
+    // 设计为静默降级（不阻断写入），用户只会看到「莫名没有历史版本」。
+    // 因此内容必须存 base64 TEXT 而非 BLOB。本用例在 Node 22/24 都必须通过。
+    const { store, close } = makeStore();
+    try {
+      const empty = new Uint8Array(0);
+      const meta = await store.create(1, 10, '/etc/empty.conf', empty, 'upload', 1);
+      expect(meta).not.toBeNull();
+      expect(meta!.size).toBe(0);
+
+      const detail = store.get(1, 10, meta!.id);
+      expect(detail).not.toBeNull();
+      expect(detail!.content).toHaveLength(0);
+      // 真正的空内容，而不是被解码成乱码或占位
+      expect(Array.from(detail!.content)).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
   it('路径摘要每个路径只返回最近一条', async () => {
     const { store, close } = makeStore();
     try {
