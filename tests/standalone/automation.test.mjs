@@ -5,12 +5,12 @@ import test from 'node:test';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
-import { pbkdf2Sync, createHash } from 'node:crypto';
+import { pbkdf2Sync, createHash, createPublicKey } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -122,14 +122,84 @@ test('sendToChannels never throws and reports per-channel outcomes', async () =>
 });
 
 // ---------- ssh keypairs ----------
-test('generated ed25519 keypairs are valid OpenSSH keys', { skip: !existsSync('/usr/bin/ssh-keygen') && !existsSync('/usr/local/bin/ssh-keygen') }, () => {
+// 回归：私钥必须真的能与声明公钥配对。
+// 历史 bug：generateKeyPair 丢弃了真私钥，把公钥字节当 seed 写入私钥文件；
+// 此时 ssh-keygen -y 仍会通过（它只回读内嵌公钥字段），只有真正签名验签才暴露。
+const sshKeygen = ['/usr/bin/ssh-keygen', '/usr/local/bin/ssh-keygen'].find((p) => existsSync(p));
+
+/** 用 OpenSSH 自身签名验签：私钥签，声明公钥验。 */
+function signVerify(keyDir, pair) {
+  const keyFile = join(keyDir, 'id_ed25519');
+  const pubFile = join(keyDir, 'declared.pub');
+  const msgFile = join(keyDir, 'msg.txt');
+  const allowed = join(keyDir, 'allowed_signers');
+  writeFileSync(keyFile, pair.privateKey, { mode: 0o600 });
+  writeFileSync(pubFile, pair.publicKey);
+  writeFileSync(msgFile, 'cloudssh-credential-probe\n');
+  const declared = readFileSync(pubFile, 'utf8').trim();
+  writeFileSync(allowed, `probe@cloudssh ${declared}\n`);
+  execFileSync(sshKeygen, ['-Y', 'sign', '-f', keyFile, '-n', 'probe', msgFile], { stdio: 'pipe' });
+  // 验签失败时 ssh-keygen 以非零码退出：这里让它抛异常。
+  execFileSync(
+    sshKeygen,
+    ['-Y', 'verify', '-f', allowed, '-I', 'probe@cloudssh', '-n', 'probe', '-s', `${msgFile}.sig`],
+    { stdio: ['pipe', 'pipe', 'pipe'], input: 'cloudssh-credential-probe\n' }
+  );
+}
+
+test('generated ed25519 keypairs are valid OpenSSH keys', { skip: !sshKeygen }, () => {
   const pair = generateKeyPair('deploy@cloudssh 2026');
   assert.match(pair.privateKey, /^-----BEGIN OPENSSH PRIVATE KEY-----\n/);
   assert.match(pair.publicKey, /^ssh-ed25519 AAAA[^\s]+ deploy@cloudssh 2026\n$/);
   assert.equal(sanitizeComment("bad'quote\ninjection; rm -rf"), 'badquoteinjection rm -rf');
-  // The private key parses with OpenSSH tooling.
-  const fs = { writeFileSync: () => {}, readFileSync: () => {} };
-  void fs;
+
+  const dir = mkdtempSync(join(tmpdir(), 'cloudssh-keycheck-'));
+  try {
+    // 私钥真的解析得开（结构合法）。
+    const keyFile = join(dir, 'id_ed25519');
+    writeFileSync(keyFile, pair.privateKey, { mode: 0o600 });
+    const fingerprint = execFileSync(sshKeygen, ['-l', '-f', keyFile], { encoding: 'utf8' });
+    assert.match(fingerprint, /^256 SHA256:[A-Za-z0-9+/]{43} deploy@cloudssh 2026 \(ED25519\)$/m);
+    // 关键断言：私钥签出的名必须能被声明公钥验过。
+    signVerify(dir, pair);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated private key embeds the real ed25519 seed, not the public key', () => {
+  // 不依赖 ssh-keygen 的结构性断言：Ed25519 私钥是 seed(32) + pub(32)，
+  // 且由 seed 派生出的公钥必须等于声明公钥。
+  const pair = generateKeyPair('seed-probe');
+  const blob = Buffer.from(pair.privateKey.replace(/-----[^-]+-----|\s/g, ''), 'base64');
+  assert.equal(blob.subarray(0, 15).toString('latin1'), 'openssh-key-v1\0');
+  const readString = (buffer, offset) => {
+    const length = buffer.readUInt32BE(offset);
+    return [buffer.subarray(offset + 4, offset + 4 + length), offset + 4 + length];
+  };
+  let cursor = 15;
+  for (let i = 0; i < 3; i += 1) [, cursor] = readString(blob, cursor);
+  cursor += 4; // nkeys
+  const [pubBlob] = readString(blob, cursor);
+  const [inner] = readString(blob, readString(blob, cursor)[1]);
+  const [, pubBlobOffset] = readString(pubBlob, 0);
+  const [declaredPub] = readString(pubBlob, pubBlobOffset);
+
+  let innerCursor = 8; // checkint ×2
+  for (let i = 0; i < 2; i += 1) [, innerCursor] = readString(inner, innerCursor);
+  const [privateSection] = readString(inner, innerCursor);
+  assert.equal(privateSection.length, 64);
+  const seed = privateSection.subarray(0, 32);
+  const embeddedPub = privateSection.subarray(32);
+  assert.ok(embeddedPub.equals(declaredPub), '私钥内嵌公钥应与声明公钥一致');
+  assert.ok(!seed.equals(declaredPub), 'seed 不应等于公钥（历史 bug 的形态）');
+
+  // seed 真实派生出的公钥必须等于声明公钥。
+  const pkcs8 = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
+  const derived = createPublicKey({ key: pkcs8, format: 'der', type: 'pkcs8' })
+    .export({ type: 'spki', format: 'der' })
+    .subarray(-32);
+  assert.ok(derived.equals(declaredPub), 'seed 派生公钥应等于声明公钥');
 });
 
 test('deploy command is idempotent and shell-safe', () => {
