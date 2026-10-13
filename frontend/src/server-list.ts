@@ -1,4 +1,9 @@
 import { copyTextToClipboard } from './clipboard';
+import { credentialLibrary } from './credentials-panel';
+import {
+  filterCredentialsByAuthMethod,
+  type StoredCredential,
+} from './credential-store';
 import { isValidTunnelHostname, maskIPAddress } from './host-display';
 import { getLocale, onLocaleChange, t } from './i18n';
 import { osDisplayName, osIconSvg } from './os-icons';
@@ -39,9 +44,12 @@ export interface ServerConfig {
   has_cf_access_client_secret?: boolean;
   /** 最近连接成功的 Unix 毫秒时间戳 */
   last_connected_at?: number | null;
+  /** 引用的可复用凭据 id；为空表示凭据内嵌在本行。 */
+  credential_id?: number | null;
   created_at: string;
   updated_at: string;
 }
+
 
 interface ServerSavePayload {
   name: string;
@@ -51,6 +59,8 @@ interface ServerSavePayload {
   auth_method: 'password' | 'publickey';
   tags: string[];
   credential?: string;
+  /** 指向凭据库；传 null 表示从引用切回内嵌凭据。 */
+  credential_id?: number | null;
   region?: string;
   jump_server_id?: number | null;
   transport_type?: 'direct' | 'cf_tunnel';
@@ -197,6 +207,12 @@ export class ServerList {
   private editingOriginalAuthMethod: ServerConfig['auth_method'] | null = null;
   private keyFileReadVersion = 0;
   private modalAuthMode: 'password' | 'key' = 'password';
+  /** 凭据来源：直接填写（内嵌）或从凭据库选择。 */
+  private modalCredentialSource: 'inline' | 'library' = 'inline';
+  /** 已从凭据库选中的凭据 id（library 模式下有效）。 */
+  private selectedCredentialId: number | null = null;
+  /** 编辑时的原始引用，用于判断来源是否真正发生了变化。 */
+  private editingOriginalCredentialId: number | null = null;
   private modalTransportMode: 'direct' | 'cf_tunnel' = 'direct';
   private clearCfAccessClientSecret = false;
   private searchQuery = '';
@@ -478,6 +494,18 @@ export class ServerList {
     document
       .getElementById('modal-auth-tab-key')
       ?.addEventListener('click', () => this.setModalAuthMode('key'));
+
+    // Modal 凭据来源切换
+    document
+      .getElementById('server-cred-source-inline')
+      ?.addEventListener('click', () => this.setModalCredentialSource('inline'));
+    document
+      .getElementById('server-cred-source-library')
+      ?.addEventListener('click', () => this.setModalCredentialSource('library'));
+    document.getElementById('server-credential-id')?.addEventListener('change', (event) => {
+      const value = (event.target as HTMLSelectElement).value;
+      this.selectedCredentialId = value ? Number(value) : null;
+    });
     document
       .getElementById('modal-transport-tab-direct')
       ?.addEventListener('click', () => this.setModalTransportMode('direct'));
@@ -690,6 +718,11 @@ export class ServerList {
     const tunnelBadge = isTunnel
       ? `<span class="shrink-0 text-[10px] font-bold tracking-[0.1em] text-[var(--accent-secondary)] border border-[var(--accent-secondary)] px-1.5 py-0.5">${t('server.tunnelBadge')}</span>`
       : '';
+    // 标出凭据来自凭据库，让用户一眼看出“改这条凭据会同时影响哪些主机”。
+    const credentialBadge =
+      server.credential_id !== null && server.credential_id !== undefined
+        ? `<span class="shrink-0 text-[10px] font-bold tracking-[0.1em] text-[var(--accent)] border border-[var(--border-strong)] px-1.5 py-0.5">${t('server.usesCredential')}</span>`
+        : '';
 
     // 下游节点自身的区域不参与调度；连接区域始终由跳板链入口决定。
     const usesJumpHost = !isTunnel && server.jump_server_id !== null && server.jump_server_id !== undefined;
@@ -760,6 +793,7 @@ export class ServerList {
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
             ${tunnelBadge}
+            ${credentialBadge}
             <span class="shrink-0 text-[10px] font-bold tracking-[0.1em] text-muted border border-dim px-2 py-0.5 flex items-center gap-1">
               <span class="material-symbols-outlined" style="font-size: 12px;">${authIcon}</span>
               ${authLabel}
@@ -924,6 +958,10 @@ export class ServerList {
   showModal(mode: 'add' | 'edit' | 'clone', server?: ServerConfig): void {
     this.editingServerId = mode === 'edit' && server ? server.id : null;
     this.editingOriginalAuthMethod = mode === 'edit' && server ? server.auth_method : null;
+    this.editingOriginalCredentialId =
+      mode === 'edit' && server ? (server.credential_id ?? null) : null;
+    // 新服务器默认直接填写，存量习惯不变。
+    this.setModalCredentialSource('inline');
 
     this.keyFileReadVersion++;
     (document.getElementById('server-private-key-file') as HTMLInputElement).value = '';
@@ -969,6 +1007,13 @@ export class ServerList {
 
       const transport = server.transport_type === 'cf_tunnel' ? 'cf_tunnel' : 'direct';
       this.setModalTransportMode(transport);
+
+      // 已引用凭据库的服务器以 library 模式打开，并选中原凭据；
+      // 凭据内容不会回显，用户只能改引用或重写凭据。
+      if (mode === 'edit' && server.credential_id) {
+        this.setModalCredentialSource('library');
+        void this.selectCredentialWhenReady(server.credential_id);
+      }
 
       this.clearCfAccessClientSecret = false;
       const secretStatusEl = document.getElementById('server-cf-secret-status');
@@ -1152,6 +1197,87 @@ export class ServerList {
     keyTab.classList.toggle('auth-tab-active', mode === 'key');
     pwSection.style.display = mode === 'password' ? '' : 'none';
     keySection.style.display = mode === 'key' ? '' : 'none';
+    // 凭据类型必须与认证方式一致：切换认证方式时重新过滤可选凭据，
+    // 已选的凭据若不再匹配则清空，避免提交后被服务端拒绝。
+    this.refreshCredentialPicker();
+  }
+
+  // ==================== 凭据来源选择 ====================
+
+  /**
+   * 切换凭据来源。library 模式隐藏内嵌输入框（服务端会以引用为准），
+   * 但仍保留节点以免表单校验意外失败。
+   */
+  private setModalCredentialSource(source: 'inline' | 'library'): void {
+    this.modalCredentialSource = source;
+    const inlineBtn = document.getElementById('server-cred-source-inline');
+    const libraryBtn = document.getElementById('server-cred-source-library');
+    const picker = document.getElementById('server-credential-picker');
+    inlineBtn?.classList.toggle('auth-tab-active', source === 'inline');
+    libraryBtn?.classList.toggle('auth-tab-active', source === 'library');
+    picker?.classList.toggle('hidden', source !== 'library');
+    if (source === 'library') void this.refreshCredentialPicker();
+  }
+
+  /**
+   * 按当前认证方式拉取并填充可选凭据。
+   * 仅登录用户可用（匿名用户无凭据库），失败时静默置空并写入提示。
+   */
+  private async refreshCredentialPicker(): Promise<void> {
+    const select = document.getElementById('server-credential-id') as HTMLSelectElement | null;
+    const hint = document.getElementById('server-credential-hint');
+    if (!select) return;
+
+    const authMethod = this.modalAuthMode === 'key' ? 'publickey' : 'password';
+    select.textContent = '';
+    this.selectedCredentialId = null;
+
+    let credentials: StoredCredential[] = [];
+    try {
+      credentials = filterCredentialsByAuthMethod(
+        await credentialLibrary.listCredentials(),
+        authMethod
+      );
+    } catch {
+      if (hint) hint.textContent = t('credential.error.network');
+      return;
+    }
+
+    if (credentials.length === 0) {
+      if (hint) hint.textContent = t('credential.noMatch');
+      return;
+    }
+    if (hint) hint.textContent = '';
+    for (const credential of credentials) {
+      const option = document.createElement('option');
+      option.value = String(credential.id);
+      option.textContent =
+        credential.usageCount > 0
+          ? `${credential.name} · ${t('credential.usageBadge', { count: credential.usageCount })}`
+          : credential.name;
+      select.appendChild(option);
+    }
+    select.value = String(credentials[0].id);
+    this.selectedCredentialId = credentials[0].id;
+  }
+
+  /**
+   * 待凭据列表加载完成后选中指定凭据。
+   * setModalAuthMode 会触发 refreshCredentialPicker，且它是异步的，
+   * 因此这里轮询等待选项就绪，避免与加载竞态导致选中失败。
+   */
+  private async selectCredentialWhenReady(credentialId: number): Promise<void> {
+    const select = document.getElementById('server-credential-id') as HTMLSelectElement | null;
+    if (!select) return;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const option = select.querySelector<HTMLOptionElement>(`option[value="${credentialId}"]`);
+      if (option) {
+        select.value = String(credentialId);
+        this.selectedCredentialId = credentialId;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   private getJumpPath(server: ServerConfig): string[] {
@@ -1295,13 +1421,32 @@ export class ServerList {
       this.editingServerId !== null &&
       this.editingOriginalAuthMethod !== null &&
       authMethod !== this.editingOriginalAuthMethod;
+    // 引用模式下凭据由 credential_id 决定，无需填写内嵌凭据。
+    const usesLibrary = this.modalCredentialSource === 'library';
+    if (usesLibrary && this.selectedCredentialId === null) {
+      notify(t('credential.noMatch'), {
+        title: t('server.detailsTitle'),
+        variant: 'warning',
+      });
+      return;
+    }
 
-    // 新增或切换认证方式时必须填写与新方式匹配的凭据
-    if ((!this.editingServerId || authMethodChanged) && !credential) {
+    // 校验凭据可用性。两类必须报错的情况：
+    // ① 内嵌模式下新增服务器、或切换了认证方式，却没填凭据；
+    // ② 原本引用凭据库，却切回内嵌模式且没填新凭据 —— 引用会被清空，
+    //    服务器将变成无凭据状态，必须当场拦住。
+    const detachedFromLibrary =
+      !usesLibrary && this.editingOriginalCredentialId !== null && !credential;
+    if (
+      !usesLibrary &&
+      ((!this.editingServerId || authMethodChanged) && !credential || detachedFromLibrary)
+    ) {
       notify(
         authMethodChanged
           ? t('server.credentialRequiredAfterAuthChange')
-          : t(authMethod === 'publickey' ? 'auth.validationPrivateKey' : 'auth.validationPassword'),
+          : detachedFromLibrary
+            ? t('server.credentialRequiredAfterDetach')
+            : t(authMethod === 'publickey' ? 'auth.validationPrivateKey' : 'auth.validationPassword'),
         {
           title: t('auth.incompleteCredentials'),
           variant: 'warning',
@@ -1347,7 +1492,20 @@ export class ServerList {
         transport_type: this.modalTransportMode,
         jump_server_id: isTunnel ? null : jumpServerId,
       };
-      if (credential) body.credential = credential;
+      // 引用模式下不发送内嵌凭据：即使输入框里残留着切换前的输入，
+      // 也以凭据引用为准（服务端同样以 credential_id 优先）。
+      if (credential && !usesLibrary) body.credential = credential;
+      // 引用模式：只在确实需要时发送 credential_id，避免在纯元数据编辑
+      // （改名/改备注）时无谓地改动凭据来源。
+      if (usesLibrary && this.selectedCredentialId !== null) {
+        body.credential_id = this.selectedCredentialId;
+      } else if (
+        !usesLibrary &&
+        this.editingOriginalCredentialId !== null
+      ) {
+        // 从引用切回内嵌：显式传 null，让服务端清空引用列。
+        body.credential_id = null;
+      }
 
       if (isTunnel && cleanTunnelHost) {
         body.cf_tunnel_host = cleanTunnelHost;

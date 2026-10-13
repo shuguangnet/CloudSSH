@@ -3,6 +3,7 @@ import { ServerMemoryStore } from './server-memory-store';
 import { SnapshotStore } from './snapshot-store';
 import { base64ToBytes, bytesToBase64, isValidSnapshotPath, isSnapshotKind } from '../snapshot-policy';
 import { normalizeSnippetInput, SNIPPET_MAX_COUNT } from '../snippet-schema';
+import { normalizeCredentialInput, CREDENTIAL_MAX_COUNT } from '../credential-schema';
 import { normalizeMobileShortcutsPayload } from '../mobile-shortcuts-schema';
 import { normalizeUserThemePayload } from '../theme-schema';
 import {
@@ -42,6 +43,8 @@ interface StoredServerRow {
   cf_tunnel_host: string | null;
   cf_access_client_id: string | null;
   cf_access_client_secret: string | null;
+  /** 可复用凭据引用；NULL 表示沿用 credential 列（存量数据）。 */
+  credential_id: number | null;
 }
 
 // ====== 行形状帮助类型：与 UserDBDO 内各 SELECT 列一一对应（配合 query<T> 消除逐处 as unknown as） ======
@@ -64,6 +67,8 @@ type ServerRow = {
   cf_access_client_id: string | null;
   has_cf_access_client_secret: number;
   last_connected_at: number | null;
+  /** 可复用凭据引用；NULL 表示沿用 credential 列（存量数据）。 */
+  credential_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -82,6 +87,7 @@ type ServerEditRow = {
   cf_tunnel_host: string | null;
   cf_access_client_id: string | null;
   cf_access_client_secret: string | null;
+  credential_id: number | null;
 };
 type ServerNameRow = { name: string };
 
@@ -247,6 +253,22 @@ export class UserDBDO {
 
       CREATE INDEX IF NOT EXISTS idx_command_snippets_user ON command_snippets(user_id);
 
+      -- 可复用凭据库：一处凭据可被多台服务器引用（servers.credential_id）。
+      -- secret 始终为 AES-256-GCM 密文，kind 决定前端表单朝向（password/publickey）。
+      CREATE TABLE IF NOT EXISTS credentials (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
+        name        TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        secret      TEXT NOT NULL,
+        comment     TEXT NOT NULL DEFAULT '',
+        last_used_at INTEGER DEFAULT NULL,
+        created_at  TEXT DEFAULT (datetime('now')),
+        updated_at  TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id);
+
       CREATE TABLE IF NOT EXISTS ssh_shares (
         id                  TEXT PRIMARY KEY,
         user_id             INTEGER NOT NULL REFERENCES users(id),
@@ -331,6 +353,11 @@ export class UserDBDO {
     if (!serverCols.some((c: any) => c.name === 'last_connected_at')) {
       this.db.exec('ALTER TABLE servers ADD COLUMN last_connected_at INTEGER DEFAULT NULL');
     }
+    // 可复用凭据引用：NULL 表示沿用服务器自带的 credential 列（存量数据无需回填）。
+    if (!serverCols.some((c: any) => c.name === 'credential_id')) {
+      this.db.exec('ALTER TABLE servers ADD COLUMN credential_id INTEGER DEFAULT NULL');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_servers_credential ON servers(credential_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_servers_jump ON servers(jump_server_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_servers_last_connected ON servers(user_id, last_connected_at DESC)');
 
@@ -587,6 +614,24 @@ export class UserDBDO {
         const snippetId = parseInt(snippetMatch[1], 10);
         if (request.method === 'PUT') return this.handleUpdateSnippet(snippetId, request);
         if (request.method === 'DELETE') return this.handleDeleteSnippet(snippetId, request);
+      }
+
+      // --- 可复用凭据库（secret 永不出库）---
+      if (path === '/internal/credentials' && request.method === 'GET') {
+        const userIdStr = url.searchParams.get('user_id');
+        if (!userIdStr) return Response.json({ error: 'Missing user_id' }, { status: 400 });
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) return Response.json({ error: 'Invalid user_id' }, { status: 400 });
+        return this.handleGetCredentials(userId);
+      }
+      if (path === '/internal/credentials' && request.method === 'POST') {
+        return this.handleCreateCredential(request);
+      }
+      const credentialMatch = path.match(/^\/internal\/credentials\/(\d+)$/);
+      if (credentialMatch) {
+        const credentialId = parseInt(credentialMatch[1], 10);
+        if (request.method === 'PUT') return this.handleUpdateCredential(credentialId, request);
+        if (request.method === 'DELETE') return this.handleDeleteCredential(credentialId, request);
       }
 
       // --- 配置快照（SFTP 覆盖前留档 / 回滚） ---
@@ -876,7 +921,7 @@ export class UserDBDO {
       `SELECT id, user_id, name, host, port, username, auth_method, region, inferred_hint, tags, os, jump_server_id,
               transport_type, cf_tunnel_host, cf_access_client_id,
               (cf_access_client_secret IS NOT NULL AND cf_access_client_secret != '') AS has_cf_access_client_secret,
-              last_connected_at, created_at, updated_at
+              credential_id, last_connected_at, created_at, updated_at
        FROM servers WHERE user_id = ?
        ORDER BY (last_connected_at IS NULL) ASC, last_connected_at DESC, updated_at DESC`,
       userId
@@ -932,6 +977,7 @@ export class UserDBDO {
       cf_tunnel_host?: string;
       cf_access_client_id?: string;
       cf_access_client_secret?: string;
+      credential_id?: number | null;
     }>();
 
     const port = body.port ?? 22;
@@ -941,7 +987,19 @@ export class UserDBDO {
     if (!AUTH_METHODS.has(body.auth_method)) {
       return Response.json({ error: '不支持的认证方式' }, { status: 400 });
     }
-    if (typeof body.credential !== 'string' || body.credential.length === 0) {
+    // 两种模式二选一：引用凭据库（credential_id）或内嵌凭据（credential）。
+    const useReference = body.credential_id !== undefined && body.credential_id !== null;
+    if (useReference) {
+      if (!Number.isSafeInteger(body.credential_id)) {
+        return Response.json({ error: '凭据引用无效' }, { status: 400 });
+      }
+      const refError = this.validateCredentialReference(
+        body.user_id,
+        body.credential_id as number,
+        body.auth_method
+      );
+      if (refError) return Response.json({ error: refError }, { status: 400 });
+    } else if (typeof body.credential !== 'string' || body.credential.length === 0) {
       return Response.json({ error: '认证凭据不能为空' }, { status: 400 });
     }
     const jumpServerId = body.jump_server_id ?? null;
@@ -999,8 +1057,11 @@ export class UserDBDO {
     // 下游节点或隧道连接不需要推断区域。
     const region = jumpServerId === null ? requestedRegion : null;
 
-    // 加密凭据
-    const encrypted = await this.encryptCredential(body.credential, body.user_id);
+    // 加密凭据。引用模式下 credential 列写空串占位（列是 NOT NULL），
+    // 不把空字符串加密成“看起来像真密文”的值，以免日后误判为有效凭据。
+    const encrypted = useReference
+      ? ''
+      : await this.encryptCredential(body.credential, body.user_id);
 
     // Auto 模式保存时一次性推断 locationHint，结果持久化入 inferred_hint 列
     // 手动区域已经能够直接决定调度，无需向 IPinfo 发送主机信息
@@ -1032,8 +1093,8 @@ export class UserDBDO {
       `INSERT INTO servers (
         user_id, name, host, port, username, credential, auth_method,
         region, inferred_hint, tags, jump_server_id,
-        transport_type, cf_tunnel_host, cf_access_client_id, cf_access_client_secret
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        transport_type, cf_tunnel_host, cf_access_client_id, cf_access_client_secret, credential_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       body.user_id,
       body.name,
       body.host,
@@ -1048,7 +1109,8 @@ export class UserDBDO {
       transportType,
       cleanTunnelHost,
       cfAccessClientId,
-      encCfAccessClientSecret
+      encCfAccessClientSecret,
+      useReference ? (body.credential_id as number) : null
     );
 
     // 获取新创建的记录
@@ -1056,7 +1118,7 @@ export class UserDBDO {
       `SELECT id, user_id, name, host, port, username, auth_method, region, inferred_hint, tags, os, jump_server_id,
               transport_type, cf_tunnel_host, cf_access_client_id,
               (cf_access_client_secret IS NOT NULL AND cf_access_client_secret != '') AS has_cf_access_client_secret,
-              last_connected_at, created_at, updated_at
+              credential_id, last_connected_at, created_at, updated_at
        FROM servers WHERE user_id = ? ORDER BY id DESC LIMIT 1`,
       body.user_id
     );
@@ -1085,11 +1147,12 @@ export class UserDBDO {
       cf_tunnel_host?: string;
       cf_access_client_id?: string;
       cf_access_client_secret?: string | null;
+      credential_id?: number | null;
     }>();
 
     // 验证服务器属于该用户（行形状：user_id/host/port/auth_method/region/inferred_hint/jump_server_id/transport_type/cf_tunnel_host/cf_access_client_id/cf_access_client_secret）
     const existing = this.query<ServerEditRow>(
-      'SELECT user_id, host, port, auth_method, region, inferred_hint, jump_server_id, transport_type, cf_tunnel_host, cf_access_client_id, cf_access_client_secret FROM servers WHERE id = ?',
+      'SELECT user_id, host, port, auth_method, region, inferred_hint, jump_server_id, transport_type, cf_tunnel_host, cf_access_client_id, cf_access_client_secret, credential_id FROM servers WHERE id = ?',
       serverId
     );
     if (existing.length === 0) return Response.json({ error: 'Server not found' }, { status: 404 });
@@ -1104,10 +1167,31 @@ export class UserDBDO {
     if (body.credential !== undefined && !hasNewCredential) {
       return Response.json({ error: '认证凭据不能为空' }, { status: 400 });
     }
+    // 凭据来源三态：切换到引用（credential_id 为数字）、解除引用回到内嵌（null）、
+    // 或不改变来源（undefined）—— 后者仅更新名称/备注等元数据。
+    const nextAuthMethod = body.auth_method ?? current.auth_method;
+    const switchToReference = body.credential_id !== undefined && body.credential_id !== null;
+    const clearReference = body.credential_id === null;
+    if (switchToReference) {
+      if (!Number.isSafeInteger(body.credential_id)) {
+        return Response.json({ error: '凭据引用无效' }, { status: 400 });
+      }
+      const refError = this.validateCredentialReference(
+        body.user_id,
+        body.credential_id as number,
+        nextAuthMethod
+      );
+      if (refError) return Response.json({ error: refError }, { status: 400 });
+    }
+    if (clearReference && !hasNewCredential) {
+      // 解除引用后 credential 列为空，若不提供新凭据，服务器将无法连接。
+      return Response.json({ error: '切换为内嵌凭据时必须提供对应凭据' }, { status: 400 });
+    }
     if (
       body.auth_method !== undefined &&
       body.auth_method !== current.auth_method &&
-      !hasNewCredential
+      !hasNewCredential &&
+      !switchToReference
     ) {
       return Response.json({ error: '切换认证方式时必须同时提供对应凭据' }, { status: 400 });
     }
@@ -1201,10 +1285,19 @@ export class UserDBDO {
       updates.push('username = ?');
       values.push(body.username);
     }
-    if (hasNewCredential) {
+    // 切到引用模式时不再写入内嵌密文（后端会显式把它清空）；
+    // 否则同一列会被赋值两次，结果依赖于 SQLite 对重复 SET 的求值顺序。
+    if (hasNewCredential && !switchToReference) {
       const encrypted = await this.encryptCredential(body.credential!, body.user_id);
       updates.push('credential = ?');
       values.push(encrypted);
+    }
+    if (switchToReference) {
+      // 切到引用模式：清空内嵌密文，避免遗留一份不再被使用、又容易被误认为生效的旧凭据。
+      updates.push('credential_id = ?', "credential = ''");
+      values.push(body.credential_id as number);
+    } else if (clearReference) {
+      updates.push('credential_id = NULL');
     }
     if (body.auth_method !== undefined) {
       updates.push('auth_method = ?');
@@ -1296,7 +1389,7 @@ export class UserDBDO {
       `SELECT id, user_id, name, host, port, username, auth_method, region, inferred_hint, tags, os, jump_server_id,
               transport_type, cf_tunnel_host, cf_access_client_id,
               (cf_access_client_secret IS NOT NULL AND cf_access_client_secret != '') AS has_cf_access_client_secret,
-              last_connected_at, created_at, updated_at
+              credential_id, last_connected_at, created_at, updated_at
        FROM servers WHERE id = ?`,
       serverId
     );
@@ -1878,12 +1971,33 @@ export class UserDBDO {
     const chain = reversed.reverse();
     const target = chain[chain.length - 1];
     const pathSegments: string[] = [];
+    // 凭据解析会 await 解密；类型不匹配是配置错误，必须显式报错而不是静默回落到
+    // 服务器自带的 credential 列——那只会得到难以排查的认证失败。
+    let credentialError: string | null = null;
     const resolved = await Promise.all(
       chain.map(async (server, index) => {
         const identity =
           index === 0 ? server.host : `jump:${pathSegments.join('>')}|${server.host}`;
         pathSegments.push(`${server.id}@${server.host}:${server.port}`);
-        const credential = await this.decryptCredential(server.credential, body.user_id);
+        let credential: string;
+        if (server.credential_id !== null && server.credential_id !== undefined) {
+          const referenced = await this.resolveReferencedCredential(
+            server.credential_id,
+            body.user_id,
+            server.auth_method
+          );
+          if (!referenced.ok) {
+            credentialError =
+              referenced.reason === 'kindMismatch'
+                ? `服务器「${server.name}」引用的凭据类型与其认证方式不符，请到凭据管理中检查`
+                : `服务器「${server.name}」引用的凭据已不存在，请重新选择凭据`;
+            credential = '';
+          } else {
+            credential = referenced.secret;
+          }
+        } else {
+          credential = await this.decryptCredential(server.credential, body.user_id);
+        }
         const khRows = this.query<FingerprintRow>(
           'SELECT fingerprint FROM known_hosts WHERE user_id = ? AND host = ? AND port = ?',
           body.user_id,
@@ -1899,6 +2013,9 @@ export class UserDBDO {
         };
       })
     );
+    if (credentialError) {
+      return Response.json({ error: credentialError }, { status: 409 });
+    }
 
     const outermost = chain[0];
     const locationHint = outermost.region || outermost.inferred_hint || undefined;
@@ -2245,6 +2362,214 @@ export class UserDBDO {
     const { user_id } = await request.json<{ user_id: number }>();
     this.db.exec('DELETE FROM command_snippets WHERE user_id = ? AND id = ?', user_id, snippetId);
     return Response.json({ success: true });
+  }
+
+  // ==================== 可复用凭据库 ====================
+
+  /**
+   * 列出用户的凭据（元数据）。
+   *
+   * **绝不返回 secret**：即使它已在库里加密，也没有任何界面需要回读明文。
+   * 以 has_secret 标记“已配置”，用 usage_count 驱动删除保护与列表提示。
+   */
+  private handleGetCredentials(userId: number): Response {
+    const rows = this.db
+      .exec(
+        `SELECT c.id, c.name, c.kind, c.comment, c.last_used_at, c.created_at, c.updated_at,
+                (SELECT COUNT(*) FROM servers s WHERE s.user_id = c.user_id AND s.credential_id = c.id) AS usage_count
+         FROM credentials c WHERE c.user_id = ? ORDER BY c.id ASC`,
+        userId
+      )
+      .toArray();
+    return Response.json(
+      rows.map((row: Record<string, unknown>) => ({ ...row, has_secret: true }))
+    );
+  }
+
+  private async handleCreateCredential(request: Request): Promise<Response> {
+    const body = await request.json<{
+      user_id: number;
+      name?: unknown;
+      kind?: unknown;
+      secret?: unknown;
+      comment?: unknown;
+    }>();
+    const normalized = normalizeCredentialInput(body.name, body.kind, body.secret, body.comment);
+    if (!normalized.ok) return Response.json({ error: normalized.error }, { status: 400 });
+
+    const countRows = this.db
+      .exec('SELECT COUNT(*) AS count FROM credentials WHERE user_id = ?', body.user_id)
+      .toArray();
+    const count = Number((countRows[0] as { count?: unknown } | undefined)?.count ?? 0);
+    if (count >= CREDENTIAL_MAX_COUNT) {
+      return Response.json({ error: 'limitReached' }, { status: 400 });
+    }
+
+    const encrypted = await this.encryptCredential(normalized.value.secret, body.user_id);
+    this.db.exec(
+      `INSERT INTO credentials (user_id, name, kind, secret, comment, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      body.user_id,
+      normalized.value.name,
+      normalized.value.kind,
+      encrypted,
+      normalized.value.comment
+    );
+    const rows = this.db
+      .exec(
+        `SELECT id, name, kind, comment, last_used_at, created_at, updated_at FROM credentials
+         WHERE user_id = ? ORDER BY id DESC LIMIT 1`,
+        body.user_id
+      )
+      .toArray();
+    return Response.json({ ...(rows[0] ?? { success: true }), usage_count: 0, has_secret: true }, { status: 201 });
+  }
+
+  /**
+   * 更新凭据。secret 缺省时保留原值，这样改名/改备注不必重新粘贴密钥。
+   * 已引用该凭据的服务器无需变动：它们引用的是 id，不是内容副本。
+   */
+  private async handleUpdateCredential(credentialId: number, request: Request): Promise<Response> {
+    const body = await request.json<{
+      user_id: number;
+      name?: unknown;
+      kind?: unknown;
+      secret?: unknown;
+      comment?: unknown;
+    }>();
+    const existing = this.db
+      .exec('SELECT kind FROM credentials WHERE user_id = ? AND id = ?', body.user_id, credentialId)
+      .toArray();
+    if (existing.length === 0) return Response.json({ error: 'notFound' }, { status: 404 });
+
+    // secret 为空/未提供 = 保留旧密文；提供了则必须通过完整校验。
+    const hasNewSecret = typeof body.secret === 'string' && body.secret.trim().length > 0;
+    const normalized = normalizeCredentialInput(
+      body.name,
+      body.kind,
+      hasNewSecret ? body.secret : 'placeholder',
+      body.comment
+    );
+    if (!normalized.ok) return Response.json({ error: normalized.error }, { status: 400 });
+
+    // 类型变更前必须确认没有与之不匹配的服务器正在引用，避免连接必然失败。
+    const mismatched = this.query<ServerNameRow>(
+      `SELECT name FROM servers WHERE user_id = ? AND credential_id = ? AND auth_method != ?
+       ORDER BY name LIMIT 5`,
+      body.user_id,
+      credentialId,
+      normalized.value.kind
+    );
+    if (mismatched.length > 0) {
+      return Response.json(
+        {
+          error: `该凭据正被 ${mismatched.map((row) => row.name).join('、')} 以另一认证方式使用，请先调整这些服务器`,
+        },
+        { status: 409 }
+      );
+    }
+
+    const updates = ['name = ?', 'kind = ?', 'comment = ?', "updated_at = datetime('now')"];
+    const values: (string | number)[] = [
+      normalized.value.name,
+      normalized.value.kind,
+      normalized.value.comment,
+    ];
+    if (hasNewSecret) {
+      updates.splice(3, 0, 'secret = ?');
+      values.splice(3, 0, await this.encryptCredential(normalized.value.secret, body.user_id));
+    }
+    values.push(body.user_id, credentialId);
+    this.db.exec(
+      `UPDATE credentials SET ${updates.join(', ')} WHERE user_id = ? AND id = ?`,
+      ...values
+    );
+
+    const rows = this.db
+      .exec(
+        `SELECT c.id, c.name, c.kind, c.comment, c.last_used_at, c.created_at, c.updated_at,
+                (SELECT COUNT(*) FROM servers s WHERE s.user_id = c.user_id AND s.credential_id = c.id) AS usage_count
+         FROM credentials c WHERE c.user_id = ? AND c.id = ?`,
+        body.user_id,
+        credentialId
+      )
+      .toArray();
+    return Response.json({ ...(rows[0] ?? { success: true }), has_secret: true });
+  }
+
+  /**
+   * 删除凭据。被服务器引用时拒绝，并列出引用它的服务器名
+   * （与删除服务器时拒绝跳板引用的模式一致）。
+   */
+  private async handleDeleteCredential(credentialId: number, request: Request): Promise<Response> {
+    const { user_id } = await request.json<{ user_id: number }>();
+    const existing = this.db
+      .exec('SELECT id FROM credentials WHERE user_id = ? AND id = ?', user_id, credentialId)
+      .toArray();
+    if (existing.length === 0) return Response.json({ error: 'notFound' }, { status: 404 });
+
+    const references = this.query<ServerNameRow>(
+      'SELECT name FROM servers WHERE user_id = ? AND credential_id = ? ORDER BY name LIMIT 5',
+      user_id,
+      credentialId
+    );
+    if (references.length > 0) {
+      return Response.json(
+        {
+          error: `该凭据正被 ${references.map((row) => row.name).join('、')} 使用，请先解除引用`,
+        },
+        { status: 409 }
+      );
+    }
+    this.db.exec('DELETE FROM credentials WHERE user_id = ? AND id = ?', user_id, credentialId);
+    return Response.json({ success: true });
+  }
+
+  /**
+   * 按 `servers.credential_id` 取回引用凭据的明文。
+   *
+   * 仅由 handleConnectServer 调用：凭据必须同时属于该用户且类型与服务器认证方式匹配。
+   * 任何不满足的情况都返回 `{ ok: false }` 并由调用方报 409 终止连接——**绝不静默回落到
+   * 服务器自带的 credential 列**，那属于配置错误，静默用错凭据只会得到难排查的认证失败。
+   */
+  private async resolveReferencedCredential(
+    credentialId: number | null,
+    userId: number,
+    authMethod: string
+  ): Promise<{ ok: true; secret: string } | { ok: false; reason: 'missing' | 'kindMismatch' }> {
+    if (credentialId === null) return { ok: false, reason: 'missing' };
+    const rows = this.db
+      .exec(
+        'SELECT kind, secret FROM credentials WHERE user_id = ? AND id = ?',
+        userId,
+        credentialId
+      )
+      .toArray();
+    if (rows.length === 0) return { ok: false, reason: 'missing' };
+    const row = rows[0] as { kind: string; secret: string };
+    if (row.kind !== authMethod) return { ok: false, reason: 'kindMismatch' };
+    this.db.exec('UPDATE credentials SET last_used_at = ? WHERE id = ?', Date.now(), credentialId);
+    return { ok: true, secret: await this.decryptCredential(row.secret, userId) };
+  }
+
+  /**
+   * 保存服务器前校验凭据引用：必须属于该用户，且类型与认证方式一致。
+   * 返回错误消息字符串，合法时返回 null。
+   */
+  private validateCredentialReference(
+    userId: number,
+    credentialId: number,
+    authMethod: string
+  ): string | null {
+    const rows = this.db
+      .exec('SELECT kind FROM credentials WHERE user_id = ? AND id = ?', userId, credentialId)
+      .toArray();
+    if (rows.length === 0) return '所选凭据不存在';
+    const kind = (rows[0] as { kind: string }).kind;
+    if (kind !== authMethod) {
+      return `所选凭据类型（${kind === 'password' ? '密码' : '密钥'}）与该服务器的认证方式不符`;
+    }
+    return null;
   }
 
   // ==================== 配置快照（SFTP 覆盖前留档 / 回滚） ====================

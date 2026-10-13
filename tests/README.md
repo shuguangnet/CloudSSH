@@ -91,6 +91,7 @@ pnpm run verify
 - 主机密钥信任：首见指纹确认、更换指纹阻断与路由作用域隔离
 - 键盘交互认证、OS 检测、跳板链、SFTP 上传冲突、分享会话策略
 - UserDB 服务器标签/片段迁移、规范化、序列化、更新与隔离
+- 可复用凭据库：密钥正文不回显、AES-GCM 静态加密、按引用建立 SSH 链、类型不符/引用悬空一律 409（不静默回退）、被引用时删除保护、更新时留空保留原密文、输入校验与迁移幂等，以及存量内嵌凭据的向后兼容
 - AI 模型代理安全：同 Base URL 强绑定免密拉取、跨地址凭据外带拦截（Credential Exfiltration）、CSRF Origin 防护与敏感 Token 脱敏
 - Responses 原生无状态 Agent：HTTP/SSE 跨 chunk 与 CRLF、强制无状态（store: false）、原生输出项与通用 reasoning 节点回传、call_id 配对、执行事实日志（ExecutionJournal）、严格本地参数校验、停止/抢占/重置/编辑分支、原子预算检查点、任务相关性服务器记忆与 usage
 - 流中断/incomplete 不执行残缺工具、不泄露 reasoning；新任务先等旧 exec 清理，不自动重放已执行命令
@@ -101,6 +102,7 @@ pnpm run verify
 - 终端多标签：双击内联重命名（空值还原）、右键上下文菜单（重命名/克隆会话/关闭其他/关闭）与 document click 防泄漏
 - 终端快捷键适配：macOS `Cmd+F` 搜索、`Cmd+K` / `Ctrl+Shift+K` 清屏且不干扰 Shell 原生 `Ctrl+K`
 - 命令片段库：实时模糊搜索、一键复制到剪贴板与 `{{var}}` 动态参数占位符弹窗录入
+- 凭据库面板：按认证方式过滤凭据、新建/编辑时密钥不回显（留空即保留）、被引用凭据的 409 文案透传，以及服务器表单「直接填写 / 从凭据库选择」两种来源切换与 `credential_id` 提交
 - SFTP 生产力：路径面包屑分级导航、表头多维排序（文件名/大小/时间）、新建 0 字节文件与 CodeMirror 在线编辑联动
 - SFTP 单选、Cmd/Ctrl 多选、Shift 连选和全选
 - Agent 终端选区附件、问题组合、快捷诊断 Prompt 气泡（Chips）和非授权安全边界
@@ -127,6 +129,7 @@ pnpm run verify
 - 终端焦点报告（`terminal-focus-report.spec.ts`，Chromium + WebKit）：真实 Ctrl/Alt 按钮与焦点切换、DECSET 1004、Ctrl+B/方向键、bracketed paste、Shell/连接门控及 iOS IME 回退/去重
 - UI 与样式回归：Liquid Glass 下 AI 模型下拉面板与设置面板滚动能力（overflow 简写防回归）、窄视口弹窗横向溢出消除、主题化滚动条兜底与 .no-scrollbar 样式
 - AI 模型下拉选择（Combobox 展开、选项切换、清空、免密拉取与浅色/暗色主题自适应切换）
+- 凭据管理（`credentials.spec.ts`）：侧边栏入口、列表不回显密钥、新建/编辑/删除请求形状、删除被引用凭据的 409 冲突文案，以及服务器表单凭据选择器的认证方式过滤
 
 ## 当前限制
 

@@ -200,6 +200,16 @@
                 <div class="sidebar-group-label" data-i18n="menu.settings">
                   设置
                 </div>
+                <button
+                  id="credentials-btn"
+                  type="button"
+                  class="sidebar-item"
+                  data-i18n-title="credential.manage"
+                  title="凭据管理"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">key</span>
+                  <span class="sidebar-item-label" data-i18n="credential.manage">凭据管理</span>
+                </button>
                 <a
                   id="menu-account"
                   class="sidebar-item hidden"
@@ -812,6 +822,40 @@
                 data-i18n="server.cfAccessHint"
               >
                 若在 Cloudflare Zero Trust 中为该域名开启了 Access 策略，需填入 Service Token
+              </div>
+            </div>
+            <div id="server-credential-source">
+              <label
+                class="block text-xs font-bold tracking-[0.1em] text-muted mb-2"
+                data-i18n="credential.source"
+                >凭据来源</label
+              >
+              <div class="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  id="server-cred-source-inline"
+                  class="auth-tab auth-tab-active px-3 py-1 text-[11px] font-bold tracking-[0.1em] cursor-pointer transition-all"
+                  data-i18n="credential.sourceInline"
+                >
+                  直接填写
+                </button>
+                <button
+                  type="button"
+                  id="server-cred-source-library"
+                  class="auth-tab px-3 py-1 text-[11px] font-bold tracking-[0.1em] cursor-pointer transition-all"
+                  data-i18n="credential.sourceLibrary"
+                >
+                  从凭据库选择
+                </button>
+              </div>
+              <div id="server-credential-picker" class="hidden">
+                <select
+                  id="server-credential-id"
+                  class="terminal-input text-[13px] w-full"
+                  data-i18n-aria-label="credential.select"
+                  aria-label="选择凭据"
+                ></select>
+                <p id="server-credential-hint" class="text-[10px] text-muted mt-1"></p>
               </div>
             </div>
             <div>

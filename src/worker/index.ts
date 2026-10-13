@@ -188,6 +188,12 @@ export default {
         return handleSnapshotsRoute(request, url, env);
       }
 
+      // ==================== 可复用凭据 Routes (需认证) ====================
+
+      if (url.pathname === '/api/credentials' || url.pathname.startsWith('/api/credentials/')) {
+        return handleCredentialsRoute(request, url, env);
+      }
+
       // ==================== AI Config Routes (需认证) ====================
 
       if (url.pathname === '/api/ai/config' || url.pathname === '/api/ai/models') {
@@ -918,8 +924,74 @@ async function handleSnippetsRoute(request: Request, url: URL, env: Env): Promis
   return Response.json({ error: 'Not Found' }, { status: 404 });
 }
 
-// ==================== AI config routes ====================
+/**
+ * /api/credentials — 可复用凭据库 CRUD。
+ *
+ * 与 snippets 同构：鉴权后转发到该用户的 UserDBDO 内部路由。
+ * **响应永不包含 secret**：DO 只回传元数据与 has_secret 标记。
+ */
+async function handleCredentialsRoute(request: Request, url: URL, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+  const stub = getUserDBStub(env, user.github_id);
 
+  if (url.pathname === '/api/credentials' && request.method === 'GET') {
+    return stub.fetch(
+      new Request(`http://internal/internal/credentials?user_id=${user.id}`, { method: 'GET' })
+    );
+  }
+  if (url.pathname === '/api/credentials' && request.method === 'POST') {
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json<Record<string, unknown>>();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    body.user_id = user.id;
+    return stub.fetch(
+      new Request('http://internal/internal/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+  }
+
+  const credentialMatch = url.pathname.match(/^\/api\/credentials\/(\d+)$/);
+  if (credentialMatch) {
+    const credentialId = credentialMatch[1];
+    if (request.method === 'PUT') {
+      let body: Record<string, unknown>;
+      try {
+        body = await request.json<Record<string, unknown>>();
+      } catch {
+        return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+      }
+      body.user_id = user.id;
+      return stub.fetch(
+        new Request(`http://internal/internal/credentials/${credentialId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+    if (request.method === 'DELETE') {
+      return stub.fetch(
+        new Request(`http://internal/internal/credentials/${credentialId}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: user.id }),
+        })
+      );
+    }
+  }
+  return Response.json({ error: 'Not Found' }, { status: 404 });
+}
+
+// ==================== AI config routes ====================
 function isSameBaseUrl(urlA: string, urlB: string): boolean {
   try {
     return normalizeAIBaseUrl(urlA) === normalizeAIBaseUrl(urlB);

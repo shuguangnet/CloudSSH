@@ -1,4 +1,5 @@
 import { AIConfigPanel } from './ai-config';
+import { credentialLibrary } from './credentials-panel';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
 import { initI18n, onLocaleChange, t, type TranslationKey } from './i18n';
@@ -643,6 +644,10 @@ const aiConfigPanel = new AIConfigPanel();
 
 document.getElementById('ai-config-btn')?.addEventListener('click', () => {
   aiConfigPanel.show();
+});
+
+document.getElementById('credentials-btn')?.addEventListener('click', () => {
+  void credentialLibrary.show();
 });
 
 document.getElementById('mobile-shortcuts-config-btn')?.addEventListener('click', () => {

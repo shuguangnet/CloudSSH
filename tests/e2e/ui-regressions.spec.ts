@@ -570,11 +570,13 @@ test('Workers 部署（无自动化/MCP/账号页能力）隐藏功能组与受�
   await page.goto('/?lang=zh-CN');
   await expect(page.locator('#user-space-section')).toBeVisible();
 
-  // 左侧边栏：功能组整组隐藏；设置组仅剩 AI Agent 设置
+  // 左侧边栏：功能组整组隐藏；设置组仅剩 AI Agent 设置与凭据管理
   const sidebar = page.locator('#app-sidebar');
   await expect(sidebar).toBeVisible();
   await expect(sidebar.locator('[data-menu-group="functions"]')).toBeHidden();
   await expect(page.locator('#menu-account')).toBeHidden();
   await expect(sidebar.locator('[data-menu-group="settings"]')).toBeVisible();
-  await expect(sidebar.locator('[data-menu-group="settings"] .sidebar-item:not(.hidden)')).toHaveCount(1);
+  await expect(sidebar.locator('[data-menu-group="settings"] .sidebar-item:not(.hidden)')).toHaveCount(2);
+  await expect(page.locator('#ai-config-btn')).toBeVisible();
+  await expect(page.locator('#credentials-btn')).toBeVisible();
 });
