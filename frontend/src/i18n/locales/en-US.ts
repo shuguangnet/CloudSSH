@@ -28,7 +28,11 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'terminal.hideKeyboard': 'Hide keyboard',
   'terminal.noSelection': 'Select terminal text first.',
   'terminal.mobileSelectionHint':
-    'Selection mode is on. Drag across terminal text, then tap Copy again.',
+    'Selection mode is on. Drag across terminal text, then tap Copy on the floating bar.',
+  'terminal.selectionActions': 'Selection actions',
+  'terminal.selectAll': 'Select all',
+  'terminal.cancelSelection': 'Cancel selection',
+  'terminal.longPressToCopy': 'Long-press terminal text to select and copy it.',
   'terminal.pasteFailed': 'Could not read the clipboard. Check browser permissions.',
   'language.label': 'Language',
   'language.zhCN': '简体中文',

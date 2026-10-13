@@ -118,7 +118,7 @@ pnpm run verify
 - 多标签操作：双击内联重命名、空值与失焦恢复、右键菜单项与外部点击关闭
 - Agent 终端选区附件与快捷诊断 Prompt 气泡点击填入
 - Responses 前端任务生命周期：正文结束继续运行、run_end 才结束、requestId 隔离过期帧、中文/繁中/英文错误与留存提示
-- 终端选区复制与焦点恢复
+- 终端选区复制与焦点恢复（`terminal-clipboard.spec.ts`，Chromium + WebKit）：鼠标选区松手自动复制、bracketed paste、旧版 execCommand 回退与焦点恢复；移动端长按 350ms 进入选区 + 触觉反馈、浮动操作条「复制/全选/取消」单击即复制、长按判定期间滑动仍归滚动、触屏压制原生长按菜单。右键粘贴为桌面专有语义，在移动端项目下 skip
 - 认证挑战对话框、iOS 输入法、移动端后台连接恢复与分享会话领取
 - SFTP 覆盖确认、路径面包屑、表头排序、新建文件、主题样式与 UI 回归
 - 终端抽屉分段切换器：桌面端胶囊轮廓与可辨识边缘、双边异步物理弹簧滑块位移、PC 隐藏移动端更多操作按钮、三大抽屉宽度统一、匿名模式隐藏 AI Agent（display: none）与登录同步解锁
@@ -130,7 +130,7 @@ pnpm run verify
 
 ## 当前限制
 
-- Playwright 的完整界面与无障碍回归主要运行 Chromium；认证挑战、iOS 输入法、移动端后台连接恢复、SFTP 面板操作、终端触摸滚轮和焦点报告另在 WebKit 设备项目中执行。Firefox 尚未纳入当前质量门禁。
+- Playwright 的完整界面与无障碍回归主要运行 Chromium；认证挑战、iOS 输入法、移动端后台连接恢复、SFTP 面板操作、终端触摸滚轮、终端选区复制和焦点报告另在 WebKit 设备项目中执行。Firefox 尚未纳入当前质量门禁。
 - 浏览器 E2E 主要通过 mock API 验证前端行为，尚未连接真实 OpenSSH/Dropbear 和 SFTP 服务。
 - SSHSessionDO、SSH 会话状态机、SFTP 数据流和 AgentCore 等运行态模块的覆盖率仍偏低。
 - 新增协议状态、WebSocket 消息或安全边界时，应优先补充运行时错误、取消、超时和畸形输入测试，而不仅验证成功路径。

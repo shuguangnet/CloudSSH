@@ -303,6 +303,7 @@ export class MobileTerminalController {
     const terminal = this.getTerminal();
     if (!terminal) return;
 
+    // 已有选区：这是唯一需要点击的复制路径（长按选区的用户走浮动条）。
     if (terminal.hasSelection()) {
       const copied = await terminal.copyCurrentSelection();
       if (copied) {
@@ -313,11 +314,12 @@ export class MobileTerminalController {
       return;
     }
 
+    // 无选区：开启选择模式，并明确告知「长按即可选」，而不是让用户猜第二步。
     const enabled = !terminal.isMobileSelectionMode();
     terminal.setMobileSelectionMode(enabled);
     if (enabled) {
       terminal.blur();
-      notify(t('terminal.mobileSelectionHint'), { variant: 'info' });
+      notify(t('terminal.longPressToCopy'), { variant: 'info' });
     }
     this.syncCopyButton();
   }

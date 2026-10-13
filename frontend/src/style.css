@@ -384,6 +384,56 @@ body.terminal-active {
 .mobile-selection-mode .xterm-screen canvas {
   touch-action: none;
   cursor: crosshair;
+  /* 压制浏览器原生选词与长按气泡：否则 iOS/Android 的系统菜单会和自绘选区打架，
+     用户看到的是系统气泡，点「拷贝」却拷不到终端内容。 */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* ==================== 移动端选区操作条 ==================== */
+
+.terminal-selection-actions {
+  position: fixed;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  box-shadow: var(--shadow-floating);
+}
+
+.terminal-selection-actions.hidden {
+  display: none;
+}
+
+.terminal-selection-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--on-surface);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--control-radius) - 2px);
+  font: 600 12px / 1 var(--font-ui, sans-serif);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.terminal-selection-actions button:hover,
+.terminal-selection-actions button:active {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.terminal-selection-actions .material-symbols-outlined {
+  font-size: 18px;
 }
 
 /* V3 效果注册表：扫描线/闪烁按 fx 开关门控（取代旧的 style=cyberpunk 硬编码） */

@@ -1653,6 +1653,44 @@
           </div>
         </nav>
 
+        <!-- 移动端选区操作条：长按选中后就地浮出，一次点击即复制。
+             它是「选中即可操作」的落点，避免用户长按后找不到任何可点的东西。 -->
+        <div
+          id="terminal-selection-actions"
+          class="terminal-selection-actions hidden"
+          role="toolbar"
+          data-i18n-aria-label="terminal.selectionActions"
+          aria-label="选区操作"
+        >
+          <button
+            id="terminal-selection-copy-btn"
+            type="button"
+            data-i18n-title="terminal.copySelection"
+            title="复制选区"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">content_copy</span>
+            <span data-i18n="terminal.copySelection">复制选区</span>
+          </button>
+          <button
+            id="terminal-selection-all-btn"
+            type="button"
+            data-i18n-title="terminal.selectAll"
+            title="全选"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">select_all</span>
+            <span data-i18n="terminal.selectAll">全选</span>
+          </button>
+          <button
+            id="terminal-selection-cancel-btn"
+            type="button"
+            data-i18n-title="terminal.cancelSelection"
+            title="取消选择"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            <span data-i18n="terminal.cancelSelection">取消</span>
+          </button>
+        </div>
+
         <button
           id="ask-ai-selection-btn"
           type="button"

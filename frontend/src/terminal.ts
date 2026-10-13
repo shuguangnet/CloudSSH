@@ -129,6 +129,25 @@ interface MobileScrollGesture {
 
 const MOBILE_SCROLL_START_THRESHOLD_PX = 10;
 const MAX_MOBILE_WHEEL_EVENTS_PER_MOVE = 16;
+/**
+ * 长按进入选区的判定时长。移动端的复制入口必须是一次长按即可得，而不是
+ * 「先点复制按钮切换到选择模式、拖选、再点一次复制」的三步流程。
+ * 350ms 与 iOS/Android 系统级长按选词的量级一致，且明显短于用户
+ * 开始滚动前的犹豫时间，因此不会和「轻扫滚动」抢手势。
+ */
+const MOBILE_LONG_PRESS_MS = 350;
+/** 长按判定期间允许的抖动幅度，超过即视为用户想滚动。 */
+const MOBILE_LONG_PRESS_TOLERANCE_PX = 8;
+/** 选区边缘自动滚动的节拍。 */
+const SELECTION_EDGE_SCROLL_INTERVAL_MS = 60;
+
+/**
+ * 选区操作条是页面级单例（在 index.html 里），但每个终端标签各自持有一个容器。
+ * 因此监听器只能全局绑定一次，并通过「当前展示操作条的那个终端」转发，
+ * 否则每个新标签都会重复绑定，点一次复制会触发所有终端的复制。
+ */
+let selectionActionsOwner: SSHTerminal | null = null;
+let selectionActionsListenersBound = false;
 const MOBILE_VIEWPORT_QUERY = '(max-width: 767px), (max-width: 1180px) and (pointer: coarse)';
 const MOBILE_CONNECTION_RECOVERY_QUERY = '(pointer: coarse)';
 
@@ -187,6 +206,16 @@ export class SSHTerminal {
   private mobileSelectionMode = false;
   private mobileSelectionPointerId: number | null = null;
   private mobileSelectionStart: TerminalCell | null = null;
+  /** 待判定的长按：到时仍未移动/抬手则进入选区。 */
+  private mobileLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private mobileLongPressOrigin: { pointerId: number; x: number; y: number } | null = null;
+  /** 拖到屏幕边缘时自动滚动，否则跨屏选择（如整段 docker logs）无法完成。 */
+  private mobileSelectionEdgeScroller: ReturnType<typeof setInterval> | null = null;
+  private mobileSelectionEdgeDelta = 0;
+  private mobileSelectionLastCell: TerminalCell | null = null;
+  /** 选区操作条的宿主元素（终端容器的兄弟节点，避免被 xterm 层叠上下文裁剪）。 */
+  private selectionActionsBar: HTMLElement | null = null;
+  private selectionBarSize: { width: number; height: number } | null = null;
   private mobileScrollGesture: MobileScrollGesture | null = null;
   private dispatchingMobileWheel = false;
   private mobileModifier: MobileModifier | null = null;
@@ -212,8 +241,10 @@ export class SSHTerminal {
   /** 分享会话是否具备断线恢复资格（未绑定设备身份的环境为 false）。 */
   private shareResumeSupported = true;
   private readonly contextMenuPasteListener = async (event: MouseEvent): Promise<void> => {
-    if (window.matchMedia?.('(pointer: coarse)').matches) return;
+    // 触屏下必须拦掉原生菜单：iOS/Android 长按会弹出系统「拷贝/查询」气泡，
+    // 它既抢走长按手势，又和自绘选区打架，用户点了还拷不到内容。
     event.preventDefault();
+    if (window.matchMedia?.('(pointer: coarse)').matches) return;
     await this.pasteFromClipboard();
   };
   private themeCleanup: () => void;
@@ -223,22 +254,13 @@ export class SSHTerminal {
     this.selectionPointerActive = true;
     this.selectionAnchor = { clientX: event.clientX, clientY: event.clientY };
     if (this.mobileSelectionMode && event.pointerType !== 'mouse') {
-      const cell = this.getTerminalCell(event.clientX, event.clientY);
-      if (!cell) {
-        this.selectionPointerActive = false;
-        return;
-      }
       event.preventDefault();
-      this.mobileSelectionPointerId = event.pointerId;
-      this.mobileSelectionStart = cell;
-      try {
-        this.container.setPointerCapture?.(event.pointerId);
-      } catch {
-        /* synthetic events and older browsers may not support capture */
-      }
-      this.updateMobileSelection(cell);
+      this.beginMobileSelectionPointer(event.pointerId, event.clientX, event.clientY);
       return;
     }
+    // 触屏长按进入选区。滚动与选择共享同一次 pointerdown：这里只「布下」一个
+    // 计时器，一旦用户移动超容差就撤销计时器并把这次手势让给滚动。
+    this.armMobileLongPress(event);
     this.beginMobileScroll(event);
   };
   private readonly selectionPointerMoveListener = (event: PointerEvent): void => {
@@ -247,24 +269,42 @@ export class SSHTerminal {
     if (this.mobileSelectionPointerId === event.pointerId && this.mobileSelectionStart) {
       event.preventDefault();
       const cell = this.getTerminalCell(event.clientX, event.clientY);
-      if (cell) this.updateMobileSelection(cell);
+      if (cell) {
+        this.mobileSelectionLastCell = cell;
+        this.updateMobileSelection(cell);
+        this.updateSelectionEdgeAutoScroll(event.clientY);
+      }
+      this.updateSelectionActionsBar();
       return;
+    }
+    // 长按判定中一旦出现明显位移，说明用户想滚动而不是选词。
+    if (this.mobileLongPressOrigin?.pointerId === event.pointerId) {
+      const dx = Math.abs(event.clientX - this.mobileLongPressOrigin.x);
+      const dy = Math.abs(event.clientY - this.mobileLongPressOrigin.y);
+      if (dx > MOBILE_LONG_PRESS_TOLERANCE_PX || dy > MOBILE_LONG_PRESS_TOLERANCE_PX) {
+        this.cancelMobileLongPress();
+      }
     }
     if (this.updateMobileScroll(event)) return;
     if (this.terminal.hasSelection()) {
       this.notifySelectionChanged();
+      this.updateSelectionActionsBar();
     }
   };
   private readonly selectionPointerUpListener = (event: PointerEvent): void => {
     if (!this.selectionPointerActive) return;
+    // 抬手时仍未到时的长按 = 普通轻点，撤销判定（不能让它随后误触发选区）。
+    this.cancelMobileLongPress(event.pointerId);
     if (this.mobileSelectionPointerId === event.pointerId && this.mobileSelectionStart) {
       event.preventDefault();
       const cell = this.getTerminalCell(event.clientX, event.clientY);
       if (cell) this.updateMobileSelection(cell);
+      this.stopSelectionEdgeAutoScroll();
       this.finishMobileSelectionPointer();
       this.selectionPointerActive = false;
       this.selectionAnchor = { clientX: event.clientX, clientY: event.clientY };
       this.notifySelectionChanged();
+      this.updateSelectionActionsBar();
       return;
     }
     const handledMobileScroll = this.finishMobileScroll(event.pointerId);
@@ -281,7 +321,9 @@ export class SSHTerminal {
     }
   };
   private readonly selectionPointerCancelListener = (event: PointerEvent): void => {
+    this.cancelMobileLongPress(event.pointerId);
     if (this.mobileSelectionPointerId === event.pointerId) {
+      this.stopSelectionEdgeAutoScroll();
       this.finishMobileSelectionPointer();
     }
     this.finishMobileScroll(event.pointerId);
@@ -478,6 +520,8 @@ export class SSHTerminal {
     } else {
       this.finishMobileSelectionPointer();
       this.selectionPointerActive = false;
+      this.stopSelectionEdgeAutoScroll();
+      this.hideSelectionActionsBar();
     }
   }
 
@@ -554,6 +598,7 @@ export class SSHTerminal {
   clearSelection(): void {
     this.terminal.clearSelection();
     this.selectionAnchor = null;
+    this.hideSelectionActionsBar();
     this.notifySelectionChanged();
   }
 
@@ -595,6 +640,8 @@ export class SSHTerminal {
     const endOffset = end.row * columns + end.column;
     const firstOffset = Math.min(startOffset, endOffset);
     const lastOffset = Math.max(startOffset, endOffset);
+    // select() 的 length 本就是「buffer 线性长度」，与 getSelection() 重建文本的
+    // 方式一致（换行由 xterm 按 isWrapped 自行处理），因此不要改成逐行拼接。
     this.terminal.select(
       firstOffset % columns,
       Math.floor(firstOffset / columns),
@@ -609,6 +656,261 @@ export class SSHTerminal {
     }
     this.mobileSelectionPointerId = null;
     this.mobileSelectionStart = null;
+    this.mobileSelectionLastCell = null;
+  }
+
+  /** 在按下点建立选区锚点，并接管这次指针手势。 */
+  private beginMobileSelectionPointer(pointerId: number, clientX: number, clientY: number): void {
+    const cell = this.getTerminalCell(clientX, clientY);
+    if (!cell) {
+      this.selectionPointerActive = false;
+      return;
+    }
+    this.mobileSelectionPointerId = pointerId;
+    this.mobileSelectionStart = cell;
+    this.mobileSelectionLastCell = cell;
+    try {
+      this.container.setPointerCapture?.(pointerId);
+    } catch {
+      /* synthetic events and older browsers may not support capture */
+    }
+    this.updateMobileSelection(cell);
+  }
+
+  /** 触屏长按待判定：只有在终端网格内按下、且不是鼠标时才布下计时器。 */
+  private armMobileLongPress(event: PointerEvent): void {
+    if (event.pointerType === 'mouse') return;
+    if (this.mobileSelectionMode) return;
+    // 用坐标而非 event.target 判断「是否按在终端网格上」：
+    // 容器内的内边距、以及从容器冒泡上来的合成事件都会让 target 检查失效，
+    // 而 getTerminalCell 才是选区真正的生效范围。
+    if (!this.getTerminalCell(event.clientX, event.clientY)) return;
+    this.cancelMobileLongPress();
+    this.mobileLongPressOrigin = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    };
+    this.mobileLongPressTimer = setTimeout(() => {
+      this.mobileLongPressTimer = null;
+      const origin = this.mobileLongPressOrigin;
+      if (!origin || origin.pointerId !== event.pointerId) return;
+      if (!this.selectionPointerActive) {
+        this.mobileLongPressOrigin = null;
+        return;
+      }
+      // 滚动手势在长按判定期间已经激活：不要中途把它抢成选区。
+      if (this.mobileScrollGesture?.active) {
+        this.mobileLongPressOrigin = null;
+        return;
+      }
+      this.mobileLongPressOrigin = null;
+      this.finishMobileScroll();
+      this.setMobileSelectionMode(true);
+      // 触觉反馈：让「已进入选择」可感知，不必依赖底部按钮变色。
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* 部分浏览器在无用户激活时抛错 */
+      }
+      this.beginMobileSelectionPointer(origin.pointerId, origin.x, origin.y);
+    }, MOBILE_LONG_PRESS_MS);
+  }
+
+  private cancelMobileLongPress(pointerId?: number): void {
+    if (pointerId !== undefined && this.mobileLongPressOrigin?.pointerId !== pointerId) return;
+    if (this.mobileLongPressTimer !== null) {
+      clearTimeout(this.mobileLongPressTimer);
+      this.mobileLongPressTimer = null;
+    }
+    this.mobileLongPressOrigin = null;
+  }
+
+  /**
+   * 拖到屏幕上下边缘时持续滚动，使选区能延伸到可视区之外。
+   * 手指停在边缘时持续滚动、离开边缘即停：这是移动端文本选择的通用语义，
+   * 也是选择模式下仍能选到跨屏内容的前提。
+   */
+  private updateSelectionEdgeAutoScroll(clientY: number): void {
+    const screen = this.container.querySelector<HTMLElement>('.xterm-screen');
+    if (!screen) {
+      this.stopSelectionEdgeAutoScroll();
+      return;
+    }
+    const rect = screen.getBoundingClientRect();
+    const cellHeight = this.getTerminalCellHeight();
+    if (cellHeight <= 0 || rect.height <= 0) {
+      this.stopSelectionEdgeAutoScroll();
+      return;
+    }
+    // 边缘触发区为一个单元格高或 24px 中的较大者，避免过窄导致难以触发。
+    const edge = Math.max(cellHeight, 24);
+    let delta = 0;
+    if (clientY < rect.top + edge) delta = -1;
+    else if (clientY > rect.bottom - edge) delta = 1;
+
+    this.mobileSelectionEdgeDelta = delta;
+    if (delta === 0) {
+      this.stopSelectionEdgeAutoScroll();
+      return;
+    }
+    if (this.mobileSelectionEdgeScroller !== null) return;
+    this.mobileSelectionEdgeScroller = setInterval(() => {
+      if (this.mobileSelectionEdgeDelta === 0 || !this.mobileSelectionStart) return;
+      this.terminal.scrollLines(this.mobileSelectionEdgeDelta);
+      // 滚动后行号整体位移：按选区的 xterm 行号增量重算终点，
+      // 否则终点会停在旧行，选区永远不跟着长大。
+      if (this.mobileSelectionLastCell) {
+        const next: TerminalCell = {
+          column: this.mobileSelectionLastCell.column,
+          row: this.mobileSelectionLastCell.row + this.mobileSelectionEdgeDelta,
+        };
+        const maxRow = this.terminal.buffer.active.length - 1;
+        next.row = Math.min(Math.max(next.row, 0), Math.max(0, maxRow));
+        this.mobileSelectionLastCell = next;
+        this.updateMobileSelection(next);
+      }
+      this.updateSelectionActionsBar();
+    }, SELECTION_EDGE_SCROLL_INTERVAL_MS);
+  }
+
+  private stopSelectionEdgeAutoScroll(): void {
+    if (this.mobileSelectionEdgeScroller !== null) {
+      clearInterval(this.mobileSelectionEdgeScroller);
+      this.mobileSelectionEdgeScroller = null;
+    }
+    this.mobileSelectionEdgeDelta = 0;
+  }
+
+  /**
+   * 选区操作条：选中后就近浮出，提供「复制 / 全选 / 取消」。
+   * 这是解决「长按后无从下手」的关键——用户不需要去底栏找按钮，
+   * 也不需要记住「再点一次复制」这个隐含步骤。
+   */
+  private updateSelectionActionsBar(): void {
+    const bar = this.getSelectionActionsBar();
+    if (!bar) return;
+    // 仅触屏设备：桌面端鼠标松手即自动复制，再浮一条工具条是干扰。
+    if (!this.isMobileSelectionSurface()) {
+      bar.classList.add('hidden');
+      return;
+    }
+    const text = this.terminal.getSelection();
+    if (!text) {
+      bar.classList.add('hidden');
+      return;
+    }
+    bar.classList.remove('hidden');
+    selectionActionsOwner = this;
+
+    // 用选区的像素位置就近定位；两端夹在视口内，避开底部工具栏与软键盘。
+    const selectionPosition = this.terminal.getSelectionPosition();
+    const screen = this.container.querySelector<HTMLElement>('.xterm-screen');
+    const bounds = screen?.getBoundingClientRect();
+    if (!selectionPosition || !bounds) return;
+
+    const cellHeight = bounds.height / Math.max(1, this.terminal.rows);
+    const cellWidth = bounds.width / Math.max(1, this.terminal.cols);
+    const viewportPadding = 8;
+    // 操作条尺寸固定，只在首次测量后缓存：pointermove 里每次读 offsetWidth/Height
+    // 会强制同步重排，在手机上逐帧拖动时会造成明显抖动。
+    if (!this.selectionBarSize) {
+      this.selectionBarSize = {
+        width: bar.offsetWidth || 200,
+        height: bar.offsetHeight || 44,
+      };
+    }
+    const barWidth = this.selectionBarSize.width;
+    const barHeight = this.selectionBarSize.height;
+
+    // getSelectionPosition() 返回的是 buffer 绝对行号，需减去 viewportY 转为视口行，
+    // 否则一旦向上滚动过，工具条会跑到屏幕外。
+    const viewportY = this.terminal.buffer.active.viewportY;
+    const startViewportRow = Math.min(
+      Math.max(selectionPosition.start.y - viewportY, 0),
+      this.terminal.rows - 1
+    );
+    const endViewportRow = Math.min(
+      Math.max(selectionPosition.end.y - viewportY, 0),
+      this.terminal.rows - 1
+    );
+
+    const anchorLeft = bounds.left + selectionPosition.start.x * cellWidth;
+    const anchorTop = bounds.top + startViewportRow * cellHeight;
+    const anchorBottom = bounds.top + (endViewportRow + 1) * cellHeight;
+
+    // 优先放在选区上方；放不下则落到下方。
+    let top = anchorTop - barHeight - viewportPadding;
+    if (top < viewportPadding) top = anchorBottom + viewportPadding;
+
+    const maxTop = window.innerHeight - barHeight - viewportPadding;
+    if (top > maxTop) top = maxTop;
+    top = Math.max(viewportPadding, top);
+
+    let left = anchorLeft + cellWidth;
+    if (left + barWidth > window.innerWidth - viewportPadding) {
+      left = window.innerWidth - barWidth - viewportPadding;
+    }
+    left = Math.max(viewportPadding, left);
+
+    bar.style.left = `${Math.round(left)}px`;
+    bar.style.top = `${Math.round(top)}px`;
+  }
+
+  private hideSelectionActionsBar(): void {
+    if (selectionActionsOwner === this) selectionActionsOwner = null;
+    this.getSelectionActionsBar(false)?.classList.add('hidden');
+    this.selectionBarSize = null;
+    this.stopSelectionEdgeAutoScroll();
+  }
+
+  private isMobileSelectionSurface(): boolean {
+    return window.matchMedia?.(MOBILE_VIEWPORT_QUERY).matches ?? false;
+  }
+
+  private getSelectionActionsBar(create = true): HTMLElement | null {
+    if (this.selectionActionsBar?.isConnected) {
+      this.bindSelectionActionsListeners();
+      return this.selectionActionsBar;
+    }
+    if (!create) return null;
+    const existing = document.getElementById('terminal-selection-actions');
+    if (!existing) return null;
+    this.selectionActionsBar = existing;
+    this.bindSelectionActionsListeners();
+    return existing;
+  }
+
+  private bindSelectionActionsListeners(): void {
+    if (selectionActionsListenersBound) return;
+    selectionActionsListenersBound = true;
+    document.getElementById('terminal-selection-copy-btn')?.addEventListener('click', () => {
+      void selectionActionsOwner?.handleSelectionCopyClick();
+    });
+    document.getElementById('terminal-selection-all-btn')?.addEventListener('click', () => {
+      selectionActionsOwner?.handleSelectionAllClick();
+    });
+    document.getElementById('terminal-selection-cancel-btn')?.addEventListener('click', () => {
+      selectionActionsOwner?.handleSelectionCancelClick();
+    });
+  }
+
+  private async handleSelectionCopyClick(): Promise<void> {
+    const copied = await this.copyCurrentSelection();
+    if (!copied) return;
+    this.setMobileSelectionMode(false);
+    this.clearSelection();
+  }
+
+  private handleSelectionAllClick(): void {
+    this.terminal.selectAll();
+    this.notifySelectionChanged();
+    this.updateSelectionActionsBar();
+  }
+
+  private handleSelectionCancelClick(): void {
+    this.setMobileSelectionMode(false);
+    this.clearSelection();
   }
 
   private getMobileScrollMode(): MobileScrollGesture['mode'] | null {
@@ -1924,6 +2226,9 @@ export class SSHTerminal {
       true
     );
     this.clearIMEPendingInput();
+    this.cancelMobileLongPress();
+    this.stopSelectionEdgeAutoScroll();
+    this.hideSelectionActionsBar();
     if (this.viewportRestoreFrame !== null) cancelAnimationFrame(this.viewportRestoreFrame);
     this.viewportRestoreFrame = null;
     this.imeTextarea = null;
