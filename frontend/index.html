@@ -554,6 +554,38 @@
             title="CloudSSH"
           ></iframe>
         </section>
+
+        <!-- 凭据管理页。与内嵌 iframe 页不同，它直接渲染在主内容区里
+             （而不是 iframe），这样左侧导航栏保持可见可点，切换回来也不丢状态。 -->
+        <section
+          id="credentials-page-section"
+          class="credentials-page-section hidden flex-1 flex-col min-h-0"
+        >
+          <header
+            class="flex items-center justify-between px-5 h-14 border-b border-outline-variant shrink-0"
+          >
+            <h2
+              class="text-base font-semibold text-on-surface"
+              data-i18n="credential.title"
+            >
+              凭据管理
+            </h2>
+            <button
+              id="credentials-page-close"
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-outline-variant text-on-surface-variant hover:text-on-surface hover:border-on-surface-variant bg-transparent cursor-pointer"
+              data-i18n-title="nav.backToPanel"
+              title="返回面板"
+            >
+              <span class="material-symbols-outlined" style="font-size: 16px">arrow_back</span>
+              <span data-i18n="nav.backToPanel">返回面板</span>
+            </button>
+          </header>
+          <div
+            id="credentials-page-body"
+            class="credentials-page-body flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+          ></div>
+        </section>
           </div>
         </div>
       </div>

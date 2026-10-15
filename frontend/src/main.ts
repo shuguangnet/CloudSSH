@@ -1,5 +1,5 @@
 import { AIConfigPanel } from './ai-config';
-import { credentialLibrary } from './credentials-panel';
+import { credentialLibrary, CREDENTIALS_PAGE_SECTION_ID } from './credentials-panel';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
 import { initI18n, onLocaleChange, t, type TranslationKey } from './i18n';
@@ -347,6 +347,10 @@ function showUserSpace(user: {
 /** 显示连接页面（匿名 → auth-form，登录 → 服务器列表） */
 function showConnectionPage(): void {
   closeAllDrawers();
+  // 凭据页是主内容区视图之一，回主入口时必须一起收起（并清掉内存里的明文）。
+  credentialLibrary.hide();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
 
   // 如果还有活跃标签，不需要隐藏终端区域；只需要覆盖显示连接页面
   // 但为了简单起见，我们先切回对应的入口页面
@@ -647,7 +651,24 @@ document.getElementById('ai-config-btn')?.addEventListener('click', () => {
 });
 
 document.getElementById('credentials-btn')?.addEventListener('click', () => {
+  // 凭据页与内嵌 iframe 页互斥：先收起对方的视图再打开自己。
   void credentialLibrary.show();
+  showMainView('credentials');
+  sidebarSetCurrent('credentials-btn');
+});
+
+// 凭据页内的「返回面板」按钮：收起页面并把高亮交还给服务器列表。
+document.getElementById('credentials-page-close')?.addEventListener('click', () => {
+  credentialLibrary.hide();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
+});
+// 「服务器列表」也要能从凭据页或内嵌页切回来。
+document.getElementById('sidebar-servers')?.addEventListener('click', () => {
+  credentialLibrary.hide();
+  closeEmbeddedPage();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
 });
 
 document.getElementById('mobile-shortcuts-config-btn')?.addEventListener('click', () => {
@@ -1026,8 +1047,16 @@ const EMBED_PAGES: Record<string, { titleKey: TranslationKey; frameTitle: string
   '/account/settings': { titleKey: 'auth.adminAccountSettings', frameTitle: 'CloudSSH Account' },
 };
 
+const SIDEBAR_ITEM_IDS = [
+  'sidebar-servers',
+  'credentials-btn',
+  'menu-automation',
+  'menu-mcp',
+  'menu-account',
+];
+
 function sidebarSetCurrent(itemId: string | null): void {
-  for (const id of ['sidebar-servers', 'menu-automation', 'menu-mcp', 'menu-account']) {
+  for (const id of SIDEBAR_ITEM_IDS) {
     const el = document.getElementById(id);
     if (!el) continue;
     const active = id === itemId;
@@ -1037,22 +1066,40 @@ function sidebarSetCurrent(itemId: string | null): void {
   }
 }
 
+/**
+ * 主内容区内的三个互斥视图：服务器列表 / 内嵌 iframe 页 / 凭据页。
+ * 统一在这里切换，避免各处各自 toggle 导致两个视图同时可见。
+ */
+type MainView = 'servers' | 'embedded' | 'credentials';
+
+function showMainView(view: MainView): void {
+  const main = document.querySelector('.user-space-main');
+  const embedded = document.getElementById('embedded-page-section');
+  const credentials = document.getElementById(CREDENTIALS_PAGE_SECTION_ID);
+
+  main?.classList.toggle('hidden', view !== 'servers');
+  embedded?.classList.toggle('hidden', view !== 'embedded');
+  embedded?.classList.toggle('flex', view === 'embedded');
+  credentials?.classList.toggle('hidden', view !== 'credentials');
+  credentials?.classList.toggle('flex', view === 'credentials');
+}
+
 function openEmbeddedPage(url: string): void {
   const entry = EMBED_PAGES[url];
   if (!entry) return;
-  const section = document.getElementById('embedded-page-section');
   const frame = document.getElementById('embedded-page-frame') as HTMLIFrameElement | null;
   const title = document.getElementById('embedded-page-title');
-  if (!section || !frame || !title) return;
+  if (!frame || !title) return;
   title.textContent = t(entry.titleKey);
   frame.title = entry.frameTitle;
   if (frame.dataset.src !== url) {
     frame.dataset.src = url;
     frame.src = url;
   }
-  document.querySelector('.user-space-main')?.classList.add('hidden');
-  section.classList.remove('hidden');
-  section.classList.add('flex');
+  // 先收干净凭据页（明文不能留在后台 DOM 里），再切到内嵌页——
+  // hide() 只清自身状态，视图互斥由 showMainView() 负责。
+  credentialLibrary.hide();
+  showMainView('embedded');
   sidebarSetCurrent(
     url === '/automation' ? 'menu-automation' : url === '/mcp/settings' ? 'menu-mcp' : 'menu-account'
   );
@@ -1061,9 +1108,7 @@ function openEmbeddedPage(url: string): void {
 function closeEmbeddedPage(): void {
   const section = document.getElementById('embedded-page-section');
   if (!section || section.classList.contains('hidden')) return;
-  section.classList.add('hidden');
-  section.classList.remove('flex');
-  document.querySelector('.user-space-main')?.classList.remove('hidden');
+  showMainView('servers');
   sidebarSetCurrent('sidebar-servers');
 }
 

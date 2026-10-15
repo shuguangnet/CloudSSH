@@ -959,6 +959,29 @@ async function handleCredentialsRoute(request: Request, url: URL, env: Env): Pro
     );
   }
 
+  // 按需回显明文。POST 属于敏感动作，除会话鉴权外还要求同源 Origin，
+  // 避免被跨站页面触发（与 /api/ai/config 等变更接口同口径）。
+  const revealMatch = url.pathname.match(/^\/api\/credentials\/(\d+)\/reveal$/);
+  if (revealMatch && request.method === 'POST') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    return stub.fetch(
+      new Request(`http://internal/internal/credentials/${revealMatch[1]}/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id }),
+      })
+    );
+  }
+
   const credentialMatch = url.pathname.match(/^\/api\/credentials\/(\d+)$/);
   if (credentialMatch) {
     const credentialId = credentialMatch[1];

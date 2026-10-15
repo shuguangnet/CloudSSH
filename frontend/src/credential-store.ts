@@ -5,7 +5,8 @@
  * - **仅登录用户可用**：凭据必须由服务端 AES-256-GCM 加密保存。这里刻意不提供
  *   localStorage 降级——把私钥明文写进浏览器存储会悄悄降低安全等级，而用户
  *   只会看到“能用”，不会意识到差别。匿名用户由 UI 引导使用服务器内嵌凭据。
- * - 列表只含元数据，**服务端从不回传 secret**；本模块也没有任何读取明文的入口。
+ * - 列表只含元数据，**服务端从不回传 secret**；明文只能经 `reveal()` 显式
+ *   按需取回，服务端会为每次调用留痕。
  * - `usageCount` 由服务端统计，用于删除保护提示与“复用 N 台”展示。
  */
 
@@ -37,6 +38,7 @@ export type CredentialErrorCode =
   | 'notFound'
   | 'inUse'
   | 'kindConflict'
+  | 'revealFailed'
   | 'network';
 
 export class CredentialStoreError extends Error {
@@ -98,6 +100,8 @@ async function toStoreError(response: Response): Promise<CredentialStoreError> {
     return new CredentialStoreError(raw);
   }
   if (raw === 'limitReached') return new CredentialStoreError('limitReached');
+  // 密文解不开（例如加密密钥轮换后遗留的旧记录）不是网络问题，单独报。
+  if (raw === 'decryptFailed') return new CredentialStoreError('revealFailed');
   // 服务端对「类型与在用服务器冲突」也走 409，但文案不同；
   // 此处按状态码已归入 inUse，detail 保留原始可读信息。
   return new CredentialStoreError('network');
@@ -125,6 +129,8 @@ export function credentialErrorMessage(error: unknown): string {
         return t('credential.error.limitReached', { max: CREDENTIAL_MAX_COUNT });
       case 'notFound':
         return t('credential.error.notFound');
+      case 'revealFailed':
+        return t('credential.revealFailed');
       case 'network':
         return t('credential.error.network');
       default:
@@ -139,6 +145,8 @@ export interface CredentialStore {
   create(input: CredentialInput): Promise<StoredCredential>;
   update(id: number, input: CredentialInput): Promise<StoredCredential>;
   remove(id: number): Promise<void>;
+  /** 按需取回明文。服务端会为每次调用留下审计记录。 */
+  reveal(id: number): Promise<string>;
 }
 
 export interface CredentialInput {
@@ -209,6 +217,24 @@ export class RemoteCredentialStore implements CredentialStore {
       method: 'DELETE',
     });
     if (!response.ok) throw await toStoreError(response);
+  }
+
+  /**
+   * 按需取回明文。
+   *
+   * 刻意不是列表的一部分：列表接口永远不带 secret，只有用户明确点「显示」时
+   * 才走这个独立请求，服务端也会相应留痕。
+   *
+   * 明文只经返回值交给调用方，不写缓存、不落 localStorage。
+   */
+  async reveal(id: number): Promise<string> {
+    const response = await fetch(`/api/credentials/${encodeURIComponent(String(id))}/reveal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw await toStoreError(response);
+    const payload = (await response.json()) as { secret?: unknown };
+    return typeof payload.secret === 'string' ? payload.secret : '';
   }
 }
 

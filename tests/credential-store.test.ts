@@ -181,4 +181,29 @@ describe('RemoteCredentialStore', () => {
     stubFetch(() => json({ error: 'oops' }));
     await expect(new RemoteCredentialStore().list()).resolves.toEqual([]);
   });
+
+  it('reveal 必须走 POST 独立端点，不从列表读取明文', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    stubFetch((input, init) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET' });
+      return json({ id: 3, kind: 'publickey', secret: 'PRIVATE-KEY-BODY' });
+    });
+
+    await expect(new RemoteCredentialStore().reveal(3)).resolves.toBe('PRIVATE-KEY-BODY');
+    expect(calls).toEqual([{ url: '/api/credentials/3/reveal', method: 'POST' }]);
+  });
+
+  it('reveal 的解密失败映射为 revealFailed，而不是网络错误', async () => {
+    stubFetch(() => json({ error: 'decryptFailed' }, 500));
+    await expect(new RemoteCredentialStore().reveal(1)).rejects.toMatchObject({
+      code: 'revealFailed',
+    });
+    expect(credentialErrorMessage(new CredentialStoreError('revealFailed'))).toContain('取回');
+  });
+
+  it('reveal 响应缺少 secret 字段时返回空串而非 undefined', async () => {
+    // 服务端若因故没带上 secret，界面应表现为「没取到」而不是渲染出 "undefined"。
+    stubFetch(() => json({ id: 1, kind: 'password' }));
+    await expect(new RemoteCredentialStore().reveal(1)).resolves.toBe('');
+  });
 });

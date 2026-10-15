@@ -24,7 +24,11 @@ class FakeSql {
   encryptionSecret = 'test-encryption-secret-1234567890';
   credentials: Array<Record<string, unknown>> = [];
   serverRows: Array<Record<string, unknown>> = [];
+  /** 回显留痕（只记元数据，明文永不入表）。 */
+  revealLog: Array<{ user_id: number; credential_id: number; revealed_at: number }> = [];
   private nextCredentialId = 1;
+  private nextRevealId = 1;
+  revealIds = new Map<number, number>();
 
   exec(query: string, ...values: unknown[]): { toArray: () => unknown[] } {
     this.statements.push({ query, values });
@@ -113,6 +117,28 @@ class FakeSql {
     if (query.startsWith('DELETE FROM credentials')) {
       this.credentials = this.credentials.filter(
         (c) => !(c.id === values[1] && c.user_id === values[0])
+      );
+      return { toArray: () => [] };
+    }
+
+    // --- 回显留痕 ---
+    if (query.startsWith('INSERT INTO credential_reveals')) {
+      const entry = {
+        user_id: values[0] as number,
+        credential_id: values[1] as number,
+        revealed_at: values[2] as number,
+      };
+      this.revealLog.push(entry);
+      this.revealIds.set(this.revealLog.length, this.nextRevealId++);
+      return { toArray: () => [] };
+    }
+    if (query.includes('DELETE FROM credential_reveals')) {
+      // 裁剪：只保留该用户最近 CREDENTIAL_REVEAL_LOG_LIMIT 条。
+      const [userId, , limit] = values as [number, number, number];
+      const mine = this.revealLog.filter((entry) => entry.user_id === userId);
+      const keep = new Set(mine.slice(-limit));
+      this.revealLog = this.revealLog.filter(
+        (entry) => entry.user_id !== userId || keep.has(entry)
       );
       return { toArray: () => [] };
     }
@@ -586,5 +612,152 @@ describe('UserDB 可复用凭据库', () => {
     expect(response.status).toBe(200);
     const { token } = (await response.json()) as { token: string };
     expect(connectConfigFor(userDB, token).password).toBe(legacySecret);
+  });
+
+  it('回显接口按需返回明文，并写入一条留痕', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+    const plaintext = 'super-secret-password';
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '数据库密码',
+        kind: 'password',
+        secret: plaintext,
+      })
+    );
+    // 回显之前不应有任何留痕。
+    expect(sql.revealLog).toHaveLength(0);
+
+    const response = await userDB.fetch(
+      post('http://internal/internal/credentials/1/reveal', { user_id: 7 })
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload).toMatchObject({ id: 1, kind: 'password', secret: plaintext });
+    expect(sql.revealLog).toEqual([
+      { user_id: 7, credential_id: 1, revealed_at: expect.any(Number) },
+    ]);
+  });
+
+  it('回显留痕只记元数据，绝不写入明文', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+    const plaintext = 'trace-me-if-you-can';
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '密码',
+        kind: 'password',
+        secret: plaintext,
+      })
+    );
+    await userDB.fetch(post('http://internal/internal/credentials/1/reveal', { user_id: 7 }));
+
+    // 留痕表只应有三个元数据列，且序列化后不得包含明文。
+    expect(JSON.stringify(sql.revealLog)).not.toContain(plaintext);
+    for (const entry of sql.revealLog) {
+      expect(Object.keys(entry).sort()).toEqual(['credential_id', 'revealed_at', 'user_id']);
+    }
+  });
+
+  it('回显他人的凭据返回 404 且不留痕', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '别人的密码',
+        kind: 'password',
+        secret: 'not-yours',
+      })
+    );
+
+    const response = await userDB.fetch(
+      post('http://internal/internal/credentials/1/reveal', { user_id: 8 })
+    );
+    expect(response.status).toBe(404);
+    expect(sql.revealLog).toHaveLength(0);
+  });
+
+  it('回显不存在的凭据返回 404', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+
+    const response = await userDB.fetch(
+      post('http://internal/internal/credentials/999/reveal', { user_id: 7 })
+    );
+    expect(response.status).toBe(404);
+    expect(sql.revealLog).toHaveLength(0);
+  });
+
+  it('解密失败时返回 decryptFailed，不把密文当明文回显', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '坏记录',
+        kind: 'password',
+        secret: 'valid-at-write-time',
+      })
+    );
+    // 模拟记录损坏/换密钥：直接在库里放一段解不开的密文。
+    sql.credentials[0].secret = 'not-a-valid-ciphertext';
+
+    const response = await userDB.fetch(
+      post('http://internal/internal/credentials/1/reveal', { user_id: 7 })
+    );
+    expect(response.status).toBe(500);
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload.error).toBe('decryptFailed');
+    // 解密失败连密文也不能回传，且不应留痕（没真的看到明文）。
+    expect(JSON.stringify(payload)).not.toContain('not-a-valid-ciphertext');
+    expect(sql.revealLog).toHaveLength(0);
+  });
+
+  it('回显留痕按用户裁剪，不会无限增长', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '密码',
+        kind: 'password',
+        secret: 'value',
+      })
+    );
+
+    // 超过上限后老的留痕应被裁掉。
+    for (let i = 0; i < 205; i++) {
+      await userDB.fetch(post('http://internal/internal/credentials/1/reveal', { user_id: 7 }));
+    }
+    expect(sql.revealLog.length).toBeLessThanOrEqual(200);
+  });
+
+  it('回显拒绝非 POST（列路径的 PUT 不应触发明文返回）', async () => {
+    const sql = new FakeSql();
+    const userDB = createUserDB(sql);
+
+    await userDB.fetch(
+      post('http://internal/internal/credentials', {
+        user_id: 7,
+        name: '密码',
+        kind: 'password',
+        secret: 'value',
+      })
+    );
+
+    const response = await userDB.fetch(
+      put('http://internal/internal/credentials/1/reveal', { user_id: 7 })
+    );
+    // 落在 /:id matcher 之外，最终是 404；关键是绝不能回显。
+    expect(response.status).toBe(404);
+    expect(sql.revealLog).toHaveLength(0);
   });
 });

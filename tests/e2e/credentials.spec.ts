@@ -2,8 +2,11 @@ import { expect, test } from '@playwright/test';
 
 /**
  * 凭据管理 e2e：
- * - 侧边栏入口打开面板，列表只显示元数据（绝不回显密钥）；
- * - 新建/编辑/删除走通 → 请求体形状正确，编辑时留空密钥不发 secret；
+ * - 侧边栏入口把凭据页作为**主内容区内的独立视图**打开（不是弹窗），
+ *   左侧导航保持可见且高亮当前项；
+ * - 默认只展示列表，表单折叠在「新建凭据」/「编辑」之后；
+ * - 列表只显示元数据；明文必须经显式 `POST /reveal` 取回，取回后可复制；
+ * - 新建/编辑/删除走通 → 请求体形状正确，未回显时编辑不发 secret；
  * - 被引用的凭据删除时 409 文案透传到界面。
  *
  * 全程 mock /api/credentials，不依赖真实 DO。
@@ -39,9 +42,21 @@ function row(overrides: Partial<MockCredential> = {}): MockCredential {
 /** 装好登录态 + 凭据接口 mock，并记录所有写请求。 */
 async function setupLoggedIn(
   page: import('@playwright/test').Page,
-  options: { rows?: MockCredential[]; deleteStatus?: number; deleteError?: string } = {}
-): Promise<{ requests: { method: string; url: string; body: unknown }[] }> {
+  options: {
+    rows?: MockCredential[];
+    deleteStatus?: number;
+    deleteError?: string;
+    revealSecret?: string;
+    revealStatus?: number;
+    /** 打开自托管能力开关，用于验证与内嵌 iframe 页的视图互斥。 */
+    capabilities?: boolean;
+  } = {}
+): Promise<{
+  requests: { method: string; url: string; body: unknown }[];
+  revealRequests: string[];
+}> {
   const requests: { method: string; url: string; body: unknown }[] = [];
+  const revealRequests: string[] = [];
   let rows = [...(options.rows ?? [row()])];
 
   await page.route('**/api/auth/me', (route) =>
@@ -57,9 +72,9 @@ async function setupLoggedIn(
       contentType: 'application/json',
       body: JSON.stringify({
         sshSharingEnabled: false,
-        mcpEnabled: false,
+        mcpEnabled: Boolean(options.capabilities),
         adminAccountEnabled: false,
-        automationEnabled: false,
+        automationEnabled: Boolean(options.capabilities),
       }),
     })
   );
@@ -87,6 +102,23 @@ async function setupLoggedIn(
     const request = route.request();
     const method = request.method();
     const url = request.url();
+    // 回显是独立端点，必须与 CRUD mock 分开处理——否则「按需回显」
+    // 会被误当成一次创建请求，测试就失去意义了。
+    if (url.endsWith('/reveal') && method === 'POST') {
+      revealRequests.push(url);
+      if (options.revealStatus && options.revealStatus !== 200) {
+        return route.fulfill({
+          status: options.revealStatus,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'decryptFailed' }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 1, kind: 'publickey', secret: options.revealSecret ?? SECRET_MARKER }),
+      });
+    }
     if (method === 'GET') {
       return route.fulfill({
         status: 200,
@@ -122,18 +154,26 @@ async function setupLoggedIn(
 
   await page.goto('/?lang=zh-CN');
   await expect(page.locator('#user-space-section')).toBeVisible();
-  return { requests };
+  return { requests, revealRequests };
 }
 
+/** 从侧边栏进入凭据页，并断言它确实是一个独立页面视图。 */
 async function openPanel(page: import('@playwright/test').Page): Promise<void> {
   await page.locator('#credentials-btn').click();
-  await expect(page.locator('#credentials-modal')).toBeVisible();
+  await expect(page.locator('#credentials-page-section')).toBeVisible();
 }
 
-test.describe('凭据管理面板', () => {
-  test('侧边栏入口打开面板并列出凭据元数据，不回显密钥', async ({ page }) => {
+test.describe('凭据管理页', () => {
+  test('侧边栏入口打开独立页面并列出凭据元数据，不回显密钥', async ({ page }) => {
     await setupLoggedIn(page);
     await openPanel(page);
+
+    // 不是弹窗：主内容区里渲染，左侧导航仍然可见。
+    await expect(page.locator('#credentials-page-section')).toBeVisible();
+    await expect(page.locator('#app-sidebar')).toBeVisible();
+    await expect(page.locator('#credentials-btn')).toHaveAttribute('aria-current', 'page');
+    // 服务器列表要让位，避免两个视图叠在一起。
+    await expect(page.locator('.user-space-main')).toBeHidden();
 
     const list = page.locator('#credential-list');
     await expect(list).toContainText('生产密钥');
@@ -141,14 +181,29 @@ test.describe('凭据管理面板', () => {
     // 「复用 2 台」徽标
     await expect(list).toContainText('复用 2 台');
     // 密钥正文绝不能出现在 DOM 中
-    await expect(page.locator('#credentials-modal')).not.toContainText(SECRET_MARKER);
-    // 编辑态之前密钥输入框为空
-    await expect(page.locator('#credential-secret')).toHaveValue('');
+    await expect(page.locator('#credentials-page-section')).not.toContainText(SECRET_MARKER);
+    // 默认不展开表单：一进页面只有列表。
+    await expect(page.locator('#credential-form')).toBeHidden();
+  });
+
+  test('「返回面板」回到服务器列表并复位导航高亮', async ({ page }) => {
+    await setupLoggedIn(page);
+    await openPanel(page);
+
+    await page.click('#credentials-page-close');
+    await expect(page.locator('#credentials-page-section')).toBeHidden();
+    await expect(page.locator('#credentials-btn')).not.toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#sidebar-servers')).toHaveAttribute('aria-current', 'page');
   });
 
   test('新建凭据提交规范化后的请求体', async ({ page }) => {
     const { requests } = await setupLoggedIn(page);
     await openPanel(page);
+
+    // 表单默认收起，必须点「新建凭据」才展开。
+    await expect(page.locator('#credential-form')).toBeHidden();
+    await page.click('#credential-new-btn');
+    await expect(page.locator('#credential-form')).toBeVisible();
 
     await page.fill('#credential-name', '  新凭据  ');
     await page.selectOption('#credential-kind', 'publickey');
@@ -167,14 +222,14 @@ test.describe('凭据管理面板', () => {
   });
 
   test('编辑时密钥框留空 → 请求体不含 secret，避免覆盖原密钥', async ({ page }) => {
-    const { requests } = await setupLoggedIn(page);
+    const { requests, revealRequests } = await setupLoggedIn(page);
     await openPanel(page);
 
     await page.locator('#credential-list button[aria-label="编辑"]').first().click();
-    // 密钥不回显，输入框为空且不再必填
+    // 编辑不自动回显：输入框为空，必须用户显式点「显示」。
     await expect(page.locator('#credential-secret')).toHaveValue('');
-    await expect(page.locator('#credential-secret')).not.toHaveAttribute('required', '');
-    await expect(page.locator('#credential-secret-hint')).toContainText('留空表示不修改');
+    await expect(page.locator('#credential-secret-hint')).toContainText('点「显示」按需取回');
+    expect(revealRequests).toHaveLength(0);
 
     await page.fill('#credential-name', '改名后');
     await page.click('#credential-save-btn');
@@ -185,9 +240,98 @@ test.describe('凭据管理面板', () => {
     expect((requests[0].body as { name: string }).name).toBe('改名后');
   });
 
+  test('点「显示」才按需取回明文，可复制；再次点击收起', async ({ page }) => {
+    const { revealRequests } = await setupLoggedIn(page, { revealSecret: SECRET_MARKER });
+    await openPanel(page);
+
+    await page.locator('#credential-list button[aria-label="编辑"]').first().click();
+    // 编辑态下才有回显入口。
+    await expect(page.locator('#credential-reveal-btn')).toBeVisible();
+    await expect(page.locator('#credential-copy-btn')).toBeHidden();
+
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-secret')).toHaveValue(SECRET_MARKER);
+    // 必须走 POST /reveal 端点，而不是从列表里读。
+    expect(revealRequests).toHaveLength(1);
+    expect(revealRequests[0]).toContain('/reveal');
+    await expect(page.locator('#credential-copy-btn')).toBeVisible();
+    await expect(page.locator('#credential-reveal-btn')).toHaveText('隐藏');
+
+    // 复制按钮把明文写进剪贴板。
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.click('#credential-copy-btn');
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clipboard).toBe(SECRET_MARKER);
+
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-secret')).toHaveValue('');
+  });
+
+  test('回显后收起表单会清掉明文，不留痕在 DOM 里', async ({ page }) => {
+    await setupLoggedIn(page, { revealSecret: SECRET_MARKER });
+    await openPanel(page);
+
+    await page.locator('#credential-list button[aria-label="编辑"]').first().click();
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-secret')).toHaveValue(SECRET_MARKER);
+
+    await page.click('#credential-cancel-btn');
+    await expect(page.locator('#credential-form')).toBeHidden();
+    await expect(page.locator('#credentials-page-section')).not.toContainText(SECRET_MARKER);
+  });
+
+  test('取回明文失败时给出提示，不把错误当成空值', async ({ page }) => {
+    await setupLoggedIn(page, { revealStatus: 500 });
+    await openPanel(page);
+
+    await page.locator('#credential-list button[aria-label="编辑"]').first().click();
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-form-error')).toContainText('取回凭据内容失败');
+    await expect(page.locator('#credential-secret')).toHaveValue('');
+  });
+
+  test('新建表单不提供回显入口（内容本来就是用户输入的）', async ({ page }) => {
+    await setupLoggedIn(page);
+    await openPanel(page);
+    await page.click('#credential-new-btn');
+    await expect(page.locator('#credential-reveal-btn')).toBeHidden();
+  });
+
+  test('回显后用户自己改过内容，自动清除不会抹掉他的编辑', async ({ page }) => {
+    await setupLoggedIn(page, { revealSecret: SECRET_MARKER });
+    await openPanel(page);
+
+    await page.locator('#credential-list button[aria-label="编辑"]').first().click();
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-secret')).toHaveValue(SECRET_MARKER);
+
+    // 用户在回显内容上接着编辑：此时它已不再是「服务端那份明文」。
+    await page.fill('#credential-secret', 'EDITED-BY-USER');
+    // 一旦改动，按钮就不再自称「隐藏」（等价于不再处于回显态）。
+    await expect(page.locator('#credential-reveal-btn')).toHaveText('显示');
+
+    // 提交时发的是用户改后的内容。
+    await page.click('#credential-save-btn');
+    await expect(page.locator('#credential-form')).toBeHidden();
+  });
+
+  test('新建时输入密钥后出现复制按钮（仅依据内容，不依赖回显）', async ({ page }) => {
+    await setupLoggedIn(page);
+    await openPanel(page);
+    await page.click('#credential-new-btn');
+
+    // 新建态没有回显入口，但自己输入内容后应能一键复制。
+    await expect(page.locator('#credential-reveal-btn')).toBeHidden();
+    await expect(page.locator('#credential-copy-btn')).toBeHidden();
+    await page.fill('#credential-secret', 'TYPED-BY-USER');
+    await expect(page.locator('#credential-copy-btn')).toBeVisible();
+    await expect(page.locator('#credential-reveal-btn')).toBeHidden();
+  });
+
   test('类型切换会同步密钥字段标签', async ({ page }) => {
     await setupLoggedIn(page);
     await openPanel(page);
+    await page.click('#credential-new-btn');
 
     await page.selectOption('#credential-kind', 'password');
     await expect(page.locator('#credential-secret-label')).toHaveText('密码');
@@ -227,6 +371,76 @@ test.describe('凭据管理面板', () => {
     await setupLoggedIn(page, { rows: [] });
     await openPanel(page);
     await expect(page.locator('#credential-list')).toContainText('暂无凭据');
+  });
+});
+
+test.describe('凭据页与其它视图的互斥', () => {
+  test('在凭据页与内嵌 iframe 页之间往返，任何时刻只有一个视图可见', async ({ page }) => {
+    await setupLoggedIn(page, { capabilities: true });
+    await openPanel(page);
+
+    // 切到内嵌 iframe 页：凭据页必须整体收起，否则两个视图会叠在一起。
+    await page.click('#menu-automation');
+    await expect(page.locator('#embedded-page-section')).toBeVisible();
+    await expect(page.locator('#credentials-page-section')).toBeHidden();
+    await expect(page.locator('#menu-automation')).toHaveAttribute('aria-current', 'page');
+
+    // 切回凭据页：内嵌页必须收起。
+    await page.click('#credentials-btn');
+    await expect(page.locator('#credentials-page-section')).toBeVisible();
+    await expect(page.locator('#embedded-page-section')).toBeHidden();
+    await expect(page.locator('#credentials-btn')).toHaveAttribute('aria-current', 'page');
+
+    // 再点「服务器列表」：两个页面视图都应收起，服务器列表回归。
+    await page.click('#sidebar-servers');
+    await expect(page.locator('#credentials-page-section')).toBeHidden();
+    await expect(page.locator('#embedded-page-section')).toBeHidden();
+    // mock 下没有服务器，列表区展示空态；关键是主内容区本身回来了。
+    await expect(page.locator('.user-space-main')).toBeVisible();
+    await expect(page.locator('#sidebar-servers')).toHaveAttribute('aria-current', 'page');
+  });
+
+  test('窄屏下凭据页仍可进入，且表单不会横向溢出', async ({ page }) => {
+    // 移动端侧边栏是 header 下方的横向滚动条带，凭据页必须能在这种布局下
+    // 正常进入并完整渲染（新增页面视图最容易在这里被漏掉）。
+    await page.setViewportSize({ width: 390, height: 780 });
+    await setupLoggedIn(page);
+    await openPanel(page);
+
+    await expect(page.locator('#credentials-page-section')).toBeVisible();
+    await expect(page.locator('#credential-list')).toContainText('生产密钥');
+
+    await page.click('#credential-new-btn');
+    await expect(page.locator('#credential-form')).toBeVisible();
+
+    // 表单与页面都不应产生横向滚动。
+    const overflowX = await page.evaluate(() => ({
+      page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      form: (() => {
+        const el = document.getElementById('credential-form');
+        return el ? el.scrollWidth - el.clientWidth : 0;
+      })(),
+    }));
+    expect(overflowX.page).toBeLessThanOrEqual(1);
+    expect(overflowX.form).toBeLessThanOrEqual(1);
+
+    // 窄屏下「返回面板」仍可回到服务器列表。
+    await page.click('#credentials-page-close');
+    await expect(page.locator('#credentials-page-section')).toBeHidden();
+    await expect(page.locator('.user-space-main')).toBeVisible();
+  });
+
+  test('从凭据页切走后明文不再留在 DOM 中', async ({ page }) => {
+    await setupLoggedIn(page, { capabilities: true, revealSecret: SECRET_MARKER });
+    await openPanel(page);
+
+    await page.locator('#credential-list button[aria-label="编辑"]').first().click();
+    await page.click('#credential-reveal-btn');
+    await expect(page.locator('#credential-secret')).toHaveValue(SECRET_MARKER);
+
+    await page.click('#menu-automation');
+    await expect(page.locator('#credentials-page-section')).not.toContainText(SECRET_MARKER);
+    await expect(page.locator('#credential-secret')).toHaveValue('');
   });
 });
 

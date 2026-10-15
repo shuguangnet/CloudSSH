@@ -21,6 +21,9 @@ import { isValidTunnelHostname } from './tunnel-stream';
 const AUTH_METHODS = new Set(['password', 'publickey']);
 const MAX_JUMP_HOSTS = 3;
 
+// 每个用户保留的凭据回显留痕条数（超出即裁剪最旧的）
+const CREDENTIAL_REVEAL_LOG_LIMIT = 200;
+
 // 单管理员密码登录节流（DO 持久化，跨 isolate 权威；指数退避封顶 15 分钟）
 const LOGIN_LOCKOUT_THRESHOLD = 5;
 const LOGIN_LOCKOUT_BASE_SEC = 60;
@@ -268,6 +271,19 @@ export class UserDBDO {
       );
 
       CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id);
+
+      -- 密钥明文回显留痕。凭据默认只写不读，回显必须按需请求并留下记录，
+      -- 以便事后审计「哪条凭据在什么时候被取出过明文」。
+      -- 只记录元数据（谁/哪条/何时），绝不记录明文本身。
+      CREATE TABLE IF NOT EXISTS credential_reveals (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL REFERENCES users(id),
+        credential_id INTEGER NOT NULL,
+        revealed_at   INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_credential_reveals_user
+        ON credential_reveals(user_id, revealed_at DESC);
 
       CREATE TABLE IF NOT EXISTS ssh_shares (
         id                  TEXT PRIMARY KEY,
@@ -632,6 +648,11 @@ export class UserDBDO {
         const credentialId = parseInt(credentialMatch[1], 10);
         if (request.method === 'PUT') return this.handleUpdateCredential(credentialId, request);
         if (request.method === 'DELETE') return this.handleDeleteCredential(credentialId, request);
+      }
+      // 按需回显明文（独立路径而非列表字段，确保回显是一次显式行为）
+      const revealMatch = path.match(/^\/internal\/credentials\/(\d+)\/reveal$/);
+      if (revealMatch && request.method === 'POST') {
+        return this.handleRevealCredential(parseInt(revealMatch[1], 10), request);
       }
 
       // --- 配置快照（SFTP 覆盖前留档 / 回滚） ---
@@ -2523,6 +2544,65 @@ export class UserDBDO {
     }
     this.db.exec('DELETE FROM credentials WHERE user_id = ? AND id = ?', user_id, credentialId);
     return Response.json({ success: true });
+  }
+
+  /**
+   * 回显凭据明文。
+   *
+   * 与列表接口的区别：这里会返回 secret，因此**必须**是显式的按需调用
+   * （POST /reveal），而不是列表的附带字段——否则任何一次列表请求都会把
+   * 全部明文送到前端。每次调用写一条 credential_reveals 留痕（只记元数据）。
+   */
+  private async handleRevealCredential(credentialId: number, request: Request): Promise<Response> {
+    const { user_id } = await request.json<{ user_id: number }>();
+    const rows = this.db
+      .exec(
+        'SELECT kind, secret FROM credentials WHERE user_id = ? AND id = ?',
+        user_id,
+        credentialId
+      )
+      .toArray();
+    if (rows.length === 0) return Response.json({ error: 'notFound' }, { status: 404 });
+    const row = rows[0] as { kind: string; secret: string };
+
+    let secret: string;
+    try {
+      secret = await this.decryptCredential(row.secret, user_id);
+    } catch {
+      // 解密失败（换密钥 / 数据损坏）不应把半成品或密文当作明文返回。
+      return Response.json({ error: 'decryptFailed' }, { status: 500 });
+    }
+
+    this.recordCredentialReveal(user_id, credentialId);
+    return Response.json({ id: credentialId, kind: row.kind, secret });
+  }
+
+  /**
+   * 记录一次明文回显，并把每个用户的留痕表裁剪到 `CREDENTIAL_REVEAL_LOG_LIMIT` 行
+   * （留痕会随使用无限增长，而审计价值集中在近期记录）。
+   */
+  private recordCredentialReveal(userId: number, credentialId: number): void {
+    try {
+      this.db.exec(
+        'INSERT INTO credential_reveals (user_id, credential_id, revealed_at) VALUES (?, ?, ?)',
+        userId,
+        credentialId,
+        Date.now()
+      );
+      this.db.exec(
+        `DELETE FROM credential_reveals
+         WHERE user_id = ? AND id NOT IN (
+           SELECT id FROM credential_reveals WHERE user_id = ? ORDER BY id DESC LIMIT ?
+         )`,
+        userId,
+        userId,
+        CREDENTIAL_REVEAL_LOG_LIMIT
+      );
+    } catch {
+      // 留痕失败不能影响回显本身（表缺失等异常情况下宁可不留痕也不阻断操作），
+      // 但必须留下服务端日志，避免“以为有审计其实没有”。
+      console.error('[credential] 回显留痕写入失败', { userId, credentialId });
+    }
   }
 
   /**
