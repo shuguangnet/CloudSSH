@@ -180,7 +180,15 @@ test('native panel and real MCP client enforce authentication, persistence and r
     });
     client = new Client({ name: 'integration', version: '1' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token.token}` } } }));
-    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']);
+    const tools = await client.listTools(); // 数据库工具只在配置了 databaseStore 时才注册；本集成测试走完整
+  // server.mjs，因此它们会出现。基础 SSH 工具必须一个不少。
+  const toolNames = tools.tools.map((item) => item.name).sort();
+  for (const required of ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']) {
+    assert.ok(toolNames.includes(required), `缺少工具 ${required}`);
+  }
+  // read scope 的令牌只能看到读类数据库工具，看不到 db_exec。
+  assert.ok(toolNames.includes('db_query'));
+  assert.ok(!toolNames.includes('db_exec'));
     const listed = JSON.parse((await client.callTool({ name: 'list_servers', arguments: {} })).content[0].text);
     assert.equal(listed.servers[0].id, id);
     assert.equal(JSON.stringify(listed).includes('fixture-only'), false);

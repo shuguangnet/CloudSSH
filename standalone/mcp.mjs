@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { executeSaved, savedServers, validatePath, shellQuote } from './operations.mjs';
 import { tokenHash } from './access-store.mjs';
 import { collectServerStatus } from './status.mjs';
+import { registerDatabaseTools, databaseDescriptions } from './mcp-database.mjs';
 
 const result = (data, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], isError });
 const serverIdSchema = z.number().int().positive();
@@ -37,7 +38,10 @@ function decodeBase64Payload(value) {
   return { encoded, decoded: Buffer.from(encoded, 'base64') };
 }
 
-export function createMcpServer({ env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal }) {
+export function createMcpServer({
+  env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal,
+  databaseStore,
+}) {
   const server = new McpServer({ name: 'cloudssh', version: '2.6.2' });
   const authorize = (serverId, scope) => {
     if (!store.isActive(identity.id)) throw new Error('Token expired or disabled');
@@ -213,6 +217,30 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
 
   tool('get_server_info', 'read', { server_id: serverIdSchema }, async (args, check, callSignal) =>
     collectServerStatus(env, identity, args.server_id, execute, SSHSession, callSignal, check));
+
+  // ==================== 数据库连接 ====================
+
+  // 数据库工具走独立的授权维度（connection_id），因此不复用上面的 tool()
+  // 包装——那个包装假定第一个参数是 server_id 并据此做主机授权。两者共用
+  // 同一套 scope 与审计表，语义保持一致。
+  registerDatabaseTools(server, {
+    store: databaseStore,
+    identity,
+    authorize: (connectionId, scope) => {
+      if (!store.isActive(identity.id)) throw new Error('Token expired or disabled');
+      if (connectionId !== undefined && connectionId !== null) {
+        const allowed = identity.db_connection_ids ?? [];
+        if (!allowed.includes(connectionId)) throw new Error('Database connection is not authorized for this token');
+      }
+      if (scope && !identity.scopes.includes(scope)) throw new Error('Operation is not authorized for this token');
+    },
+    audit: (toolName, connectionId, status, details = {}) => {
+      // 复用 mcp_audit 表：server_id 留空，连接信息进 details。
+      // 这样「谁在什么时候查了哪个库」和 SSH 操作在同一处可查。
+      store.audit(identity, toolName, undefined, status, { connection_id: connectionId, ...details });
+    },
+    descriptions: databaseDescriptions,
+  });
   return server;
 }
 

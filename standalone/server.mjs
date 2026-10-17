@@ -10,6 +10,8 @@ import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
 import { savedServers, executeSaved, drainSshChainPool } from './operations.mjs';
 import { AutomationStore } from './automation-store.mjs';
+import { DatabaseStore } from './database-store.mjs';
+import { createDatabaseRoutes } from './database-api.mjs';
 import { generateVapidKeys } from './webpush.mjs';
 import { setVapidProvider } from './notify.mjs';
 import { AutomationEngine } from './scheduler.mjs';
@@ -59,6 +61,9 @@ env.SSH_SESSION = new LocalNamespace('ssh', SSHSessionDO, env, dataDir);
 env.SSH_SHARE = new LocalNamespace('shares', SSHShareDO, env, dataDir);
 const store = new AccessStore(join(dataDir, 'mcp.sqlite'));
 const automationStore = new AutomationStore(join(dataDir, 'automation.sqlite'));
+// 数据库连接与代理的持久化。密钥文件与 sqlite 分开存放，避免只备份
+// 一个文件就泄露全部数据库密码（见 database-store.mjs 顶部说明）。
+const databaseStore = new DatabaseStore(join(dataDir, 'database.sqlite'));
 // Web Push VAPID 身份：首次生成后落库，重启不变，否则浏览器订阅会全部失效。
 setVapidProvider(async () => automationStore.getOrCreateVapid(generateVapidKeys));
 const automationEngine = new AutomationEngine({
@@ -75,6 +80,7 @@ const automationRoutes = createAutomationRoutes({
   env, SSHSession, store: automationStore, engine: automationEngine, dashboard: dashboardEngine, executeSaved, getAuthenticatedUser, liveStatus: liveStatusHub,
 });
 const batchRoutes = createBatchRoutes({ env, getAuthenticatedUser, SSHSession });
+const databaseRoutes = createDatabaseRoutes({ env, databaseStore, getAuthenticatedUser });
 // PWA assets are copied to dist/public by scripts/build-standalone.mjs; icons are
 // immutable, the service worker must always revalidate.
 const PUBLIC_FILES = {
@@ -431,11 +437,15 @@ const server = createServer(async (req, res) => {
         if (count) inflight.set(identity.id, count); else inflight.delete(identity.id);
       };
       res.once('finish', release); res.once('close', release);
-      await handleMcp(req, res, { env, store, identity, SSHSession, isBlockedCommand }, body);
+      await handleMcp(req, res, {
+        env, store, identity, SSHSession, isBlockedCommand, databaseStore,
+      }, body);
       return;
     }
     const body = !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
     const request = requestFromNode(req, body, res);
+    // 数据库连接管理（面板用）：/api/db/*
+    if (pathname.startsWith('/api/db/')) return sendResponse(res, await databaseRoutes(request, pathname));
     if (pathname === '/api/admin/account') return sendResponse(res, await accountManagement(request));
     if (pathname === '/account/settings') {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
@@ -465,6 +475,20 @@ const server = createServer(async (req, res) => {
       return sendResponse(res, new Response(readFileSync(new URL('./automation.html', import.meta.url)), {
         headers: { 'Content-Type': 'text/html; charset=utf-8',
           'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'" },
+      }));
+    }
+    if (pathname === '/database') {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+      if (!await getAuthenticatedUser(request, env)) return sendResponse(res, new Response(null, { status: 302, headers: { Location: '/' } }));
+      return sendResponse(res, new Response(readFileSync(new URL('./database.html', import.meta.url)), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'" },
+      }));
+    }
+    if (['/database.js', '/database.css'].includes(pathname) && req.method === 'GET') {
+      const extension = pathname.endsWith('.js') ? 'js' : 'css';
+      return sendResponse(res, new Response(readFileSync(new URL(`./database.${extension}`, import.meta.url)), {
+        headers: { 'Content-Type': extension === 'js' ? 'text/javascript; charset=utf-8' : 'text/css' },
       }));
     }
     if (['/automation.js', '/automation.css'].includes(pathname) && req.method === 'GET') {

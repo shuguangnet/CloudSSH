@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CloudSSH 数据库</title><link rel="stylesheet" href="/page.css"><link rel="stylesheet" href="/database.css"><script defer src="/page.js"></script><script defer src="/database.js"></script></head>
+<body data-page="database"><main>
+  <header class="page-head"><p class="eyebrow">CloudSSH</p><h1 data-i18n="title">数据库</h1>
+  <p class="intro" data-i18n="intro">为 MCP Agent 提供受控的数据库访问。密码在面板端加密保存，Agent 只拿到查询结果，永远看不到凭据。</p></header>
+  <p id="message" role="status" aria-live="polite"></p>
+
+  <!-- 驱动缺失时的提示：这是「装了面板但没装驱动」的常见状态，必须自查 -->
+  <section id="drivers-warning" class="warning" hidden>
+    <h2 data-i18n="driversWarning">数据库驱动未安装</h2>
+    <p data-i18n="driversWarningIntro">当前部署缺少部分数据库驱动，对应类型的连接将无法建立。在服务器上执行以下命令后重启面板：</p>
+    <pre id="drivers-command" class="mono-block">pnpm add mysql2 pg ioredis</pre>
+    <ul id="drivers-missing"></ul>
+  </section>
+
+  <section id="connection-section">
+    <h2 data-i18n="connections">数据库连接</h2>
+    <p data-i18n="connectionsIntro">每个连接保存一台数据库的访问方式。只读连接会在把 SQL 发给数据库之前拦下写语句。</p>
+
+    <form id="connection-form">
+      <input type="hidden" id="connection-id">
+      <div class="grid">
+        <label><span data-i18n="connName">名称</span><input id="conn-name" maxlength="50" required autocomplete="off" placeholder="production-mysql"></label>
+        <label><span data-i18n="connEngine">类型</span><select id="conn-engine" required>
+          <option value="mysql">MySQL</option><option value="mariadb">MariaDB</option>
+          <option value="postgres">PostgreSQL</option><option value="redis">Redis</option>
+        </select></label>
+      </div>
+      <div class="grid">
+        <label><span data-i18n="connHost">主机</span><input id="conn-host" maxlength="255" required autocomplete="off" spellcheck="false" placeholder="10.0.0.5 或 db.internal"></label>
+        <label><span data-i18n="connPort">端口</span><input id="conn-port" type="number" min="1" max="65535" required></label>
+      </div>
+      <div class="grid">
+        <label><span data-i18n="connDatabase">数据库名</span><input id="conn-database" maxlength="128" autocomplete="off" spellcheck="false" placeholder="app"></label>
+        <label><span data-i18n="connUsername">用户名</span><input id="conn-username" maxlength="128" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="grid">
+        <label><span data-i18n="connPassword">密码</span>
+          <input id="conn-password" type="password" maxlength="512" autocomplete="new-password">
+          <span class="hint" id="conn-password-hint" data-i18n="passwordKeepHint">留空则保留原密码</span>
+        </label>
+        <label><span data-i18n="connProxy">代理</span><select id="conn-proxy"><option value="" data-i18n="proxyDirectOption">不使用代理（直连）</option></select></label>
+      </div>
+      <label class="choice"><input id="conn-readonly" type="checkbox" checked><span data-i18n="connReadOnly">只读（拒绝写语句）</span></label>
+      <p class="hint" data-i18n="readOnlyHint">只读是防手滑的闸门，不是安全边界——真正的权限控制请在数据库侧用只读账号实现。</p>
+      <div class="actions">
+        <button type="submit" id="conn-save" class="primary" data-i18n="create">创建连接</button>
+        <button type="button" id="conn-test" class="ghost" data-i18n="testConnection">测试连接</button>
+        <button type="button" id="conn-cancel" class="ghost" hidden data-i18n="cancel">取消</button>
+      </div>
+    </form>
+
+    <div class="scroll"><table><thead><tr>
+      <th data-i18n="connName">名称</th><th data-i18n="connEngine">类型</th><th data-i18n="targetCol">目标</th>
+      <th data-i18n="connProxy">代理</th><th data-i18n="modeCol">模式</th><th></th>
+    </tr></thead><tbody id="connections"></tbody></table></div>
+  </section>
+
+  <section id="proxy-section">
+    <h2 data-i18n="proxies">代理</h2>
+    <p data-i18n="proxiesIntro">数据库在不可直连的网络里时，先经代理转发。SOCKS5 与 HTTP CONNECT 适合堡垒机，SSH 跳板复用面板已有服务器的连接。</p>
+    <form id="proxy-form">
+      <input type="hidden" id="proxy-id">
+      <div class="grid">
+        <label><span data-i18n="proxyName">名称</span><input id="proxy-name" maxlength="50" required autocomplete="off"></label>
+        <label><span data-i18n="proxyKind">类型</span><select id="proxy-kind" required>
+          <option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option><option value="ssh">SSH 跳板</option>
+        </select></label>
+      </div>
+      <div class="grid" id="proxy-endpoint-fields">
+        <label><span data-i18n="proxyHost">主机</span><input id="proxy-host" maxlength="255" autocomplete="off" spellcheck="false"></label>
+        <label><span data-i18n="proxyPort">端口</span><input id="proxy-port" type="number" min="1" max="65535"></label>
+      </div>
+      <div class="grid">
+        <label><span data-i18n="proxyUsername">用户名（可选）</span><input id="proxy-username" maxlength="128" autocomplete="off" spellcheck="false"></label>
+        <label><span data-i18n="proxyPassword">密码（可选）</span>
+          <input id="proxy-password" type="password" maxlength="512" autocomplete="new-password">
+          <span class="hint" id="proxy-password-hint" data-i18n="passwordKeepHint">留空则保留原密码</span>
+        </label>
+      </div>
+      <div class="actions">
+        <button type="submit" id="proxy-save" class="primary" data-i18n="createProxy">创建代理</button>
+        <button type="button" id="proxy-cancel" class="ghost" hidden data-i18n="cancel">取消</button>
+      </div>
+    </form>
+    <div class="scroll"><table><thead><tr>
+      <th data-i18n="proxyName">名称</th><th data-i18n="proxyKind">类型</th><th data-i18n="targetCol">目标</th><th></th>
+    </tr></thead><tbody id="proxies"></tbody></table></div>
+  </section>
+
+  <section id="console-section">
+    <h2 data-i18n="console">查询控制台</h2>
+    <p data-i18n="consoleIntro">在面板里直接验证 SQL 与权限。结果会按行数/列数/单元格长度截断，只读连接无法执行写语句。</p>
+    <div class="grid">
+      <label><span data-i18n="consoleConnection">连接</span><select id="console-connection" required></select></label>
+      <label><span data-i18n="consoleTimeout">超时（毫秒）</span><input id="console-timeout" type="number" min="1000" max="120000" value="30000"></label>
+    </div>
+    <label><span data-i18n="consoleSql">SQL / Redis 命令</span>
+      <textarea id="console-sql" rows="6" spellcheck="false" placeholder="SELECT * FROM users LIMIT 10"></textarea>
+    </label>
+    <div class="actions">
+      <button type="button" id="console-run" class="primary" data-i18n="runQuery">执行</button>
+      <button type="button" id="console-clear" class="ghost" data-i18n="clearResult">清空结果</button>
+    </div>
+    <p id="console-status" role="status" aria-live="polite"></p>
+    <div class="scroll" id="console-result" hidden><table><thead><tr id="console-head"></tr></thead><tbody id="console-body"></tbody></table></div>
+  </section>
+
+  <section id="audit-section">
+    <h2 data-i18n="audit">访问审计</h2>
+    <p data-i18n="auditIntro">只记录 SQL 的 SHA-256 指纹、影响行数与耗时，不保存 SQL 正文和任何查询结果。</p>
+    <div class="actions"><button type="button" id="audit-refresh" class="ghost" data-i18n="refresh">刷新</button></div>
+    <div class="scroll"><table><thead><tr>
+      <th data-i18n="auditTime">时间</th><th data-i18n="connName">名称</th><th data-i18n="auditTool">来源</th>
+      <th data-i18n="statusCol">状态</th><th data-i18n="auditRows">行数</th><th data-i18n="auditDuration">耗时</th>
+      <th data-i18n="auditFingerprint">SQL 指纹</th>
+    </tr></thead><tbody id="audit"></tbody></table></div>
+  </section>
+</main></body></html>

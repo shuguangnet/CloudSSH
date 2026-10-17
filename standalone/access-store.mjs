@@ -30,11 +30,16 @@ export class AccessStore {
       CREATE INDEX IF NOT EXISTS mcp_audit_token ON mcp_audit(github_id, token_id, id);
       CREATE INDEX IF NOT EXISTS mcp_audit_filter ON mcp_audit(github_id, server_id, id);
     `);
-    // 老库升级：disabled_at 是后加的列（临时禁用令牌），CREATE TABLE IF NOT EXISTS 不会补列。
+    // 老库升级：这些列都是后加的，CREATE TABLE IF NOT EXISTS 不会补列。
+    // SQLite 没有 ADD COLUMN IF NOT EXISTS，只能先查 PRAGMA 再 ALTER。
     const columns = new Set(this.db.prepare('PRAGMA table_info(mcp_tokens)').all().map((row) => row.name));
     if (!columns.has('disabled_at')) this.db.exec('ALTER TABLE mcp_tokens ADD COLUMN disabled_at INTEGER');
+    // 数据库连接授权：与 server_ids 同构，存 JSON 数组；空数组 = 不授权任何库。
+    if (!columns.has('db_connection_ids')) {
+      this.db.exec("ALTER TABLE mcp_tokens ADD COLUMN db_connection_ids TEXT NOT NULL DEFAULT '[]'");
+    }
   }
-  create(user, { name, server_ids, scopes, expires_in_days }, authGeneration = 'github') {
+  create(user, { name, server_ids, scopes, expires_in_days, db_connection_ids }, authGeneration = 'github') {
     if (!validName(name) || !validServerIds(server_ids) || !validScopes(scopes) ||
         !Number.isInteger(expires_in_days) || expires_in_days < 1 || expires_in_days > 365) {
       throw invalid('Invalid token settings');
@@ -52,6 +57,13 @@ export class AccessStore {
       .run(id, tokenHash(token), name.trim(), String(user.github_id), user.id,
         JSON.stringify([...new Set(server_ids)]), JSON.stringify([...new Set(scopes)]),
         now, now + expires_in_days * 86400000, authGeneration);
+    // 数据库授权是后续补上的能力：老 UI 不传时就保持空数组（默认不授权）。
+    const wanted = Array.isArray(db_connection_ids) ? db_connection_ids : [];
+    if (wanted.length > 0) {
+      if (!validServerIds(wanted)) throw invalid('Invalid database connection selection');
+      this.db.prepare('UPDATE mcp_tokens SET db_connection_ids=? WHERE id=?')
+        .run(JSON.stringify([...new Set(wanted)]), id);
+    }
     return { id, token };
   }
   /** 认证：撤销、过期、临时禁用任一命中即视为无效。 */
@@ -63,7 +75,14 @@ export class AccessStore {
   }
   decode(row) {
     const { hash, ...safe } = row;
-    return { ...safe, disabled: Boolean(row.disabled_at), server_ids: JSON.parse(row.server_ids), scopes: JSON.parse(row.scopes) };
+    return {
+      ...safe,
+      disabled: Boolean(row.disabled_at),
+      server_ids: JSON.parse(row.server_ids),
+      scopes: JSON.parse(row.scopes),
+      // 老令牌行可能没有这一列（历史数据），一律按「无授权」处理。
+      db_connection_ids: safe.db_connection_ids ? JSON.parse(safe.db_connection_ids) : [],
+    };
   }
   isActive(id) {
     return Boolean(this.db.prepare('SELECT id FROM mcp_tokens WHERE id=? AND revoked_at IS NULL AND disabled_at IS NULL AND expires_at>?')
@@ -77,22 +96,31 @@ export class AccessStore {
    * 修改令牌的名称/权限/授权主机。活跃与临时禁用的令牌都可改（撤销、过期除外）——
    * 禁用只是临时停用，随后仍可改回并重新启用。
    */
-  update(user, id, { name, server_ids, scopes }) {
+  update(user, id, { name, server_ids, scopes, db_connection_ids }) {
     const row = this.owned(user, id);
     if (!row) return null;
     if (row.revoked_at) throw new Error('Revoked tokens cannot be modified');
     if (row.expires_at <= Date.now()) throw new Error('Expired tokens cannot be modified');
+    const currentDbIds = row.db_connection_ids ? JSON.parse(row.db_connection_ids) : [];
     const next = {
       name: name === undefined ? row.name : name,
       server_ids: server_ids === undefined ? JSON.parse(row.server_ids) : server_ids,
       scopes: scopes === undefined ? JSON.parse(row.scopes) : scopes,
+      // 数据库授权允许显式清空（传空数组），缺省则保持原值。
+      db_connection_ids: db_connection_ids === undefined ? currentDbIds : db_connection_ids,
     };
     if (!validName(next.name) || !validServerIds(next.server_ids) || !validScopes(next.scopes)) {
       throw invalid('Invalid token settings');
     }
-    this.db.prepare('UPDATE mcp_tokens SET name=?, server_ids=?, scopes=? WHERE id=? AND github_id=?')
+    // 允许空数组表示「不授权任何数据库」，所以这里不能用 validServerIds
+    // （它要求非空）——只校验元素类型。
+    if (!Array.isArray(next.db_connection_ids) ||
+        !next.db_connection_ids.every((v) => Number.isSafeInteger(v) && v > 0)) {
+      throw invalid('Invalid database connection selection');
+    }
+    this.db.prepare('UPDATE mcp_tokens SET name=?, server_ids=?, scopes=?, db_connection_ids=? WHERE id=? AND github_id=?')
       .run(next.name.trim(), JSON.stringify([...new Set(next.server_ids)]), JSON.stringify([...new Set(next.scopes)]),
-        id, String(user.github_id));
+        JSON.stringify([...new Set(next.db_connection_ids)]), id, String(user.github_id));
     return this.decode(this.db.prepare('SELECT * FROM mcp_tokens WHERE id=?').get(id));
   }
   /** 临时禁用/启用：禁用立即失效（verify/isActive 拒绝），数据保留，随时可恢复。 */

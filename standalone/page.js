@@ -114,6 +114,7 @@
     panel: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="14" width="18" height="5" rx="1"/><circle cx="7" cy="6.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none"/></svg>',
     automation: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
     mcp: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2.3"/><circle cx="5" cy="18" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M12 7.3 6.5 16M12 7.3l5.5 8.8M7.3 18h9.4"/></svg>',
+    database: '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg>',
     account: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c1.4-3.2 4-4.8 7-4.8s5.6 1.6 7 4.8"/></svg>',
   };
 
@@ -137,6 +138,7 @@
       { id: 'panel', href: '/', key: 'nav.panel' },
       { id: 'automation', href: '/automation', key: 'nav.automation' },
       { id: 'mcp', href: '/mcp/settings', key: 'nav.mcp' },
+      { id: 'database', href: '/database', key: 'nav.database' },
       { id: 'account', href: '/account/settings', key: 'nav.account' },
     ];
     var html = '<a class="page-side-brand" href="/">CloudSSH</a><nav class="page-side-menu">';
