@@ -154,6 +154,9 @@ export function createDatabaseRoutes({ env, databaseStore, getAuthenticatedUser 
           columns: result.columns, rows: result.rows, rowCount: result.rowCount,
           returnedRows: result.rows.length, durationMs: result.durationMs,
           truncated: result.rowCount > result.rows.length,
+          // 命中秘密模式而被遮蔽的单元格数：让前端能提示「这里不是原文」，
+          // 而不是让人以为数据库里存的就是 ***。
+          redactedCells: result.redactedCells ?? 0,
           serverDurationMs: Date.now() - startedAt,
         });
       } catch (error) {

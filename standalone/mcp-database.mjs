@@ -168,9 +168,17 @@ export function registerDatabaseTools(server, { store, identity, authorize, audi
       returnedRows: result.rows.length,
       durationMs: result.durationMs,
       truncated: result.rowCount > result.rows.length,
-      instruction: result.rowCount > result.rows.length
-        ? `Only the first ${MAX_ROWS} rows were returned. Refine the query (WHERE/LIMIT) to read the rest.`
-        : 'Values are already truncated per cell; large text shows a truncation marker.',
+      // 脱敏是展示层兜底：告诉模型「你看到的不是全部原文」，避免它把
+      // *** 当成真实值回写数据库。
+      ...(result.redactedCells ? { redactedCells: result.redactedCells } : {}),
+      instruction: [
+        result.rowCount > result.rows.length
+          ? `Only the first ${MAX_ROWS} rows were returned. Refine the query (WHERE/LIMIT) to read the rest.`
+          : 'Values are already truncated per cell; large text shows a truncation marker.',
+        result.redactedCells
+          ? `${result.redactedCells} cell(s) matched a secret pattern (private key / token / password / connection string) and were masked as ***. The database still holds the original value — never write the masked text back.`
+          : '',
+      ].filter(Boolean).join(' '),
     };
   });
 

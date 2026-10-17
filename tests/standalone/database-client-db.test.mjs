@@ -137,8 +137,10 @@ test('Postgres 写语句在关闭只读后可以执行，并清理现场', skipU
 
 test('Postgres 语法错误被归一化为 query 错误', skipUnless('postgres'), async () => {
   const config = { id: 9005, ...TARGETS.postgres, readOnly: true };
+  // 用 SELECT 开头的语法错误：只读闸门只在动词与关键字层面把关，
+  // 语法对不对交给数据库判，错误应归一化为 query。
   await assert.rejects(
-    queryDatabase(config, 'SELEC broken syntax'),
+    queryDatabase(config, 'SELECT * FROM users WHERE'),
     (error) => error.code === 'query' && /syntax/i.test(error.message),
   );
   await closeAll();
@@ -370,4 +372,85 @@ test('isWriteStatement 在客户端层被 queryDatabase 真正执行（不只测
     (error) => error.code === 'readOnly',
     '写语句必须在建连之前就被拦下',
   );
+});
+
+// ==================== 池活性维护 ====================
+//
+// 这两条用例验证的是「池里连接被静默掐死之后还能自愈」，
+// 而不依赖任何测试专用钩子——用服务端手段真实杀死会话。
+
+test('服务端掐掉会话后，下一次查询透明重建连接', skipUnless('postgres'), async () => {
+  const config = { id: 9100, ...TARGETS.postgres, readOnly: false };
+  await queryDatabase(config, 'SELECT 1');
+
+  // 从另一个连接把 app 库里的其它会话全部终止，等价于 NAT/防火墙静默丢流：
+  // 本地池以为连接还在，实际服务端已经不认了。
+  const killer = { id: 9102, ...TARGETS.postgres, readOnly: false };
+  await queryDatabase(killer, [
+    'SELECT pg_terminate_backend(pid) FROM pg_stat_activity',
+    'WHERE datname = current_database() AND pid <> pg_backend_pid()',
+  ].join(' '), []);
+
+  // 第一次可能失败（连接已死，错误归类为 connect 或 query），
+  // 关键是第二次必须自己恢复，而不是要求人工重启服务。
+  try { await queryDatabase(config, 'SELECT 1'); } catch { /* 预期之内 */ }
+  const recovered = await queryDatabase(config, 'SELECT 14 AS n');
+  assert.equal(recovered.rows[0].n, 14, '断开后必须能自愈重建连接');
+  await closeAll();
+});
+
+test('只读连接在会话被杀后仍恢复为只读判定', skipUnless('postgres'), async () => {
+  const config = { id: 9101, ...TARGETS.postgres, readOnly: true };
+  await queryDatabase(config, 'SELECT 1');
+  await closeAll();
+  // 池拆除后重建的连接必须仍然带 readOnly 约束，不能因为重连丢掉闸门。
+  await assert.rejects(
+    queryDatabase(config, 'DELETE FROM users'),
+    (error) => error.code === 'readOnly',
+  );
+  const ok = await queryDatabase(config, 'SELECT 15 AS n');
+  assert.equal(ok.rows[0].n, 15);
+  await closeAll();
+});
+
+// ==================== 脱敏与截断的顺序 ====================
+
+test('超过单格上限的私钥仍然被完整脱敏（脱敏必须先于截断）', skipUnless('postgres'), async () => {
+  const config = { id: 9110, ...TARGETS.postgres, readOnly: false };
+  await queryDatabase(config, 'DROP TABLE IF EXISTS redact_probe');
+  await queryDatabase(config, 'CREATE TABLE redact_probe (v text)');
+  try {
+    // 私钥体远超 MAX_CELL_CHARS(4096)：若先截断，尾部 END 标记消失，
+    // 模式失配，整段私钥会原样返回给模型。
+    const body = 'A'.repeat(5000);
+    const pem = `-----BEGIN RSA PRIVATE KEY-----${body}-----END RSA PRIVATE KEY-----`;
+    await queryDatabase(config, 'INSERT INTO redact_probe VALUES ($1)', [pem]);
+
+    const result = await queryDatabase(config, 'SELECT v FROM redact_probe');
+    assert.equal(result.redactedCells, 1, '超长私钥必须被识别并脱敏');
+    const cell = String(result.rows[0].v);
+    assert.ok(!cell.includes('AAAA'), '私钥原文不能出现在结果里');
+    assert.ok(cell.includes('私钥已脱敏'), '应替换为脱敏标记');
+  } finally {
+    await queryDatabase(config, 'DROP TABLE IF EXISTS redact_probe');
+    await closeAll();
+  }
+});
+
+test('命中脱敏时报出数量，未命中时不带该字段', skipUnless('postgres'), async () => {
+  const config = { id: 9111, ...TARGETS.postgres, readOnly: false };
+  await queryDatabase(config, 'DROP TABLE IF EXISTS redact_count');
+  await queryDatabase(config, 'CREATE TABLE redact_count (k text, v text)');
+  try {
+    await queryDatabase(config, "INSERT INTO redact_count VALUES ('a','API_KEY=sk-live-abcdef123456'),('b','plain text')", []);
+    const hit = await queryDatabase(config, 'SELECT v FROM redact_count ORDER BY k');
+    assert.equal(hit.redactedCells, 1);
+    assert.equal(hit.rows[1].v, 'plain text', '普通文本不应被改动');
+
+    const miss = await queryDatabase(config, "SELECT 'hello world' AS v");
+    assert.equal(miss.redactedCells, undefined, '未命中时不应带 redactedCells 字段');
+  } finally {
+    await queryDatabase(config, 'DROP TABLE IF EXISTS redact_count');
+    await closeAll();
+  }
 });

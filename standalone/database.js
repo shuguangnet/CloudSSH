@@ -31,6 +31,7 @@ const dictionaries = {
     consoleConnection: '连接', consoleTimeout: '超时（毫秒）', consoleSql: 'SQL / Redis 命令',
     runQuery: '执行', clearResult: '清空结果', noConnection: '请先创建一个连接', querying: '执行中…',
     queryOk: '返回 {rows} 行（耗时 {ms}）', queryTruncated: '结果已截断：共 {total} 行，仅返回 {shown} 行',
+    queryRedacted: '{count} 个单元格含密钥/口令，已按 *** 遮蔽（数据库内仍是原值）',
     errReadOnly: '该连接是只读的，已拒绝执行写语句。如需写入，请先关闭该连接的「只读」开关。',
     errDriver: '缺少数据库驱动，请按上方提示安装后重启面板。',
 
@@ -68,6 +69,7 @@ const dictionaries = {
     consoleConnection: '連線', consoleTimeout: '逾時（毫秒）', consoleSql: 'SQL / Redis 命令',
     runQuery: '執行', clearResult: '清空結果', noConnection: '請先建立一個連線', querying: '執行中…',
     queryOk: '傳回 {rows} 列（耗時 {ms}）', queryTruncated: '結果已截斷：共 {total} 列，僅傳回 {shown} 列',
+    queryRedacted: '{count} 個儲存格含金鑰/口令，已按 *** 遮蔽（資料庫內仍是原值）',
     errReadOnly: '該連線是唯讀的，已拒絕執行寫入語句。如需寫入，請先關閉該連線的「唯讀」開關。',
     errDriver: '缺少資料庫驅動，請依上方提示安裝後重啟面板。',
 
@@ -105,6 +107,7 @@ const dictionaries = {
     consoleConnection: 'Connection', consoleTimeout: 'Timeout (ms)', consoleSql: 'SQL / Redis command',
     runQuery: 'Run', clearResult: 'Clear result', noConnection: 'Create a connection first', querying: 'Running…',
     queryOk: 'Returned {rows} rows in {ms}', queryTruncated: 'Truncated: {total} rows total, {shown} returned',
+    queryRedacted: '{count} cell(s) matched a secret pattern and were masked as *** (the database still holds the original value)',
     errReadOnly: 'This connection is read-only, so the write was rejected. Turn off read-only for this connection to allow writes.',
     errDriver: 'A database driver is missing. Install it as shown above, then restart the panel.',
 
@@ -506,9 +509,14 @@ async function runQuery() {
       }),
     });
     renderResult(result);
-    status.textContent = result.truncated
+    const summary = result.truncated
       ? format('queryTruncated', { total: result.rowCount, shown: result.returnedRows })
       : format('queryOk', { rows: result.rowCount, ms: formatDuration(result.durationMs) });
+    // 脱敏是展示层兜底，必须让用户知道「这里不是原文」——否则会有人把 ***
+    // 当成数据库里真实存的值，或者以为数据被改了。
+    status.textContent = result.redactedCells
+      ? `${summary} · ${format('queryRedacted', { count: result.redactedCells })}`
+      : summary;
     await loadAudit();
   } catch (error) {
     $('console-result').hidden = true;

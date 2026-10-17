@@ -14,6 +14,8 @@
 import { createHash } from 'node:crypto';
 
 import { createTunnel } from './net-proxy.mjs';
+import { createRedaction, redactValue } from './redact.mjs';
+import { assessSql, isWriteCommand, isWriteStatement as isWriteStatementImpl } from './sql-safety.mjs';
 import { DEFAULT_PORTS } from './database-store.mjs';
 
 // 结果集上限：MCP 的输出要进模型上下文，必须硬性截断，
@@ -26,6 +28,28 @@ const DEFAULT_QUERY_TIMEOUT_MS = 30000;
 export const MAX_QUERY_TIMEOUT_MS = 120000;
 // 隧道在最后一次使用后保留一小段时间，避免每次查询都重新握手。
 const TUNNEL_REUSE_MS = 30000;
+
+/**
+ * TCP keepalive 探活间隔。
+ *
+ * 数据库连接常被 NAT/防火墙在空闲时静默丢弃：两端都没收到 FIN，驱动
+ * 以为连接还在，下一次查询才发现已经死了。内核 keepalive 让对端在空闲期
+ * 就能暴露断连，而不是等到用户踩上去。
+ */
+const TCP_KEEPALIVE_MS = 30000;
+
+/**
+ * 池里连接空闲超过这个时长，复用前先 ping 一次。
+ *
+ * 30s 与隧道复用窗口对齐：隧道都回收了，池里的 socket 就没道理可靠。
+ * 低于这个阈值的复用不 ping，否则每条查询都多一个往返。
+ */
+const PING_AFTER_IDLE_MS = 30000;
+
+/** 拆除操作（pool.end / rollback）的硬上限，防止死传输上永久挂起。 */
+const TEARDOWN_TIMEOUT_MS = 5000;
+
+export { PING_AFTER_IDLE_MS, TCP_KEEPALIVE_MS, TEARDOWN_TIMEOUT_MS };
 
 const error = (message, code = 'query') => Object.assign(new Error(message), { code });
 
@@ -142,6 +166,9 @@ async function connectMysql(driver, config) {
     waitForConnections: true,
     connectionLimit: 4,
     connectTimeout: CONNECT_TIMEOUT_MS,
+    // NAT/防火墙空闲丢流：开 TCP keepalive，让死连接在空闲期就暴露。
+    enableKeepAlive: true,
+    keepAliveInitialDelay: TCP_KEEPALIVE_MS,
     // 多语句关闭：一条 query 里塞 ;DROP 是最容易被忽略的注入面。
     multipleStatements: false,
     // 让 mysql2 把 DECIMAL/BIGINT 以字符串返回，避免 JS 精度丢失后
@@ -152,7 +179,7 @@ async function connectMysql(driver, config) {
     dateStrings: true,
   });
   return {
-    async run(sql, params, timeoutMs) {
+    async run(sql, params, timeoutMs, redaction) {
       const [result, fields] = await withTimeout(
         pool.query({ sql, values: params, timeout: timeoutMs }),
         timeoutMs, '查询',
@@ -160,7 +187,7 @@ async function connectMysql(driver, config) {
       if (Array.isArray(result)) {
         return {
           columns: (fields ?? []).map((field) => field.name).slice(0, MAX_COLUMNS),
-          rows: normalizeRows(result, fields),
+          rows: normalizeRows(result, fields, redaction),
           rowCount: result.length,
         };
       }
@@ -171,9 +198,14 @@ async function connectMysql(driver, config) {
         affectedRows: Number(result?.affectedRows ?? 0),
       };
     },
+    async ping() {
+      await withTimeout(pool.query('SELECT 1'), TEARDOWN_TIMEOUT_MS, '心跳');
+    },
     async close() {
       tunnel.close();
-      try { await pool.end(); } catch { /* 已关闭 */ }
+      // pool.end() 在死传输上会等一个永不回来的 FIN，必须给它设死线：
+      // 否则一次断连就能把进程里的连接池永久挂住。
+      await boundedTeardown(() => pool.end(), () => { try { pool.pool?._allConnections?.forEach((c) => c.destroy()); } catch { /* 已销毁 */ } });
     },
   };
 }
@@ -189,18 +221,21 @@ async function connectPostgres(driver, config) {
     max: 4,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     idleTimeoutMillis: TUNNEL_REUSE_MS,
+    // 同 MySQL：内核 keepalive 防 NAT 静默丢流。
+    keepAlive: true,
+    keepAliveInitialDelayMillis: TCP_KEEPALIVE_MS,
     // 只读连接的强约束在服务端，不在驱动：见 applyReadOnly()。
   });
   pool.on('error', () => { /* 空闲连接异常不能让进程崩掉 */ });
   return {
-    async run(sql, params, timeoutMs) {
+    async run(sql, params, timeoutMs, redaction) {
       const client = await pool.connect();
       try {
         // statement_timeout 是 Postgres 侧的唯一可靠超时：客户端 abort 之后
         // 服务端仍可能继续跑完整个慢查询。
         await client.query(`SET statement_timeout = ${Math.trunc(timeoutMs)}`);
         const result = await withTimeout(client.query({ text: sql, values: params }), timeoutMs, '查询');
-        const rows = normalizeRows(result.rows ?? []);
+        const rows = normalizeRows(result.rows ?? [], null, redaction);
         return {
           columns: (result.fields ?? []).map((field) => field.name).slice(0, MAX_COLUMNS),
           rows,
@@ -210,9 +245,14 @@ async function connectPostgres(driver, config) {
         client.release();
       }
     },
+    async ping() {
+      const client = await withTimeout(pool.connect(), TEARDOWN_TIMEOUT_MS, '心跳');
+      try { await withTimeout(client.query('SELECT 1'), TEARDOWN_TIMEOUT_MS, '心跳'); }
+      finally { client.release(); }
+    },
     async close() {
       tunnel.close();
-      try { await pool.end(); } catch { /* 已关闭 */ }
+      await boundedTeardown(() => pool.end(), () => { try { pool._clients?.forEach((c) => c.end?.()); } catch { /* 已销毁 */ } });
     },
   };
 }
@@ -235,7 +275,7 @@ async function connectRedis(driver, config) {
   client.on('error', () => { /* 由每次调用自行处理 */ });
   await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'Redis 连接');
   return {
-    async run(sql, params, timeoutMs) {
+    async run(sql, params, timeoutMs, redaction) {
       // Redis 没有 SQL，两种传法：
       //   1) 一行命令：`GET user:1`（按空白切分，够用且最直观）
       //   2) params 直接传数组：['SET', 'key with space', 'value']
@@ -249,10 +289,17 @@ async function connectRedis(driver, config) {
       const rows = Array.isArray(result)
         ? result.map((value, index) => ({ index, value: renderRedisValue(value) }))
         : [{ value: renderRedisValue(result) }];
-      return { columns: ['value'], rows: rows.slice(0, MAX_ROWS), rowCount: rows.length };
+      const shaped = rows.slice(0, MAX_ROWS).map((row) => (
+        redaction ? { ...row, value: clampCell(row.value, redaction) } : row
+      ));
+      return { columns: ['value'], rows: shaped, rowCount: rows.length };
+    },
+    async ping() {
+      await withTimeout(client.ping(), TEARDOWN_TIMEOUT_MS, '心跳');
     },
     async close() {
       tunnel.close();
+      // disconnect() 同步拆 socket，不会挂；用 quit() 优雅关闭反而可能等不到应答。
       try { client.disconnect(); } catch { /* 已关闭 */ }
     },
   };
@@ -268,7 +315,7 @@ function renderRedisValue(value) {
 // ==================== 结果归一化 ====================
 
 /** 把任意行数据转成「可 JSON 序列化、可进模型上下文」的纯对象。 */
-function normalizeRows(rows, fields) {
+function normalizeRows(rows, fields, redaction) {
   if (!Array.isArray(rows)) return [];
   const names = Array.isArray(fields) ? fields.map((field) => field.name) : null;
   return rows.slice(0, MAX_ROWS).map((row) => {
@@ -277,12 +324,12 @@ function normalizeRows(rows, fields) {
       const keys = names ?? row.map((_value, index) => `col_${index}`);
       const object = {};
       keys.slice(0, MAX_COLUMNS).forEach((key, index) => {
-        object[key] = clampCell(row[index]);
+        object[key] = clampCell(row[index], redaction);
       });
       return object;
     }
     const object = {};
-    for (const key of Object.keys(row).slice(0, MAX_COLUMNS)) object[key] = clampCell(row[key]);
+    for (const key of Object.keys(row).slice(0, MAX_COLUMNS)) object[key] = clampCell(row[key], redaction);
     return object;
   });
 }
@@ -290,24 +337,43 @@ function normalizeRows(rows, fields) {
 /**
  * 单元格裁剪：Buffer 转字符串、日期转 ISO、超大文本截断并标注。
  * 截断必须留痕，否则运维会以为字段本来就是短的。
+ *
+ * **脱敏必须在截断之前**：PEM 私钥块的模式以 `-----END ... -----` 结尾，
+ * 先截断会让尾部标记消失、模式失配，于是超长私钥**整段原样返回**——
+ * 这是实测过的泄漏路径，不是理论风险。所以顺序固定为
+ * 「转成字符串 → 脱敏 → 截断」。
+ *
+ * @param {unknown} value
+ * @param {{redact: (value: unknown) => unknown}} [redaction]
  */
-function clampCell(value) {
+function clampCell(value, redaction) {
   if (value === null || value === undefined) return null;
+  let text;
   if (Buffer.isBuffer(value)) {
-    return value.length > MAX_CELL_CHARS
-      ? `${value.subarray(0, MAX_CELL_CHARS).toString('utf8')}…[已截断，共 ${value.length} 字节]`
-      : value.toString('utf8');
+    text = value.toString('utf8');
+    if (value.length > MAX_CELL_CHARS && !redaction) {
+      return `${value.subarray(0, MAX_CELL_CHARS).toString('utf8')}…[已截断，共 ${value.length} 字节]`;
+    }
+  } else if (value instanceof Date) {
+    return value.toISOString();
+  } else if (typeof value === 'bigint') {
+    return value.toString();
+  } else if (typeof value === 'object') {
+    text = JSON.stringify(value);
+  } else if (typeof value === 'string') {
+    text = value;
+  } else {
+    return value;
   }
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'object') {
-    const json = JSON.stringify(value);
-    return json.length > MAX_CELL_CHARS ? `${json.slice(0, MAX_CELL_CHARS)}…[已截断]` : json;
+
+  // 先脱敏：此时 text 是完整内容，PEM 尾标记还在。
+  const safe = redaction ? String(redaction.redact(text)) : text;
+  if (safe.length > MAX_CELL_CHARS) {
+    const unit = Buffer.isBuffer(value) ? '字节' : '字符';
+    const total = Buffer.isBuffer(value) ? value.length : safe.length;
+    return `${safe.slice(0, MAX_CELL_CHARS)}…[已截断，共 ${total} ${unit}]`;
   }
-  if (typeof value === 'string' && value.length > MAX_CELL_CHARS) {
-    return `${value.slice(0, MAX_CELL_CHARS)}…[已截断，共 ${value.length} 字符]`;
-  }
-  return value;
+  return safe;
 }
 
 function withTimeout(promise, timeoutMs, label) {
@@ -322,24 +388,44 @@ function withTimeout(promise, timeoutMs, label) {
   });
 }
 
+/**
+ * 有界拆除：给拆除动作设死线，超时则执行强制回收。
+ *
+ * `pool.end()` / `pool.quit()` 会等每一个已检出的客户端归还，而归还依赖
+ * socket 上的 FIN。传输死后那个 FIN 永远不会来，拆除就永久挂住——连带
+ * 把整个进程里的那个池子留在半死状态。所以这里一律认为「拆除可能不返回」，
+ * 超过 TEARDOWN_TIMEOUT_MS 就调 force 把 socket 强拆。
+ *
+ * 拆除失败不向上抛：调用方在清理路径上，没有比「已经尽力了」更好的结果。
+ *
+ * @param {() => Promise<unknown>} teardown
+ * @param {() => void} [force]
+ */
+async function boundedTeardown(teardown, force) {
+  try {
+    await withTimeout(Promise.resolve().then(teardown), TEARDOWN_TIMEOUT_MS, '关闭连接');
+  } catch {
+    try { force?.(); } catch { /* 已经拆干净了 */ }
+  }
+}
+
 // ==================== 只读保护 ====================
 
 /**
  * 写语句识别。
  *
- * 这是一道「防手滑」的闸门，不是安全边界——真正的权限控制应该由数据库
- * 侧的只读账号完成（文档里明确要求用只读账号）。这里只拦最明显的写操作，
- * 宁可偶尔误拦，也不要让运维以为「只读」是安全的。
+ * 判定逻辑在 sql-safety.mjs 里做真正的词法扫描——正则版曾经放过
+ * `WITH x AS (DELETE ...) SELECT`、`SELECT ... INTO OUTFILE`、
+ * MySQL 可执行版本注释与注释拆词，只读连接名存实亡。
+ *
+ * 数据库侧的只读账号仍然是**真正的**安全边界，这里只是让「只读开关」
+ * 对得起它的名字。
+ *
+ * @param {string} sql
+ * @param {{engine?: string}} options
  */
-const WRITE_PATTERN = /^\s*(insert|update|delete|drop|truncate|alter|create|grant|revoke|rename|replace|merge|call|do|copy|vacuum|reindex|cluster|refresh|set|lock|flushdb|flushall|del|setex|setnx|hset|hdel|lpush|rpush|sadd|srem|zadd|zrem|incr|decr|expire|persist|rename|move|swapdb)\b/i;
-
-export function isWriteStatement(sql) {
-  // 去掉前导注释与空行后判断，避免用 /* */ 把写语句藏起来。
-  const stripped = String(sql)
-    .replace(/^\s*(--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)+/g, '');
-  // 多语句一律按写处理：不管内容是什么，都不该从只读连接发出。
-  if (/;\s*\S/.test(stripped.replace(/;\s*$/, ''))) return true;
-  return WRITE_PATTERN.test(stripped);
+export function isWriteStatement(sql, options = {}) {
+  return isWriteStatementImpl(sql, options);
 }
 
 // ==================== 对外 API ====================
@@ -347,12 +433,30 @@ export function isWriteStatement(sql) {
 /**
  * 取得（并缓存）某个连接的可用客户端。
  *
+ * 缓存命中不等于能用：连接可能被 NAT 或服务端的空闲回收静默弄死，
+ * 两端都没收到 FIN。所以空闲超过 PING_AFTER_IDLE_MS 时先探一下，
+ * 探活失败就丢掉重建——让用户看到「刚刚卡了一下」而不是「连接已失效」。
+ *
  * @param {object} config resolveConnection() 的结果
  */
 async function acquire(config) {
   const key = `${config.id}:${fingerprint(config)}`;
   const cached = pools.get(key);
-  if (cached && !cached.broken) return cached;
+  if (cached && !cached.broken) {
+    const idleMs = Date.now() - cached.lastUsed;
+    if (idleMs <= PING_AFTER_IDLE_MS) return cached;
+    // 长时间空闲：先 ping。时间阈值的意义就是避免每条查询都多一个往返。
+    try {
+      await cached.client.ping();
+      cached.lastUsed = Date.now();
+      return cached;
+    } catch (cause) {
+      // 探活失败就是死了：整条隧道都不再可信（可能换成别的库了），
+      // 重建而不是只换池。
+      invalidate(key, cached);
+      throw error(`空闲 ${Math.round(idleMs / 1000)}s 后的连接已不响应心跳（${cause?.message ?? cause}）`, 'connect');
+    }
+  }
 
   const client = await connectEngine(config);
   const entry = {
@@ -369,7 +473,8 @@ function invalidate(key, entry) {
   if (pools.get(key) === entry) {
     entry.broken = true;
     pools.delete(key);
-    void entry.client.close();
+    // 不 await：清理不能阻塞当前请求。close() 自身已经是有界的。
+    void entry.client.close().catch(() => {});
   }
 }
 
@@ -405,8 +510,11 @@ export async function queryDatabase(config, sql, params = [], options = {}) {
   // 那些 SELECT 对用户来说必须是不可见的实现细节，不能让调用方
   // 通过 readOnly:false 把任意写语句送进只读连接。
   const readOnly = options.internal ? false : (config.readOnly ?? true);
-  if (readOnly && isWriteStatement(sql)) {
-    throw error('该连接是只读的，已拒绝执行写操作。如确需写入，请关闭该连接的「只读」开关。', 'readOnly');
+  if (readOnly) {
+    const reason = config.engine === 'redis'
+      ? (isWriteCommand(sql) ? '只读连接拒绝执行写命令。如确需写入，请关闭该连接的「只读」开关。' : null)
+      : assessSql(sql);
+    if (reason) throw error(reason, 'readOnly');
   }
 
   const key = `${config.id}:${fingerprint(config)}`;
@@ -421,9 +529,16 @@ export async function queryDatabase(config, sql, params = [], options = {}) {
 
   const startedAt = Date.now();
   try {
-    const result = await entry.client.run(sql, params, timeoutMs);
+    // 脱敏器传进 run()，因为**脱敏必须发生在截断之前**：先截断会让 PEM
+    // 尾标记消失、私钥模式失配，超长私钥就会整段泄漏。
+    const redaction = createRedaction();
+    const result = await entry.client.run(sql, params, timeoutMs, redaction);
     entry.lastUsed = Date.now();
-    return { ...result, durationMs: Date.now() - startedAt };
+    return {
+      ...result,
+      ...(redaction.count > 0 ? { redactedCells: redaction.count } : {}),
+      durationMs: Date.now() - startedAt,
+    };
   } catch (cause) {
     // 建连后的错误里，凡属于「拿不到可用会话」的都归 connect，其余归 query。
     // 认证失败在不同驱动里表现差别很大（PG 在 pool.connect() 抛、
