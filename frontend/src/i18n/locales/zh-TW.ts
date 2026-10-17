@@ -71,6 +71,7 @@ export const zhTW: Record<keyof typeof zhCN, string> = {
 
   'nav.main': '主導航',
     'menu.mcp': 'MCP',
+    'menu.database': '資料庫',
   'nav.backToPanel': '返回面板',
 'menu.settings': '設定',
   'auth.keyPairTitle': '金鑰操作',

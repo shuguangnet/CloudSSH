@@ -551,7 +551,7 @@ export class ServerList {
     try {
       const response = await fetch('/api/config');
       if (!response.ok) return;
-      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean; automationEnabled?: boolean };
+      const config = (await response.json()) as { sshSharingEnabled?: boolean; mcpEnabled?: boolean; adminAccountEnabled?: boolean; automationEnabled?: boolean; databaseEnabled?: boolean };
       this.sharingEnabled = config.sshSharingEnabled === true;
       const automationWasEnabled = this.automationEnabled;
       this.automationEnabled = config.automationEnabled === true;
@@ -561,6 +561,7 @@ export class ServerList {
       // 用户菜单：功能/设置分组的独立页面入口按部署能力显隐
       document.getElementById('menu-automation')?.classList.toggle('hidden', !this.automationEnabled);
       document.getElementById('menu-mcp')?.classList.toggle('hidden', config.mcpEnabled !== true);
+      document.getElementById('menu-database')?.classList.toggle('hidden', config.databaseEnabled !== true);
       document.getElementById('menu-account')?.classList.toggle('hidden', config.adminAccountEnabled !== true);
       syncUserMenuGroups();
       // 状态按钮依赖 automationEnabled，配置就位后重绘一次卡片

@@ -69,6 +69,7 @@ export const zhCN = {
 
   'nav.main': '主导航',
     'menu.mcp': 'MCP',
+    'menu.database': '数据库',
   'nav.backToPanel': '返回面板',
 'menu.settings': '设置',
   'auth.keyPairTitle': '密钥操作',

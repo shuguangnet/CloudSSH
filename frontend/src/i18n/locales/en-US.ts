@@ -109,6 +109,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
 
   'nav.main': 'Main navigation',
     'menu.mcp': 'MCP',
+    'menu.database': 'Databases',
   'nav.backToPanel': 'Back to panel',
 'menu.settings': 'Settings',
   'auth.keyPairTitle': 'Key operations',

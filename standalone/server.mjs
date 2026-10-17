@@ -554,7 +554,7 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/host-file' && req.method === 'GET') return sendResponse(res, await readHostFile(request, requestUrl));
     const response = await worker.fetch(request, env);
     if (pathname === '/api/config' && response.ok) {
-      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, automationEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
+      return sendResponse(res, Response.json({ ...await response.json(), mcpEnabled: true, automationEnabled: true, databaseEnabled: true, adminAccountEnabled: !!env.ADMIN_PASSWORD_HASH, adminUsernameRequired: !!env.ADMIN_PASSWORD_HASH }));
     }
     return sendResponse(res, response);
   } catch (error) {
