@@ -1,4 +1,4 @@
-> **本 Fork 新增 Docker／脚本自托管和外部 MCP 运维接口。** 无需 Cloudflare 账号，支持面板服务器授权、令牌管理、SSH 命令与文件操作。部署：`bash scripts/deploy.sh --docker`（或 `--native`）。完整说明见 [自托管与 MCP 文档](docs/self-hosted.md)。开发与改造位于 `test` 分支。
+> **本 Fork 新增 Docker／脚本自托管和外部 MCP 运维接口。** 无需 Cloudflare 账号，支持面板服务器授权、令牌管理、SSH 命令与文件操作。部署：`bash scripts/deploy.sh --docker`（或 `--native`）。完整说明见 [自托管与 MCP 文档](docs/self-hosted.md)、[数据库与 MCP 工具](docs/database-mcp.md) 与 [命令行客户端 `cssh`](docs/cli.md)。开发与改造位于 `test` 分支。
 
 <div align="center">
   <img src="./logo.svg" alt="CloudSSH" width="480">

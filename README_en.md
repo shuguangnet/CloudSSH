@@ -1,4 +1,4 @@
-> **This fork adds Docker/native self-hosting and an external MCP operations endpoint.** Run `bash scripts/deploy.sh --docker` (or `--native`). It includes scoped access tokens, saved-server authorization, SSH commands and file tools. See [self-hosting and MCP documentation](docs/self-hosted.md). Changes are developed on the `test` branch.
+> **This fork adds Docker/native self-hosting and an external MCP operations endpoint.** Run `bash scripts/deploy.sh --docker` (or `--native`). It includes scoped access tokens, saved-server authorization, SSH commands and file tools. See [self-hosting and MCP documentation](docs/self-hosted.md), [database & MCP tools](docs/database-mcp.md) and the [`cssh` command-line client](docs/cli.md). Changes are developed on the `test` branch.
 
 <div align="center">
   <img src="./logo.svg" alt="CloudSSH" width="480">

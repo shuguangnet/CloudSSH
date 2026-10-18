@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, mkdirSync, chmodSync, existsSync, readdirSync } from 'node:fs';
 import { readdir, stat, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -8,7 +9,7 @@ import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
 import { AccessStore, tokenHash } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
-import { savedServers, executeSaved, drainSshChainPool } from './operations.mjs';
+import { savedServers, executeSaved, drainSshChainPool, connectionConfig } from './operations.mjs';
 import { AutomationStore } from './automation-store.mjs';
 import { DatabaseStore } from './database-store.mjs';
 import { createDatabaseRoutes } from './database-api.mjs';
@@ -18,6 +19,8 @@ import { AutomationEngine } from './scheduler.mjs';
 import { DashboardEngine } from './dashboard.mjs';
 import { createAutomationRoutes } from './automation-api.mjs';
 import { createLiveStatusHub } from './live-status.mjs';
+import { createCliRoutes } from './cli-api.mjs';
+import { resolveBearerIdentity } from './cli-auth.mjs';
 
 process.umask(0o077);
 installWorkerGlobals();
@@ -444,6 +447,16 @@ const server = createServer(async (req, res) => {
     }
     const body = !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
     const request = requestFromNode(req, body, res);
+    // CLI（终端客户端）：Bearer 令牌鉴权，与 /mcp 共用同一把令牌与门禁。
+    // 必须放在 worker.fetch 之前——自托管下 worker 硬编码只认 session cookie。
+    if (pathname.startsWith('/api/cli/')) {
+      const { identity, response: rejected } = resolveBearerIdentity({
+        headers: req.headers, store, env, authGeneration,
+      });
+      if (rejected) return sendResponse(res, rejected);
+      const handled = await cliRoutes(identity)(request, pathname);
+      if (handled) return sendResponse(res, handled);
+    }
     // 数据库连接管理（面板用）：/api/db/*
     if (pathname.startsWith('/api/db/')) return sendResponse(res, await databaseRoutes(request, pathname));
     if (pathname === '/api/admin/account') return sendResponse(res, await accountManagement(request));
@@ -568,11 +581,70 @@ const server = createServer(async (req, res) => {
 server.requestTimeout = 30000;
 server.headersTimeout = 15000;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
+const cliRoutes = (identity) => createCliRoutes({
+  env, identity, SSHSession, isBlockedCommand, databaseStore,
+});
+
+// CLI 专用的 WS 升级：/api/cli/ssh?server_id=N
+//
+// 与面板 /api/ssh 的关键差别：不走 worker 的 cookie 门（自托管下它硬编码
+// REQUIRE_GITHUB_AUTH=true），而是用 Bearer 令牌鉴权后，把服务端已解密的
+// 连接配置以 x-ssh-config 头喂给同一个 SSHSessionDO——跳板链、主机指纹、
+// 空闲超时、审计全部复用，凭据永不出服务端进程。
+async function upgradeCliSsh(req, socket, head, url) {
+  const { identity, response } = resolveBearerIdentity({
+    headers: req.headers, store, env, authGeneration,
+  });
+  if (response) {
+    socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  const serverId = Number(url.searchParams.get('server_id'));
+  if (!Number.isSafeInteger(serverId) || serverId <= 0 || !identity.server_ids.includes(serverId)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  // 连接配置（含解密后的凭据）只在服务端内存里流转。
+  const config = await connectionConfig(env, identity, serverId);
+  const sessionName = `session:${Date.now()}:${randomUUID()}`;
+  const doId = env.SSH_SESSION.idFromName(sessionName);
+  const doUrl = new URL(req.url, env.BASE_URL);
+  doUrl.pathname = '/api/ssh';
+  doUrl.search = '';
+  doUrl.searchParams.set('session', sessionName);
+  const cols = Number(url.searchParams.get('cols'));
+  const rows = Number(url.searchParams.get('rows'));
+  if (Number.isInteger(cols) && cols > 0) doUrl.searchParams.set('cols', String(cols));
+  if (Number.isInteger(rows) && rows > 0) doUrl.searchParams.set('rows', String(rows));
+
+  const headers = new Headers(req.headers);
+  headers.delete('authorization');
+  headers.set('x-cloudflare-colo', 'SELF_HOSTED');
+  headers.set('x-ssh-config', encodeURIComponent(JSON.stringify(config)));
+  const doResponse = await env.SSH_SESSION.get(doId).fetch(
+    new Request(doUrl.toString(), { headers })
+  );
+  if (doResponse.status !== 101 || !doResponse.webSocket) {
+    socket.end(`HTTP/1.1 ${doResponse.status} Rejected\r\nConnection: close\r\n\r\n`);
+    return;
+  }
+  if (socket.destroyed) { doResponse.webSocket.close(1001); return; }
+  wss.handleUpgrade(req, socket, head, (network) => doResponse.webSocket.attach(network));
+}
+
 server.on('upgrade', async (req, socket, head) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) throw new Error('Invalid target');
     const url = new URL(req.url, env.BASE_URL);
-    if (url.origin !== env.BASE_URL || !['/api/ssh', '/api/ssh/sftp'].includes(url.pathname) || rateLimited(req.socket.remoteAddress)) {
+    if (url.origin !== env.BASE_URL || rateLimited(req.socket.remoteAddress)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
+    }
+    // CLI 终端：Bearer 鉴权，绕开浏览器 cookie 门。
+    if (url.pathname === '/api/cli/ssh') {
+      await upgradeCliSsh(req, socket, head, url);
+      return;
+    }
+    if (!['/api/ssh', '/api/ssh/sftp'].includes(url.pathname)) {
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
     }
     const response = await worker.fetch(requestFromNode(req), env);
