@@ -17,14 +17,70 @@ cssh -                     # 重连上一次
 
 ## 安装
 
-自托管发行版（`pnpm run build:self-hosted` 之后的产物）已包含 `standalone/cli.mjs`，
-可直接全局链接：
+要求 **Node.js ≥ 20**（用到 `node:` 前缀的 ESM 与顶层 await）。
+
+### A. 面板所在的机器（最简单）
+
+官方 Docker 镜像里已经带好了 CLI，直接在容器里跑，不用装任何东西：
 
 ```bash
-# 在仓库内
-npm link                    # 之后 `cssh` 与 `cloudssh` 都在 PATH 上
+# 面板和服务同机时，走容器内回环（令牌不会经过网络）
+docker exec -it cloudssh-cloudssh-1 \
+  node /app/standalone/cli.mjs login http://127.0.0.1:8787
+```
 
-# 或直接跑
+想把 `cssh` 变成这台机器上的普通命令（本机也装了 Node ≥ 20）：
+
+```bash
+# $REPO 换成仓库的实际路径
+sudo ln -sf "$REPO/standalone/cli.mjs" /usr/local/bin/cssh
+sudo ln -sf "$REPO/standalone/cli.mjs" /usr/local/bin/cloudssh
+```
+
+`standalone/cli.mjs` 是 `#!/usr/bin/env node` 脚本，软链到 PATH 里即可。注意它
+依赖仓库里的 `node_modules`（唯一的运行时依赖是 `ws`），所以**不要**把单个文件
+拷走——要么软链到仓库内，要么用下面的方式装。
+
+### B. 从 Git 安装（推荐给日常使用）
+
+```bash
+npm i -g "github:shuguangnet/CloudSSH#test"
+# 之后 cssh 与 cloudssh 都在 PATH 上
+cssh --version
+```
+
+这会把整包（含 `ws`）装进全局 `node_modules`，之后与仓库目录无关，升级走
+`npm i -g` 重装即可。Linux 上如果提示 `EACCES`，别加 `sudo`，改用
+`npm config set prefix ~/.local` 并把 `~/.local/bin` 加进 `PATH`。
+
+### C. 单文件（拷到别的机器，无 node_modules）
+
+只有 `ws` 一个运行时依赖，打成单个 `.cjs` 就没有任何外部依赖了：
+
+```bash
+cd "$REPO"
+npx esbuild standalone/cli/main.mjs --bundle --platform=node \
+  --format=cjs --target=node20 --outfile=cssh.cjs
+chmod +x cssh.cjs && ./cssh.cjs --version
+```
+
+两个打包坑（都实测过）：
+
+- **必须 `--format=cjs`，不能用 esm**。`ws` 内部有 `require('events')` 这类动态
+  `require`，打 ESM 时 esbuild 无法静态化，运行期直接报
+  `Dynamic require of "events" is not supported`。
+- **入口用 `standalone/cli/main.mjs`，不能用 `standalone/cli.mjs`**。后者是
+  `await import(join(here,'cli','main.mjs'))` 的动态路径，打包工具跟不进去，
+  产物里只剩那两行 import。
+
+### D. 从源码仓库
+
+```bash
+cd "$REPO"
+pnpm install            # 首次需要，装 ws 等运行时依赖
+npm link                # 之后 cssh / cloudssh 都在 PATH 上，改代码即时生效
+
+# 不想 link 也可以直接跑
 node standalone/cli.mjs whoami
 ```
 
