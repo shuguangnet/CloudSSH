@@ -26,7 +26,7 @@ import {
   LOCAL_ADMIN_GITHUB_ID,
 } from './auth';
 import { captchaActiveFor, issueCaptchaChallenge } from './captcha';
-import { HTML } from './html';
+import { HTML, PANEL_CSP } from './html';
 
 export { SSHSessionDO } from './durable-object';
 export { SSHShareDO } from './share-do';
@@ -282,6 +282,7 @@ export default {
       return new Response(HTML, {
         headers: {
           'Content-Type': 'text/html;charset=UTF-8',
+          'Content-Security-Policy': PANEL_CSP,
           'X-Content-Type-Options': 'nosniff',
           'X-Frame-Options': 'DENY',
           'Referrer-Policy': 'strict-origin-when-cross-origin',

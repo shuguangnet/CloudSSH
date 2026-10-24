@@ -3329,3 +3329,4 @@ WARNING: This link could potentially be dangerous\`)){let t=window.open();if(t){
   </body>
 </html>
 `;
+export const PANEL_CSP = "default-src 'none'; script-src 'self' 'sha256-4zCe1BIiP6sJsjV8pkFIzoUo28hYjHgvevZSUvWb0+4=' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://challenges.cloudflare.com; worker-src 'self'; manifest-src 'self'; frame-src 'self' https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";

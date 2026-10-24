@@ -95,6 +95,25 @@ const PUBLIC_FILES = {
   '/favicon.svg': { file: 'favicon.svg', type: 'image/svg+xml', cache: 'public, max-age=3600' },
 };
 
+// Split shell 模式的 CSP：脚本来自同源 /assets/*（哈希文件名，不可变缓存），
+// 无需脚本哈希；其余策略与 build-html.js 生成的内联 PANEL_CSP 保持同口径
+// （脚本哈希每次构建都变，而资产文件名本身就是内容哈希，'self' 即足够严格）。
+const SPLIT_CSP = [
+  "default-src 'none'",
+  "script-src 'self' https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: https:",
+  "connect-src 'self' https://challenges.cloudflare.com",
+  "worker-src 'self'",
+  "manifest-src 'self'",
+  "frame-src 'self' https://challenges.cloudflare.com",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 // Split app shell (dist/public/index.html plus hashed /assets/* files, copied by
 // scripts/build-standalone.mjs). Served only when every referenced asset exists;
 // otherwise the inlined worker shell remains the fallback. Hashed filenames make
@@ -548,6 +567,7 @@ const server = createServer(async (req, res) => {
         headers: {
           'Content-Type': 'text/html;charset=UTF-8',
           'Cache-Control': 'no-cache',
+          'Content-Security-Policy': SPLIT_CSP,
           'X-Content-Type-Options': 'nosniff',
           'X-Frame-Options': 'DENY',
           'Referrer-Policy': 'strict-origin-when-cross-origin',
