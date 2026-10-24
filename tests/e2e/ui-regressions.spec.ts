@@ -257,13 +257,11 @@ test('管理员登录对话框图片验证码：渲染、输入与提交载荷',
     .poll(() => challengeFetches)
     .toBe(3);
   expect(loginRequests).toHaveLength(1);
-  // SVG 移除 width/height 后按容器等比缩放
-  const svgSize = await figure.locator('> svg').evaluate((svg) => ({
-    w: svg.getAttribute('width'),
-    cw: svg.getBoundingClientRect().width,
-  }));
-  expect(svgSize.w).toBeNull();
-  expect(svgSize.cw).toBeGreaterThan(100);
+  // SVG 移除 width/height 后按容器等比缩放（expect.poll 等待布局稳定，避免读到 0 宽）
+  expect(await figure.locator('> svg').evaluate((svg) => svg.getAttribute('width'))).toBeNull();
+  await expect
+    .poll(async () => figure.locator('> svg').evaluate((svg) => svg.getBoundingClientRect().width))
+    .toBeGreaterThan(100);
 });
 
 /**
