@@ -395,6 +395,7 @@ export const zhTW: Record<keyof typeof zhCN, string> = {
   'terminal.disconnect': '斷開連線',
   'terminal.newConnection': '新增連線',
   'terminal.splitScreen': '左右分割',
+  'terminal.fullscreen': '進入全螢幕',
   'terminal.exitSplitScreen': '退出分割',
   'terminal.splitEmptyPane': '此分欄尚未開啟會話',
   'terminal.splitNewConnection': '在此分欄新增連線',

@@ -440,6 +440,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'terminal.disconnect': 'Disconnect',
   'terminal.newConnection': 'New connection',
   'terminal.splitScreen': 'Split view',
+  'terminal.fullscreen': 'Enter fullscreen',
   'terminal.exitSplitScreen': 'Exit split view',
   'terminal.splitEmptyPane': 'No session in this pane yet',
   'terminal.splitNewConnection': 'Open a connection here',

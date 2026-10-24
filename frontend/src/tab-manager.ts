@@ -5,6 +5,7 @@ import { t } from './i18n';
 import { getNetworkQuality } from './network-quality';
 import { SFTPPanel } from './sftp-panel';
 import { SSHTerminal, type TerminalSelectionAnchor } from './terminal';
+import { isTerminalCinemaActive } from './terminal-fullscreen';
 import { notify } from './ui-feedback';
 
 export type TabState = 'connecting' | 'connected' | 'disconnected';
@@ -512,6 +513,11 @@ export class TabManager {
     });
   }
 
+  /** 全屏切换等外部入口：重算当前可见终端尺寸并下发 resize */
+  fitTerminals(): void {
+    this.fitVisibleTerminals();
+  }
+
   /** 对分屏两个窗格（或单栏的当前标签）统一 fit；隐藏/未挂载的终端自动跳过 */
   private fitVisibleTerminals(): void {
     requestAnimationFrame(() => {
@@ -761,9 +767,10 @@ export class TabManager {
   // ==================== 渲染标签栏 ====================
 
   renderTabBar(): void {
-    // 保留 new-tab-btn 与 split-view-btn，清除其他标签按钮
+    // 保留 new-tab-btn、split-view-btn 与全屏按钮，清除其他标签按钮
     const newTabBtn = this.tabBarEl.querySelector('#new-tab-btn');
     const existingSplitBtn = this.tabBarEl.querySelector('#split-view-btn');
+    const existingFullscreenBtn = this.tabBarEl.querySelector('#terminal-fullscreen-btn');
     this.tabBarEl.replaceChildren();
 
     for (const tab of this.tabs.values()) {
@@ -843,6 +850,22 @@ export class TabManager {
     splitBtn.classList.toggle('tab-split-active', this.splitMode);
     splitBtn.classList.toggle('hidden', this.tabs.size === 0);
     this.tabBarEl.appendChild(splitBtn);
+
+    // 追加终端全屏按钮（桌面+移动通用；点击逻辑由 terminal-fullscreen 控制器委托处理）
+    let fullscreenBtn = existingFullscreenBtn as HTMLButtonElement | null;
+    if (!fullscreenBtn) {
+      fullscreenBtn = document.createElement('button');
+      fullscreenBtn.id = 'terminal-fullscreen-btn';
+      fullscreenBtn.type = 'button';
+      fullscreenBtn.className = 'tab-new-btn';
+      fullscreenBtn.appendChild(this.createIcon('fullscreen', '16px'));
+    }
+    const cinemaActive = isTerminalCinemaActive();
+    fullscreenBtn.title = cinemaActive ? t('terminal.exitFullscreen') : t('terminal.fullscreen');
+    fullscreenBtn.setAttribute('aria-label', fullscreenBtn.title);
+    fullscreenBtn.setAttribute('aria-pressed', String(cinemaActive));
+    fullscreenBtn.classList.toggle('hidden', this.tabs.size === 0);
+    this.tabBarEl.appendChild(fullscreenBtn);
   }
 
   private tabDotClass(state: TabState): string {

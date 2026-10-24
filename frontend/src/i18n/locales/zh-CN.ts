@@ -393,6 +393,7 @@ export const zhCN = {
   'terminal.disconnect': '断开连接',
   'terminal.newConnection': '新建连接',
   'terminal.splitScreen': '左右分屏',
+  'terminal.fullscreen': '进入全屏',
   'terminal.exitSplitScreen': '退出分屏',
   'terminal.splitEmptyPane': '此分栏还没有会话',
   'terminal.splitNewConnection': '新建连接到此分栏',

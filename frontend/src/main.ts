@@ -32,6 +32,7 @@ import { LiquidSegmentedThemeControl } from './theme-segmented';
 import { LiquidSegmentedDrawerControl } from './drawer-segmented';
 import { customThemeModal, customThemeStore } from './custom-theme-manager';
 import { notify } from './ui-feedback';
+import { initTerminalFullscreen } from './terminal-fullscreen';
 
 // ==================== 全局状态 ====================
 
@@ -96,6 +97,7 @@ function initServerPaginationBreakpoints(): void {
 function getTabManager(): TabManager {
   if (!tabManager) {
     tabManager = new TabManager('tab-bar', 'terminal-area');
+    initTerminalFullscreen({ fit: () => tabManager?.fitTerminals() });
     tabManager.setAllTabsClosedHandler(() => {
       showOfflineUI();
     });

@@ -5770,3 +5770,30 @@ body.terminal-active .share-back-link { opacity: 0.85; }
   border-color: var(--primary);
   color: var(--primary);
 }
+
+/* ==================== 终端影院全屏模式 ====================
+   .terminal-cinema 挂在 #terminal-section 上（Fullscreen API 或 CSS 回退两种形态共用）：
+   隐藏应用头部、终端状态条与移动快捷键栏，保留标签栏（可切标签 + 全屏按钮本体可达）。
+   !important 用于压过液态主题等带 data-attr 选择器的同等/更高特异性规则。 */
+.terminal-cinema .terminal-app-header,
+.terminal-cinema .terminal-status-bar,
+.terminal-cinema #mobile-terminal-toolbar {
+  display: none !important;
+}
+
+.terminal-cinema .terminal-main {
+  padding: 0 !important;
+}
+
+.terminal-cinema #terminal-wrapper {
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 2px !important;
+}
+
+/* Fullscreen API 不可用时的 CSS 回退：#terminal-section 脱离文档流铺满视口 */
+body.terminal-cinema-css #terminal-section {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}

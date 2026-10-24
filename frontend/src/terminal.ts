@@ -162,6 +162,8 @@ export class SSHTerminal {
   private terminal: Terminal;
   private fitAddon: FitAddon;
   private webglAddon!: WebglAddon;
+  private resizeObserver: ResizeObserver | null = null;
+  private fitPending = false;
   private searchAddon: SearchAddon;
   private ws: WebSocket | null = null;
   private authChallengeDialog: AuthChallengeDialog | null = null;
@@ -1064,6 +1066,9 @@ export class SSHTerminal {
     } catch (e) {
       console.warn('WebGL addon failed to load, falling back to canvas/dom', e);
     }
+
+    // 临时探针钩子：诊断后移除
+    (globalThis as any).__cloudsshTerm = this.terminal;
 
     this.fit();
   }
@@ -2208,6 +2213,8 @@ export class SSHTerminal {
     this.authChallengeDialog?.destroy();
     this.authChallengeDialog = null;
     window.removeEventListener('resize', this.resizeListener);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     if (this.mobileConnectionRecoveryEnabled) {
       document.removeEventListener('visibilitychange', this.visibilityChangeListener);
       window.removeEventListener('pageshow', this.pageShowListener);
