@@ -33,6 +33,18 @@ test('Bearer token 脱敏', () => {
 });
 
 test('KEY=VALUE 形态的口令脱敏', () => {
+  // 单引号 / 双引号包裹的值（SQL password='...' 是常态）也必须命中。
+  const sql = "UPDATE users SET password='hunter2-s3cret' WHERE api_token=\"tok_9f3ab2c1\"";
+  const masked = redactValue(sql).value;
+  assert.ok(!String(masked).includes('hunter2-s3cret'), 'quoted password leaked');
+  assert.ok(!String(masked).includes('tok_9f3ab2c1'), 'quoted token leaked');
+  assert.match(String(masked), /password=\*\*\*/);
+  assert.match(String(masked), /api_token=\*\*\*/);
+  // 裸值形态继续生效（同一入口不能顾此失彼）。
+  assert.ok(!String(redactValue('DB_PASSWORD=topsecret env').value).includes('topsecret'));
+});
+
+test('裸值 KEY=VALUE 各前缀变体都命中', () => {
   for (const text of [
     'API_KEY=sk-live-abcdef123456',
     'password=hunter2',

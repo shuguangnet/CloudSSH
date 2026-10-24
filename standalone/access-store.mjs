@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 
 export const tokenHash = (value) => createHash('sha256').update(value).digest('hex');
 const SCOPES = ['read', 'write', 'exec'];
@@ -11,8 +12,50 @@ const validScopes = (scopes) => Array.isArray(scopes) && scopes.length > 0
   && scopes.every((scope) => SCOPES.includes(scope));
 // 输入非法（400）与状态冲突（409，如已撤销/已过期）需要区分，路由层按 code 映射状态码。
 const invalid = (message) => Object.assign(new Error(message), { code: 'invalid' });
+
+// ==================== 令牌明文加密（支持二次查看） ====================
+// 认证永远只走 SHA-256 哈希（verify 不碰密钥）；加密副本仅服务于「二次查看」。
+// 密钥文件与 mcp.sqlite 分离（同 database-store 的约定）：只备份/泄露
+// mcp.sqlite 拿不到令牌明文；反过来密钥文件丢失只影响 reveal（解密报
+// decryptFailed），登录与令牌校验完全不受影响。
+const CIPHER = 'aes-256-gcm';
+const IV_BYTES = 12;
+const TAG_BYTES = 16;
+
+function loadSecret(secretFile) {
+  if (existsSync(secretFile)) {
+    const value = readFileSync(secretFile, 'utf8').trim();
+    if (value.length >= 32) return value;
+    throw new Error(`MCP 加密密钥文件损坏：${secretFile}`);
+  }
+  const secret = randomBytes(32).toString('hex');
+  writeFileSync(secretFile, secret, { mode: 0o600 });
+  try { chmodSync(secretFile, 0o600); } catch { /* 某些文件系统不支持，忽略 */ }
+  return secret;
+}
+
+/** 解析审计用客户端 IP：X-Forwarded-For 首跳 → X-Real-IP → 直连地址。
+ * 形状校验（IPv4 八位组 / IPv6 十六进制冒号）防止把任意头内容写进审计；
+ * 未通过反代时 XFF 可被调用方伪造——这是审计元数据不是鉴权依据，只作展示。 */
+const ipShape = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > 45) return null;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) {
+    return text.split('.').every((part) => Number(part) <= 255) ? text : null;
+  }
+  if (text.includes(':')) {
+    const bare = text.split('%')[0]; // 剥离 IPv6 zone id（fe80::1%eth0）
+    return /^[0-9A-Fa-f:]{2,39}$/.test(bare) && bare.replace(/:/g, '').length >= 2 ? bare : null;
+  }
+  return null;
+};
+export function clientIpFrom(forwarded, realIp, socketAddress) {
+  const first = typeof forwarded === 'string' ? forwarded.split(',')[0] : '';
+  return ipShape(first) || ipShape(realIp) || ipShape(socketAddress);
+}
+
 export class AccessStore {
-  constructor(file) {
+  constructor(file, { secretFile } = {}) {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS mcp_tokens (
@@ -25,7 +68,7 @@ export class AccessStore {
       CREATE TABLE IF NOT EXISTS mcp_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT NOT NULL,
         github_id TEXT NOT NULL, server_id INTEGER, tool TEXT NOT NULL,
-        status TEXT NOT NULL, created_at INTEGER NOT NULL, details TEXT NOT NULL);
+        status TEXT NOT NULL, created_at INTEGER NOT NULL, details TEXT NOT NULL, ip TEXT);
       CREATE INDEX IF NOT EXISTS mcp_audit_owner ON mcp_audit(github_id, id);
       CREATE INDEX IF NOT EXISTS mcp_audit_token ON mcp_audit(github_id, token_id, id);
       CREATE INDEX IF NOT EXISTS mcp_audit_filter ON mcp_audit(github_id, server_id, id);
@@ -38,6 +81,13 @@ export class AccessStore {
     if (!columns.has('db_connection_ids')) {
       this.db.exec("ALTER TABLE mcp_tokens ADD COLUMN db_connection_ids TEXT NOT NULL DEFAULT '[]'");
     }
+    // 令牌明文加密副本：支撑设置页「二次查看」。老令牌没有副本（reveal 不可用）。
+    if (!columns.has('token_enc')) this.db.exec('ALTER TABLE mcp_tokens ADD COLUMN token_enc TEXT');
+    // 审计来源 IP：老记录为 NULL，前端展示为「—」。
+    const auditColumns = new Set(this.db.prepare('PRAGMA table_info(mcp_audit)').all().map((row) => row.name));
+    if (!auditColumns.has('ip')) this.db.exec('ALTER TABLE mcp_audit ADD COLUMN ip TEXT');
+    // :memory:（单测）不落密钥文件；真实部署默认在 mcp.sqlite 同目录生成 .secret。
+    this.key = file === ':memory:' ? null : scryptSync(loadSecret(secretFile || `${file}.secret`), 'cloudssh:mcp-tokens', 32);
   }
   create(user, { name, server_ids, scopes, expires_in_days, db_connection_ids }, authGeneration = 'github') {
     if (!validName(name) || !validServerIds(server_ids) || !validScopes(scopes) ||
@@ -50,13 +100,14 @@ export class AccessStore {
     const id = randomBytes(12).toString('hex');
     const token = `cssh_${randomBytes(32).toString('base64url')}`;
     const now = Date.now();
-    // 显式列名：新增列（如 disabled_at）不会打乱位置绑定。
+    // 显式列名：新增列（如 disabled_at）不会打乱位置绑定。token_enc 是
+    // 加密后的明文副本（仅当配置了密钥，即真实部署），供设置页二次查看。
     this.db.prepare(`INSERT INTO mcp_tokens
-      (id, hash, name, github_id, user_id, server_ids, scopes, created_at, expires_at, revoked_at, disabled_at, auth_generation)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`)
+      (id, hash, name, github_id, user_id, server_ids, scopes, created_at, expires_at, revoked_at, disabled_at, auth_generation, token_enc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`)
       .run(id, tokenHash(token), name.trim(), String(user.github_id), user.id,
         JSON.stringify([...new Set(server_ids)]), JSON.stringify([...new Set(scopes)]),
-        now, now + expires_in_days * 86400000, authGeneration);
+        now, now + expires_in_days * 86400000, authGeneration, this.encrypt(token));
     // 数据库授权是后续补上的能力：老 UI 不传时就保持空数组（默认不授权）。
     const wanted = Array.isArray(db_connection_ids) ? db_connection_ids : [];
     if (wanted.length > 0) {
@@ -74,15 +125,46 @@ export class AccessStore {
     return row ? this.decode(row) : null;
   }
   decode(row) {
-    const { hash, ...safe } = row;
+    const { hash, token_enc, ...safe } = row;
     return {
       ...safe,
       disabled: Boolean(row.disabled_at),
+      // 列表/详情永不携带哈希与密文；revealable 告知前端能否二次查看。
+      revealable: Boolean(token_enc),
       server_ids: JSON.parse(row.server_ids),
       scopes: JSON.parse(row.scopes),
       // 老令牌行可能没有这一列（历史数据），一律按「无授权」处理。
       db_connection_ids: safe.db_connection_ids ? JSON.parse(safe.db_connection_ids) : [],
     };
+  }
+  /** AES-256-GCM 加密令牌明文；未配置密钥（如 :memory: 单测）返回 NULL。 */
+  encrypt(plaintext) {
+    if (!this.key || typeof plaintext !== 'string' || plaintext.length === 0) return null;
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv(CIPHER, this.key, iv);
+    const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64');
+  }
+  decrypt(stored) {
+    const raw = Buffer.from(stored, 'base64');
+    if (raw.length < IV_BYTES + TAG_BYTES) throw new Error('密文长度非法');
+    const iv = raw.subarray(0, IV_BYTES);
+    const tag = raw.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
+    const decipher = createDecipheriv(CIPHER, this.key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(raw.subarray(IV_BYTES + TAG_BYTES)), decipher.final()]).toString('utf8');
+  }
+  /**
+   * 二次查看令牌明文。仅浏览器会话 + 同源 POST 可达（路由层把关），
+   * 返回 `{ token }`；老令牌（升级前创建、无加密副本）返回 `{ token: null }`。
+   * 密钥文件丢失/损坏时抛 decryptFailed——绝不把密文当明文回传。
+   */
+  reveal(user, id) {
+    const row = this.owned(user, id);
+    if (!row) return null;
+    if (!row.token_enc || !this.key) return { token: null };
+    try { return { token: this.decrypt(row.token_enc) }; }
+    catch (error) { throw Object.assign(new Error('decryptFailed'), { code: 'decryptFailed' }); }
   }
   isActive(id) {
     return Boolean(this.db.prepare('SELECT id FROM mcp_tokens WHERE id=? AND revoked_at IS NULL AND disabled_at IS NULL AND expires_at>?')
@@ -168,9 +250,9 @@ export class AccessStore {
     this.db.prepare('UPDATE mcp_tokens SET revoked_at=? WHERE github_id=? AND revoked_at IS NULL')
       .run(Date.now(), String(user.github_id));
   }
-  audit(identity, tool, serverId, status, details = {}) {
-    this.db.prepare('INSERT INTO mcp_audit (token_id, github_id, server_id, tool, status, created_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(identity.id, identity.github_id, serverId ?? null, tool, status, Date.now(), JSON.stringify(details));
+  audit(identity, tool, serverId, status, details = {}, ip = null) {
+    this.db.prepare('INSERT INTO mcp_audit (token_id, github_id, server_id, tool, status, created_at, details, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(identity.id, identity.github_id, serverId ?? null, tool, status, Date.now(), JSON.stringify(details), ip);
   }
   /**
    * 清理审计：可按 id 列表精确删除，或按 before 游标 + 令牌/服务器/工具/状态筛选批量删除；

@@ -71,3 +71,21 @@ test('settings page exposes the token management controls', () => {
   // 编辑表单必须能同时提交名称、授权主机与权限。
   for (const field of ['name="edit-scope"', 'id="edit-servers"', 'id="edit-name"']) assert.ok(html.includes(field), `edit form missing ${field}`);
 });
+
+test('settings page exposes the token view dialog and audit detail columns', () => {
+  const htmlIds = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+  for (const id of ['token-view', 'view-title', 'view-token', 'view-copy', 'view-close', 'view-legacy', 'view-body', 'view-client-config', 'view-message']) {
+    assert.ok(htmlIds.includes(id), `missing view dialog control: ${id}`);
+  }
+  // 审计表新增「明细 / 来源 IP」两列；查看按钮按 revealable 显示。
+  assert.match(html, /data-i18n="detail"/, 'audit table needs the detail column');
+  assert.match(html, /data-i18n="sourceIp"/, 'audit table needs the source ip column');
+  assert.match(js, /token\.revealable/, 'view button must be gated on revealable');
+  // 明细只走 textContent（不拼 HTML）；关闭弹窗即清空明文。
+  assert.match(js, /pre\.textContent = JSON\.stringify\(details/, 'audit detail must render via textContent');
+  assert.ok(js.includes("$('view-token').value = ''"), 'closing the view dialog must clear the plaintext');
+  // 审计工具筛选项覆盖全部注册工具（旧白名单缺 execute_command 等）。
+  for (const tool of ['write_file', 'upload_file', 'execute_command', 'run_snippet', 'token_reveal', 'db_query']) {
+    assert.ok(js.includes(`'${tool}'`), `tool filter must offer ${tool}`);
+  }
+});

@@ -50,7 +50,7 @@ test('MCP snippets: list without scope, run with exec scope, blocked or unknown 
   const execToken = store.create(user, { name: 'runner', server_ids: [1], scopes: ['exec'], expires_in_days: 1 });
   const identity = store.verify(execToken.token);
   const server = createMcpServer({ env, store, identity, SSHSession: null,
-    isBlockedCommand: (command) => ({ blocked: command.includes('rm -rf /'), reason: 'extreme danger' }), execute });
+    isBlockedCommand: (command) => ({ blocked: command.includes('rm -rf /'), reason: 'extreme danger' }), execute, clientIp: '198.51.100.23' });
   const client = await connectPair(server);
   try {
     const run = JSON.parse((await client.callTool({ name: 'run_snippet', arguments: { server_id: 1, snippet_id: 11 } })).content[0].text);
@@ -64,6 +64,56 @@ test('MCP snippets: list without scope, run with exec scope, blocked or unknown 
     assert.ok(store.audits(user).some((event) => event.tool === 'run_snippet' && event.status === 'started'
       && JSON.parse(event.details).snippet_id === 11));
     assert.ok(store.audits(user).some((event) => event.tool === 'run_snippet' && event.status === 'succeeded'));
+    // 审计明细升级：started/succeeded 行带片段名与命令正文，来源 IP 一并落库。
+    // 片段命令里捎带秘密时必须被脱敏，command_sha256 保留供取证重算。
+    const startRow = store.audits(user).find((event) => event.tool === 'run_snippet' && event.status === 'started'
+      && JSON.parse(event.details).snippet_id === 11);
+    const startDetails = JSON.parse(startRow.details);
+    assert.equal(startDetails.snippet_name, 'disk usage');
+    assert.equal(startDetails.command, 'df -h /');
+    assert.match(startDetails.command_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(startRow.ip, '198.51.100.23');
+    const doneRow = store.audits(user).find((event) => event.tool === 'run_snippet' && event.status === 'succeeded'
+      && JSON.parse(event.details).snippet_id === 11);
+    assert.equal(JSON.parse(doneRow.details).command, 'df -h /', 'completion rows repeat the action summary');
+    // 被拦截的危险片段：started + unknown，命令正文在行内可查。
+    const blockedRow = store.audits(user).find((event) => event.status === 'unknown' && event.tool === 'run_snippet');
+    assert.equal(JSON.parse(blockedRow.details).command, 'rm -rf /');
+    assert.match(JSON.parse(blockedRow.details).error, /blocked/);
+    // 未知片段：无 started，denied 行带 error + snippet_id。
+    const deniedRow = store.audits(user).find((event) => event.status === 'denied' && event.tool === 'run_snippet');
+    assert.equal(JSON.parse(deniedRow.details).snippet_id, 999);
+    assert.match(JSON.parse(deniedRow.details).error, /not found/);
+  } finally { await client.close(); await server.close(); store.close(); }
+});
+
+test('MCP execute_command audit: secrets inside commands are masked, unknown rows keep the summary', async () => {
+  const store = new AccessStore(':memory:');
+  const user = { id: 1, github_id: -1 };
+  const { token } = store.create(user, { name: 'exec', server_ids: [1], scopes: ['exec'], expires_in_days: 1 });
+  const execute = async (_env, _identity, id, _command, _timeout, _session, check) => {
+    check(); return { stdout: '', stderr: 'connection refused', exitCode: 255 };
+  };
+  const server = createMcpServer({ env: {}, store, identity: store.verify(token), SSHSession: null,
+    isBlockedCommand: () => ({ blocked: false }), execute, clientIp: '203.0.113.7' });
+  const client = await connectPair(server);
+  try {
+    const outcome = await client.callTool({ name: 'execute_command', arguments: { server_id: 1,
+      command: 'export DB_PASSWORD=hunter2-s3cret && curl -H "Authorization: Bearer ghp_0123456789" https://example.invalid', timeout_ms: 2000 } });
+    assert.equal(outcome.isError, true);
+    const rows = store.audits(user).filter((event) => event.tool === 'execute_command');
+    assert.ok(rows.length >= 2, 'started + terminal rows are both recorded');
+    for (const row of rows) {
+      const details = JSON.parse(row.details);
+      // 明细里能看到「执行了什么」，但密码 / token 模式必须已被脱敏。
+      assert.ok(!JSON.stringify(details).includes('hunter2-s3cret'), 'password leaked into audit');
+      assert.ok(!JSON.stringify(details).includes('ghp_0123456789'), 'token leaked into audit');
+      assert.ok(details.command.includes('example.invalid'), 'command text survives masking');
+      assert.match(details.command_sha256, /^[a-f0-9]{64}$/);
+      assert.equal(row.ip, '203.0.113.7');
+    }
+    const failed = rows.find((row) => row.status === 'failed');
+    assert.equal(JSON.parse(failed.details).exit_code, 255);
   } finally { await client.close(); await server.close(); store.close(); }
 });
 

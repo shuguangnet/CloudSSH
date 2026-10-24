@@ -178,7 +178,7 @@ test('db_list_connections 只列出被授权的连接', async () => {
   } catch (error) { cleanup(); throw error; }
 });
 
-test('审计只记录 sql_sha256，不记录 SQL 正文', skipPg, async () => {
+test('审计记录脱敏后的 SQL 预览与 sql_sha256，口令与令牌不落库', skipPg, async () => {
   const { store, cleanup } = makeStore();
   try {
     const connection = store.createConnection({ name: 'pg', ...PG, readOnly: true });
@@ -189,14 +189,19 @@ test('审计只记录 sql_sha256，不记录 SQL 正文', skipPg, async () => {
       authorize: () => {}, audit, descriptions,
     });
 
-    const secretSql = 'SELECT name FROM users WHERE id = 1';
+    // 带引号口令的 SQL（审计明文预览上线后最危险的形态）。
+    const secretSql = `SELECT name FROM users WHERE password='hunter2-s3cret' OR api_token = 'tok_9f3ab2c1'`;
     await server.call('db_query', { connection_id: connection.id, sql: secretSql });
 
     const started = entries.find((entry) => entry.status === 'started');
     assert.ok(started, '必须写 started 审计');
     assert.match(started.sql_sha256, /^[a-f0-9]{64}$/);
-    // 任何审计字段都不能包含 SQL 原文。
-    assert.ok(!JSON.stringify(entries).includes(secretSql), '审计里出现了 SQL 正文');
+    // 动作明细可见：SQL 正文进审计，但口令 / token 已被脱敏。
+    assert.ok(started.sql.includes('SELECT name FROM users'), 'SQL 预览必须可见');
+    assert.ok(!JSON.stringify(entries).includes('hunter2-s3cret'), '引号口令泄漏进审计');
+    assert.ok(!JSON.stringify(entries).includes('tok_9f3ab2c1'), 'token 泄漏进审计');
+    // 任何审计字段都不能携带查询结果。
+    assert.ok(!JSON.stringify(entries).includes('alice'), '审计不应包含查询结果');
     cleanup();
   } catch (error) { cleanup(); throw error; }
 });

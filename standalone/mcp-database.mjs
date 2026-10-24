@@ -6,13 +6,14 @@
 //
 // 安全边界（与 AGENTS.md 一致）：
 //   - 绝不返回数据库密码；连接信息里只回 hasPassword。
-//   - 审计只记 sql_sha256，不记 SQL 正文与结果集。
+//   - 审计记录 SQL 预览（脱敏 + 限长）与 sql_sha256，不记结果集。
 //   - 只读连接在发送到数据库之前就拦下写语句。
 //   - 结果集按行数/列数/单元格长度硬性截断，避免把上下文打爆。
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 
+import { redactPreview } from './redact.mjs';
 import {
   queryDatabase, describeSchema, describeTable, testConnection,
   MAX_ROWS, MAX_QUERY_TIMEOUT_MS,
@@ -90,28 +91,34 @@ export function registerDatabaseTools(server, { store, identity, authorize, audi
     }, async (args) => {
       const connectionId = args.connection_id;
       let started = false;
+      // 请求摘要：连接名/引擎 + SQL 预览（脱敏 + 限长）。started 与完成行
+      // 都携带，按状态筛选时每行都能看清「执行了哪条语句」。sql_sha256
+      // 保留供取证比对。
+      let summary = {};
       try {
         authorize(connectionId, scope);
         // 不需要连接的元工具（如 db_list_connections）没有 connection_id，
         // 这时不做解析；一旦解析失败就不能继续，否则会拿 undefined 去查库。
         const config = connectionId === undefined ? null : store.resolveConnection(connectionId);
-        // 审计先写 started：与 SSH 工具一致，保证「有执行就有记录」。
-        audit(name, connectionId, 'started', {
+        summary = {
           ...(config ? { engine: config.engine, connection_name: config.name } : {}),
-          ...(args.sql ? { sql_sha256: sha256(args.sql) } : {}),
+          ...(typeof args.sql === 'string' ? { sql: redactPreview(args.sql), sql_sha256: sha256(args.sql) } : {}),
           ...(args.table ? { table: args.table } : {}),
-        });
+        };
+        // 审计先写 started：与 SSH 工具一致，保证「有执行就有记录」。
+        audit(name, connectionId, 'started', summary);
         started = true;
         const data = await handler({ ...args, config });
         audit(name, connectionId, 'succeeded', {
-          ...(config ? { engine: config.engine, connection_name: config.name } : {}),
+          ...summary,
           row_count: data?.rowCount ?? data?.rows?.length ?? null,
           duration_ms: data?.durationMs ?? null,
         });
         return { content: [{ type: 'text', text: JSON.stringify(data) }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Operation failed';
-        audit(name, connectionId, started ? 'failed' : 'denied', { error: message });
+        audit(name, connectionId, started ? 'failed' : 'denied',
+          { ...summary, error: redactPreview(message, 512) });
         return {
           content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
           isError: true,

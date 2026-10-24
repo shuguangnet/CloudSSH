@@ -49,7 +49,7 @@
       <span class="toolbar__count" id="token-count"></span>
     </div>
     <div class="scroll"><table><thead><tr><th class="select-col"><input id="token-select-all" type="checkbox" data-i18n-label="selectAll"></th><th data-i18n="name">名称</th><th data-i18n="servers">授权服务器</th><th data-i18n="permissions">权限</th><th data-i18n="expires">到期时间</th><th data-i18n="status">状态</th><th></th></tr></thead><tbody id="tokens"></tbody></table></div></section>
-  <section><h2 data-i18n="audit">调用审计</h2><p data-i18n="auditHint">记录调用状态和命令摘要，不保存命令输出、令牌或服务器凭据。</p>
+  <section><h2 data-i18n="audit">调用审计</h2><p data-i18n="auditHint">记录每次调用的状态、动作明细（命令 / SQL / 路径，自动脱敏）与来源 IP；不保存命令输出、令牌或服务器凭据。</p>
     <div class="toolbar">
       <select id="audit-token-filter" data-i18n-label="name"></select>
       <select id="audit-server-filter" data-i18n-label="servers"></select>
@@ -65,7 +65,7 @@
       <button id="audit-reset" type="button" class="ghost" data-i18n="reset">重置</button>
       <button id="audit-purge" type="button" class="danger" data-i18n="purge">清理审计</button>
     </div>
-    <div class="scroll"><table><thead><tr><th data-i18n="time">时间</th><th data-i18n="name">令牌</th><th data-i18n="servers">服务器</th><th>Tool</th><th data-i18n="status">状态</th></tr></thead><tbody id="audit"></tbody></table></div>
+    <div class="scroll"><table><thead><tr><th data-i18n="time">时间</th><th data-i18n="name">令牌</th><th data-i18n="servers">服务器</th><th>Tool</th><th data-i18n="status">状态</th><th data-i18n="detail">明细</th><th data-i18n="sourceIp">来源 IP</th></tr></thead><tbody id="audit"></tbody></table></div>
     <div class="actions"><button id="more" type="button" class="ghost" data-i18n="more">加载更早记录</button></div></section>
 </main>
 <dialog id="token-edit" aria-labelledby="edit-title">
@@ -96,5 +96,18 @@
       <button type="button" id="edit-cancel" class="ghost" data-i18n="cancel">取消</button>
     </div>
   </form>
+</dialog>
+<dialog id="token-view" aria-labelledby="view-title">
+  <h3 id="view-title" data-i18n="viewTitle">查看访问令牌</h3>
+  <p id="view-message" role="status" aria-live="polite"></p>
+  <div id="view-legacy" hidden><p data-i18n="viewLegacy">该令牌创建于旧版本，未保存可查看副本；如需明文请撤销后重新创建。</p></div>
+  <div id="view-body" hidden>
+    <p class="hint" data-i18n="viewHint">令牌等同面板密码，查看行为会写入审计。请勿在不受信任的屏幕上展开。</p>
+    <textarea id="view-token" readonly aria-label="Access token"></textarea>
+    <div class="actions"><button id="view-copy" type="button" data-i18n="copy">复制令牌</button></div>
+    <h3 data-i18n="client">MCP 客户端配置示例</h3>
+    <pre id="view-client-config"></pre>
+  </div>
+  <div class="actions"><button type="button" id="view-close" class="ghost" data-i18n="cancel">取消</button></div>
 </dialog>
 </body></html>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AccessStore } from '../../standalone/access-store.mjs';
+import { AccessStore, clientIpFrom } from '../../standalone/access-store.mjs';
 import { SQLiteStorage } from '../../standalone/runtime.mjs';
 import { shellQuote, validatePath } from '../../standalone/operations.mjs';
 
@@ -32,6 +32,50 @@ test('tokens persist, store only hashes, enforce ownership and revocation', () =
     assert.equal(readFileSync(file).includes(Buffer.from(token)), false);
     assert.throws(() => store.create(owner, { name: 'invalid', server_ids: [1], scopes: ['admin'], expires_in_days: 1 }));
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('token re-view: encrypted copy round-trips, legacy rows report no plaintext, audit keeps ip', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cloudssh-access-reveal-'));
+  const file = join(directory, 'access.sqlite');
+  const owner = { id: 1, github_id: -1 };
+  const store = new AccessStore(file);
+  try {
+    const { token, id } = store.create(owner, { name: 'revealable', server_ids: [1], scopes: ['read'], expires_in_days: 1 });
+    // 列表只给 revealable 标记：明文、密文、哈希都不出库。
+    const listed = store.list(owner)[0];
+    assert.equal(listed.revealable, true);
+    assert.equal(listed.token, undefined);
+    assert.equal(listed.token_enc, undefined);
+    assert.equal(listed.hash, undefined);
+    // 二次查看拿到创建时的原文；认证哈希路径不受密钥影响。
+    assert.equal(store.reveal(owner, id).token, token);
+    assert.ok(store.verify(token));
+    assert.equal(readFileSync(file).includes(Buffer.from(token)), false, 'raw token must never hit disk');
+    // 模拟升级前的老令牌：无加密副本 → { token: null }，而不是报错。
+    store.db.prepare('UPDATE mcp_tokens SET token_enc=NULL WHERE id=?').run(id);
+    assert.equal(store.list(owner)[0].revealable, false);
+    assert.equal(store.reveal(owner, id).token, null);
+    // 密文损坏（如密钥文件被更换）→ decryptFailed，绝不把密文当明文回传。
+    store.db.prepare('UPDATE mcp_tokens SET token_enc=? WHERE id=?').run('AAAA', id);
+    assert.throws(() => store.reveal(owner, id), /decryptFailed/);
+    // 审计行携带来源 IP，老记录（无 ip）为 null。
+    const identity = store.verify(token);
+    store.audit(identity, 'token_reveal', null, 'succeeded', { name: 'revealable' }, '203.0.113.7');
+    store.audit(identity, 'read_file', 1, 'started', { path: '/tmp' });
+    const rows = store.audits(owner);
+    assert.equal(rows[1].ip, '203.0.113.7');
+    assert.equal(rows[0].ip, null);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('clientIpFrom prefers forwarded chains, validates shape and strips zone ids', () => {
+  assert.equal(clientIpFrom('198.51.100.9, 10.0.0.1', null, '127.0.0.1'), '198.51.100.9');
+  assert.equal(clientIpFrom('garbage', '2001:db8::1', '10.0.0.1'), '2001:db8::1');
+  assert.equal(clientIpFrom(null, null, '192.0.2.5'), '192.0.2.5');
+  assert.equal(clientIpFrom('fe80::1%eth0', null, null), 'fe80::1');
+  assert.equal(clientIpFrom('999.1.1.1', null, null), null, 'invalid octets are dropped');
+  assert.equal(clientIpFrom('', 'not-an-ip', 'also garbage'), null);
+  assert.equal(clientIpFrom('x'.repeat(60), null, null), null, 'oversized values never reach the audit');
 });
 
 test('expired tokens cannot authorize operations', () => {

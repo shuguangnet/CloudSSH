@@ -161,3 +161,84 @@ test('MCP token management: edit, disable/enable, batch delete and audit purge',
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('MCP token reveal: re-view the plaintext, audit the view, action details and IP in audit rows', { timeout: 90000 }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cloudssh-mcp-reveal-'));
+  const port = await freePort(); const base = `http://127.0.0.1:${port}`;
+  execFileSync(process.execPath, ['scripts/setup-standalone.mjs', '--stdin'], {
+    env: { ...process.env, DATA_DIR: directory }, input: 'fixture-password-123', stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let child;
+  try {
+    ({ child } = await startPanel(directory, port));
+    const config = await (await fetch(`${base}/api/config`)).json();
+    const key = pbkdf2Sync('fixture-password-123', Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
+    const login = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, username: 'admin', captcha: await solveCaptcha(base) }) });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.getSetCookie().find((value) => value.startsWith('session=')).split(';')[0];
+    const api = async (path, method = 'GET', body, origin = base) => {
+      const response = await fetch(`${base}${path}`, {
+        method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      return { status: response.status, body: await response.json().catch(() => null) };
+    };
+    const mcp = (token, name, args = {}) => fetch(`${base}/mcp`, { method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'X-Forwarded-For': '198.51.100.23' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+
+    await api('/api/servers', 'POST', { name: 'reveal-box', host: '127.0.0.1', port: 2222, username: 'fixture', auth_method: 'password', credential: 'fixture-only' });
+    const serverId = (await api('/api/servers')).body[0].id;
+    const created = await api('/api/mcp/tokens', 'POST', { name: 'revealable', server_ids: [serverId], scopes: ['read', 'exec'], expires_in_days: 5 });
+    assert.equal(created.status, 201);
+    const tokenId = created.body.id;
+
+    // ---------- 守卫：reveal 是浏览器同源专用写操作 ----------
+    assert.equal((await fetch(`${base}/api/mcp/tokens/${tokenId}/reveal`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })).status, 401, 'session required');
+    assert.equal((await api(`/api/mcp/tokens/${tokenId}/reveal`, 'POST', {}, 'https://evil.example')).status, 403, 'cross-site origin rejected');
+    assert.equal((await api(`/api/mcp/tokens/${'e'.repeat(24)}/reveal`, 'POST', {})).status, 404, 'unknown token id');
+    assert.equal((await api(`/api/mcp/tokens/${tokenId}/reveal`, 'GET')).status, 404, 'non-POST falls through');
+    assert.equal((await api(`/api/mcp/tokens/${tokenId}/reveal`, 'PUT', {})).status, 404, 'PUT must not reveal');
+
+    // ---------- 二次查看：拿回创建时的原文，列表仍不携带明文 ----------
+    const revealed = await api(`/api/mcp/tokens/${tokenId}/reveal`, 'POST');
+    assert.equal(revealed.status, 200);
+    assert.equal(revealed.body.token, created.body.token);
+    const listed = (await api('/api/mcp/tokens')).body.find((token) => token.id === tokenId);
+    assert.equal(listed.revealable, true);
+    assert.equal(listed.token, undefined);
+    assert.equal(listed.token_enc, undefined);
+
+    // 查看行为本身入审计：token_reveal + 来源 IP。
+    const revealAudit = await api('/api/mcp/audit?tool=token_reveal');
+    assert.equal(revealAudit.status, 200);
+    assert.equal(revealAudit.body.length, 1);
+    assert.equal(revealAudit.body[0].tool, 'token_reveal');
+    assert.equal(revealAudit.body[0].ip, '127.0.0.1');
+    assert.equal(JSON.parse(revealAudit.body[0].details).name, 'revealable');
+
+    // ---------- 审计明细 + IP：execute_command 行内能看到命令与来源 ----------
+    // 指向不存在的 sshd 端口：调用失败，但 started/unknown 行已带脱敏后的命令。
+    const outcome = await mcp(created.body.token, 'execute_command', { server_id: serverId,
+      command: 'echo DB_PASSWORD=hunter2-s3cret', timeout_ms: 2000 });
+    assert.equal(outcome.status, 200);
+    const toolAudit = await api('/api/mcp/audit?tool=execute_command');
+    assert.equal(toolAudit.status, 200, 'tool filter accepts execute_command (stale whitelist fixed)');
+    assert.ok(toolAudit.body.length >= 2, 'started + terminal rows recorded');
+    for (const row of toolAudit.body) {
+      const details = JSON.parse(row.details);
+      assert.ok(!JSON.stringify(details).includes('hunter2-s3cret'), 'secret leaked into audit details');
+      assert.ok(details.command.includes('echo'), 'command text is visible in details');
+      // X-Forwarded-For 首跳优先生效（测试进程直连 + 代理头并存）。这里显式带 XFF：
+      assert.equal(row.ip, '198.51.100.23');
+    }
+    // 恶意工具名仍被拒（形状校验，非白名单）。
+    assert.equal((await api('/api/mcp/audit?tool=Execute%20Command')).status, 400);
+    assert.equal((await api('/api/mcp/audit', 'POST', {})).status, 404, 'audit endpoint stays read-only');
+  } finally {
+    await stop(child);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer, WebSocket as NetworkWebSocket } from 'ws';
 import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
-import { AccessStore, tokenHash } from './access-store.mjs';
+import { AccessStore, tokenHash, clientIpFrom } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
 import { savedServers, executeSaved, drainSshChainPool, connectionConfig } from './operations.mjs';
@@ -213,7 +213,7 @@ async function sendResponse(res, response) {
   }
   res.end();
 }
-async function management(request, pathname) {
+async function management(request, pathname, remoteAddress) {
   const user = await getAuthenticatedUser(request, env);
   if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
   if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'), request.headers.get('X-Forwarded-Host'))) {
@@ -231,6 +231,26 @@ async function management(request, pathname) {
     catch (error) { return Response.json({ error: error.message }, { status: 400 }); }
   }
   const match = pathname.match(/^\/api\/mcp\/tokens\/([a-f0-9]{24})$/);
+  // 二次查看令牌：独立于通用 :id 路由（同凭据库 reveal 的教训——路由顺序
+  // 不可被顺带匹配），仅 POST；非 POST 一律落到底部的 404。成功与失败都写
+  // 一条 token_reveal 审计（含来源 IP），让「谁看过密钥」可追溯。
+  const revealMatch = pathname.match(/^\/api\/mcp\/tokens\/([a-f0-9]{24})\/reveal$/);
+  if (revealMatch && request.method === 'POST') {
+    const ip = clientIpFrom(request.headers.get('x-forwarded-for'), request.headers.get('x-real-ip'), remoteAddress);
+    const row = store.owned(user, revealMatch[1]);
+    if (!row) return Response.json({ error: 'Token not found' }, { status: 404 });
+    try {
+      const revealed = store.reveal(user, revealMatch[1]);
+      store.audit(row, 'token_reveal', null, 'succeeded', { name: row.name }, ip);
+      // 老令牌（升级前创建）没有加密副本：如实返回 null，前端提示不可查看。
+      return Response.json({ token: revealed.token ?? null });
+    } catch (error) {
+      store.audit(row, 'token_reveal', null, 'failed', { name: row.name, error: 'decryptFailed' }, ip);
+      // 解密失败绝不能把密文当明文回传（同凭据库约束）。
+      return Response.json({ error: 'decryptFailed' }, { status: 500 });
+    }
+  }
+  if (revealMatch) return Response.json({ error: 'Not found' }, { status: 404 });
   if (match && request.method === 'DELETE') {
     const purge = new URL(request.url).searchParams.get('purge') === '1';
     if (!purge) return Response.json({ revoked: store.revoke(user, match[1]) });
@@ -292,7 +312,9 @@ async function management(request, pathname) {
     const server_id = params.has('server_id') && params.get('server_id') !== '' ? Number(params.get('server_id')) : null;
     if (server_id !== null && (!Number.isSafeInteger(server_id) || server_id < 1)) return Response.json({ error: 'Invalid server id' }, { status: 400 });
     const tool = params.get('tool');
-    if (tool && !['list_servers', 'list_snippets', 'get_server_info', 'list_files', 'read_file', 'download_file'].includes(tool)) {
+    // 工具名只做形状校验（同清理接口的口径）：固定白名单会随新工具过时，
+    // 之前连 execute_command/write_file/run_snippet/db_* 都滤不了。
+    if (tool && !/^[a-z0-9_]{1,60}$/.test(tool)) {
       return Response.json({ error: 'Invalid tool' }, { status: 400 });
     }
     const status = params.get('status');
@@ -442,6 +464,7 @@ const server = createServer(async (req, res) => {
       res.once('finish', release); res.once('close', release);
       await handleMcp(req, res, {
         env, store, identity, SSHSession, isBlockedCommand, databaseStore,
+        clientIp: clientIpFrom(req.headers['x-forwarded-for'], req.headers['x-real-ip'], req.socket.remoteAddress),
       }, body);
       return;
     }
@@ -562,7 +585,7 @@ const server = createServer(async (req, res) => {
       const response = await automationRoutes(request, pathname, requestUrl);
       if (response) return sendResponse(res, response);
     }
-    if (pathname.startsWith('/api/mcp/')) return sendResponse(res, await management(request, pathname));
+    if (pathname.startsWith('/api/mcp/')) return sendResponse(res, await management(request, pathname, req.socket.remoteAddress));
     if (pathname === '/api/host-files' && req.method === 'GET') return sendResponse(res, await listHostFiles(request, requestUrl));
     if (pathname === '/api/host-file' && req.method === 'GET') return sendResponse(res, await readHostFile(request, requestUrl));
     const response = await worker.fetch(request, env);

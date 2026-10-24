@@ -87,3 +87,29 @@ dialog#token-edit fieldset { margin: 0 0 14px; }
 dialog#token-edit .server-picker__grid { max-height: 200px; }
 dialog#token-edit .actions { margin-top: 16px; }
 #edit-message { min-height: 1.4em; margin: 0 0 8px; color: var(--error); font-size: .88rem; }
+
+/* 查看令牌弹窗（复用 #created 的呈现风格） */
+dialog#token-view {
+  width: min(680px, 92vw); padding: 20px 22px; border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius); background: var(--bg-surface); color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+}
+dialog#token-view::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#token-view h3 { margin: 0 0 12px; }
+dialog#token-view .hint { margin: 0 0 10px; }
+dialog#token-view textarea { min-height: 88px; width: 100%; background: var(--bg-terminal); font-size: .84rem; }
+dialog#token-view pre { margin: 10px 0 0; background: var(--bg-terminal); overflow-x: auto; }
+dialog#token-view .actions { margin-top: 12px; }
+#view-message { min-height: 1.4em; margin: 0 0 8px; color: var(--error); font-size: .88rem; }
+
+/* 审计明细折叠区：摘要一行省略，展开后完整 JSON */
+td details { margin: 0; }
+td details summary {
+  cursor: pointer; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: .82rem; color: var(--text-muted);
+}
+td details[open] summary { color: var(--text); white-space: normal; }
+td details pre {
+  margin: 8px 0 0; padding: 10px 12px; max-width: 420px; max-height: 220px;
+  overflow: auto; background: var(--bg-terminal); font-size: .78rem;
+}
