@@ -536,7 +536,13 @@ describe('Theme V3 背景层、效果与版式', () => {
     expect(BUILT_IN_EFFECTS.cyberpunk).toEqual({ scanline: 1, flicker: 1 });
     expect(BUILT_IN_EFFECTS['liquid-glass']?.glow).toBeGreaterThan(0);
     expect(BUILT_IN_TYPOGRAPHY['liquid-glass']?.radiusScale).toBeGreaterThan(1);
-    expect(BUILT_IN_BACKGROUND['standard-dark']).toBeUndefined();
+    // 企业蓝改造：Standard 主题携带淡蓝 mesh 背景与轻量辉光（不再是纯色背景）
+    for (const themeName of ['standard-dark', 'standard-light'] as const) {
+      expect(BUILT_IN_BACKGROUND[themeName]?.type).toBe('mesh');
+      expect((BUILT_IN_BACKGROUND[themeName]?.stops ?? []).length).toBeGreaterThanOrEqual(2);
+      expect(BUILT_IN_EFFECTS[themeName]?.glow).toBeGreaterThan(0);
+      expect(BUILT_IN_EFFECTS[themeName]?.scanline).toBeUndefined();
+    }
   });
 
   describe('多自定义主题契约 — normalizeUserThemePayload', () => {

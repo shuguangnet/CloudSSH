@@ -38,6 +38,8 @@ export const zhCN = {
   'authChallenge.invalid': '远程服务器发送了无效的交互式认证请求，已停止自动重连。',
   'auth.connectionParameters': '连接参数',
   'auth.systemReady': '系统就绪，等待输入。',
+  'auth.brandTagline': '企业级浏览器 SSH 终端',
+  'auth.secureBadge': 'SSH 加密直连 · 凭据仅保存在本地',
   'auth.host': '主机地址',
   'auth.port': '端口',
   'auth.user': '用户名',

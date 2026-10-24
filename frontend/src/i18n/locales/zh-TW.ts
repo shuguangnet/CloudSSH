@@ -40,6 +40,8 @@ export const zhTW: Record<keyof typeof zhCN, string> = {
   'authChallenge.invalid': '遠端伺服器傳送了無效的互動式驗證請求，已停止自動重連。',
   'auth.connectionParameters': '連線參數',
   'auth.systemReady': '系統就緒，等待輸入。',
+  'auth.brandTagline': '企業級瀏覽器 SSH 終端機',
+  'auth.secureBadge': 'SSH 加密直連 · 憑證僅保存在本機',
   'auth.host': '主機位址',
   'auth.port': '連接埠',
   'auth.user': '使用者名稱',

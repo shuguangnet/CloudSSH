@@ -27,31 +27,31 @@
     'standard-dark': {
       scheme: 'dark',
       vars: {
-        '--bg': '#0f1115', '--bg-surface': '#161a22', '--bg-inset': '#11151c', '--bg-elevated': '#1c222d', '--bg-terminal': '#0b0e14',
-        '--text': '#e6edf3', '--text-muted': '#9ba7b4', '--text-dim': '#7d8590',
-        '--accent': '#58a6ff', '--accent-secondary': '#79c0ff',
-        '--border': '#30363d', '--border-strong': '#484f58',
-        '--error': '#ff7b72', '--error-bg': '#3d1418', '--on-accent': '#07111f',
-        '--accent-bg': 'rgba(88, 166, 255, 0.1)',
-        '--ok': '#3fb950', '--ok-bg': 'rgba(63, 185, 80, 0.14)',
-        '--warn': '#d29922', '--warn-bg': 'rgba(210, 153, 34, 0.14)',
-        '--scrollbar-track': 'rgba(22, 26, 34, 0.7)', '--scrollbar-thumb': 'rgba(155, 167, 180, 0.35)',
-        '--card-radius': '10px', '--control-radius': '6px', '--shadow-card': '0 1px 3px rgba(1, 4, 9, 0.4)',
+        '--bg': '#0a1526', '--bg-surface': '#101f38', '--bg-inset': '#0c1830', '--bg-elevated': '#16294a', '--bg-terminal': '#0a1424',
+        '--text': '#e3ecfb', '--text-muted': '#9db0cd', '--text-dim': '#7286ab',
+        '--accent': '#4c8dff', '--accent-secondary': '#7ab5ff',
+        '--border': '#22365c', '--border-strong': '#35527f',
+        '--error': '#ff7a85', '--error-bg': '#3d1420', '--on-accent': '#06122b',
+        '--accent-bg': 'rgba(76, 141, 255, 0.12)',
+        '--ok': '#52d98a', '--ok-bg': 'rgba(82, 217, 138, 0.14)',
+        '--warn': '#f2c14e', '--warn-bg': 'rgba(242, 193, 78, 0.14)',
+        '--scrollbar-track': 'rgba(16, 31, 56, 0.7)', '--scrollbar-thumb': 'rgba(157, 176, 205, 0.32)',
+        '--card-radius': '9px', '--control-radius': '6px', '--shadow-card': '0 4px 16px rgba(2, 8, 20, 0.35)',
       },
     },
     'standard-light': {
       scheme: 'light',
       vars: {
-        '--bg': '#f6f8fa', '--bg-surface': '#ffffff', '--bg-inset': '#f0f3f7', '--bg-elevated': '#eef2f6', '--bg-terminal': '#ffffff',
-        '--text': '#1f2328', '--text-muted': '#57606a', '--text-dim': '#656d76',
-        '--accent': '#0969da', '--accent-secondary': '#0550ae',
-        '--border': '#d0d7de', '--border-strong': '#afb8c1',
-        '--error': '#cf222e', '--error-bg': '#ffebe9', '--on-accent': '#ffffff',
-        '--accent-bg': 'rgba(9, 105, 218, 0.1)',
-        '--ok': '#1a7f37', '--ok-bg': 'rgba(26, 127, 55, 0.1)',
-        '--warn': '#9a6700', '--warn-bg': 'rgba(158, 103, 0, 0.1)',
-        '--scrollbar-track': 'rgba(208, 215, 222, 0.45)', '--scrollbar-thumb': 'rgba(87, 96, 106, 0.35)',
-        '--card-radius': '10px', '--control-radius': '6px', '--shadow-card': '0 1px 3px rgba(31, 35, 40, 0.12)',
+        '--bg': '#eef4fc', '--bg-surface': '#ffffff', '--bg-inset': '#f2f7fd', '--bg-elevated': '#f7fafe', '--bg-terminal': '#ffffff',
+        '--text': '#17233b', '--text-muted': '#516381', '--text-dim': '#4a5c7c',
+        '--accent': '#0d68dd', '--accent-secondary': '#0a7ad6',
+        '--border': '#dbe5f2', '--border-strong': '#b8cbe6',
+        '--error': '#c62f3a', '--error-bg': '#fdeff0', '--on-accent': '#ffffff',
+        '--accent-bg': 'rgba(13, 104, 221, 0.08)',
+        '--ok': '#157f43', '--ok-bg': 'rgba(21, 127, 67, 0.1)',
+        '--warn': '#9a6700', '--warn-bg': 'rgba(154, 103, 0, 0.1)',
+        '--scrollbar-track': 'rgba(219, 229, 242, 0.5)', '--scrollbar-thumb': 'rgba(81, 99, 129, 0.32)',
+        '--card-radius': '9px', '--control-radius': '6px', '--shadow-card': '0 2px 10px rgba(23, 35, 59, 0.1)',
       },
     },
     'liquid-glass': {
@@ -89,8 +89,17 @@
   }
 
   function run() {
-    var selection = 'cyberpunk';
-    try { selection = localStorage.getItem('cloudssh_theme_selection') || 'cyberpunk'; } catch (error) { /* private mode */ }
+    /* 与主面板保持一致：企业蓝改版后的默认主题为 standard-light，
+       并做同口径的一次性老默认（cyberpunk）迁移 */
+    var selection = 'standard-light';
+    try {
+      selection = localStorage.getItem('cloudssh_theme_selection') || 'standard-light';
+      if (selection === 'cyberpunk' && !localStorage.getItem('cloudssh_theme_enterprise_v3')) {
+        localStorage.setItem('cloudssh_theme_enterprise_v3', '1');
+        selection = 'standard-light';
+        localStorage.setItem('cloudssh_theme_selection', selection);
+      }
+    } catch (error) { /* private mode */ }
     if (THEMES[selection]) return apply(THEMES[selection]);
     var custom = readCustom();
     var base = THEMES[custom && custom.colorScheme === 'light' ? 'standard-light' : 'standard-dark'];

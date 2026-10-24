@@ -6,8 +6,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#eef4fc" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -30,7 +30,7 @@
       <!-- Login Page (匿名连接) -->
       <div
         id="auth-section"
-        class="min-h-screen flex items-center justify-center p-6 relative overflow-y-auto"
+        class="auth-page min-h-screen flex items-center justify-center p-6 relative overflow-y-auto"
       >
         <div class="scanlines"></div>
         <div class="flicker"></div>
@@ -50,39 +50,32 @@
               >返回终端</span
             >
           </button>
-          <div class="mb-8 text-center">
-            <div class="text-3xl font-bold text-primary tracking-tighter mb-2">
-              CloudSSH<span class="blinking-cursor"></span>
+          <div class="auth-brand">
+            <div class="auth-brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
+            <div class="auth-brand-name">CloudSSH</div>
+            <div class="auth-brand-tagline" data-i18n="auth.brandTagline">
+              企业级浏览器 SSH 终端
             </div>
           </div>
-          <div class="cyber-box p-6 shadow-2xl relative">
-            <div
-              class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent opacity-50"
-            ></div>
-            <div
-              class="flex items-center justify-between mb-8 pb-4 border-b border-dim"
-            >
-              <span
-                class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
-                data-i18n="auth.connectionParameters"
-                >连接参数</span
-              >
-              <div class="flex items-center gap-3">
-                <div data-language-switcher></div>
-                <span
-                  class="material-symbols-outlined text-[var(--accent-secondary)]"
-                  style="font-variation-settings: 'FILL' 0"
-                  >terminal</span
-                >
-              </div>
+          <div class="auth-card cyber-box">
+            <div class="auth-card-header">
+              <span class="auth-card-title">
+                <span class="material-symbols-outlined" aria-hidden="true">terminal</span>
+                <span data-i18n="auth.connectionParameters">连接参数</span>
+              </span>
+              <div data-language-switcher></div>
             </div>
             <div id="connection-form-container"></div>
           </div>
-          <div
-            class="mt-8 text-center text-[13px] text-muted opacity-60"
-            data-i18n="auth.systemReady"
-          >
-            系统就绪，等待输入。
+          <div class="auth-footer-note">
+            <span class="material-symbols-outlined" aria-hidden="true">lock</span>
+            <span data-i18n="auth.secureBadge">SSH 加密直连 · 凭据仅保存在本地</span>
           </div>
         </main>
       </div>
@@ -96,9 +89,16 @@
         <header
           class="user-space-header flex justify-between items-center w-full px-6 h-16 bg-elevated border-b border-outline-variant z-50 relative"
         >
-          <div class="user-space-brand flex items-center gap-6 min-w-0">
+          <div class="user-space-brand flex items-center gap-3 min-w-0">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
             <h1
-              class="text-2xl font-bold text-primary-container tracking-tighter cursor-pointer"
+              class="text-xl font-bold text-primary-container tracking-tight cursor-pointer select-none"
               id="user-space-logo"
             >
               CloudSSH
@@ -1314,9 +1314,16 @@
         <header
           class="terminal-app-header flex justify-between items-center w-full px-6 h-16 bg-background border-b border-outline-variant z-50 relative"
         >
-          <div class="flex items-center gap-6">
+          <div class="flex items-center gap-3">
+            <div class="brand-mark brand-mark--sm" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
             <h1
-              class="terminal-app-title text-2xl font-bold text-primary-container tracking-tighter cursor-pointer"
+              class="terminal-app-title text-xl font-bold text-primary-container tracking-tight cursor-pointer select-none"
             >
               CloudSSH
             </h1>
@@ -1576,7 +1583,7 @@
 
         <!-- Main Terminal -->
         <main
-          class="terminal-main flex-1 relative bg-surface-container-lowest overflow-hidden"
+          class="terminal-main flex-1 relative bg-background overflow-hidden"
         >
           <div
             class="absolute inset-0 scanline pointer-events-none z-10 opacity-30"

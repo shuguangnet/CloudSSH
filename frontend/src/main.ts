@@ -699,6 +699,12 @@ document.getElementById('export-btn')?.addEventListener('click', () => {
 // ==================== 主题切换 ====================
 
 const CUSTOM_THEME_VALUE = '__custom__';
+// 企业蓝改版后的默认主题：淡蓝企业风（standard-light），终端保持深海军蓝。
+// 首选仍是用户显式保存的选择，仅在无选择或老默认迁移时落到这里
+const DEFAULT_BUILT_IN_THEME: BuiltInThemeName = 'standard-light';
+// 一次性品牌迁移标记：老默认（cyberpunk）用户首次访问时切到新默认；
+// 之后用户随时可以主动切回 cyberpunk，不再被迁移打扰
+const THEME_REBRAND_FLAG = 'cloudssh_theme_enterprise_v3';
 let themeSelectionRevision = 0;
 let userThemeSegmentedControl: LiquidSegmentedThemeControl | null = null;
 const themeSelectors = Array.from(
@@ -709,7 +715,7 @@ function handleThemeSelection(value: string): void {
   if (value === CUSTOM_THEME_VALUE) {
     if (!customThemeStore.hasThemes()) {
       // 未上传过自定义主题 -> 弹窗要求上传
-      const fallback = localStorage.getItem('cloudssh_theme_selection') || 'cyberpunk';
+      const fallback = localStorage.getItem('cloudssh_theme_selection') || DEFAULT_BUILT_IN_THEME;
       syncThemeSelectors(fallback);
       customThemeModal.show({
         onApplied: () => {
@@ -719,7 +725,7 @@ function handleThemeSelection(value: string): void {
         },
         onClosed: () => {
           if (!customThemeStore.hasThemes()) {
-            const cur = localStorage.getItem('cloudssh_theme_selection') || 'cyberpunk';
+            const cur = localStorage.getItem('cloudssh_theme_selection') || DEFAULT_BUILT_IN_THEME;
             syncThemeSelectors(cur);
           }
         },
@@ -812,7 +818,7 @@ globalImportThemeInput?.addEventListener('change', async (e) => {
 customThemeStore.subscribe(() => {
   const current = localStorage.getItem('cloudssh_theme_selection');
   if (current === CUSTOM_THEME_VALUE && !customThemeStore.hasThemes()) {
-    handleThemeSelection('cyberpunk');
+    handleThemeSelection(DEFAULT_BUILT_IN_THEME);
   }
 });
 
@@ -828,8 +834,19 @@ const LEGACY_THEME_MIGRATION: Record<string, BuiltInThemeName> = {
 
 /** 恢复主题（在 init 时调用，此时还没有终端实例，只设置 UI 变量） */
 function restoreTheme(): void {
-  const selection = localStorage.getItem('cloudssh_theme_selection');
+  let selection = localStorage.getItem('cloudssh_theme_selection');
   localStorage.removeItem('cloudssh_theme');
+
+  // 企业蓝改版一次性迁移：老默认 cyberpunk → 新默认（不覆盖显式的其他选择）
+  if (selection === 'cyberpunk' && !localStorage.getItem(THEME_REBRAND_FLAG)) {
+    try {
+      localStorage.setItem(THEME_REBRAND_FLAG, '1');
+    } catch {
+      /* 私密模式写入失败则跳过迁移，保持原选择 */
+    }
+    selection = DEFAULT_BUILT_IN_THEME;
+    localStorage.setItem('cloudssh_theme_selection', selection);
+  }
 
   // 旧版内置主题平滑迁移到当前最契合的内置主题
   if (selection && selection in LEGACY_THEME_MIGRATION) {
@@ -874,9 +891,9 @@ function restoreTheme(): void {
     }
   }
 
-  localStorage.setItem('cloudssh_theme_selection', 'cyberpunk');
-  applyBuiltInTheme('cyberpunk');
-  syncThemeSelectors('cyberpunk');
+  localStorage.setItem('cloudssh_theme_selection', DEFAULT_BUILT_IN_THEME);
+  applyBuiltInTheme(DEFAULT_BUILT_IN_THEME);
+  syncThemeSelectors(DEFAULT_BUILT_IN_THEME);
 }
 
 async function saveThemeToCloud(
