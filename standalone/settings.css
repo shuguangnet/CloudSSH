@@ -113,3 +113,8 @@ td details pre {
   margin: 8px 0 0; padding: 10px 12px; max-width: 420px; max-height: 220px;
   overflow: auto; background: var(--bg-terminal); font-size: .78rem;
 }
+
+/* 备份与恢复（/account/settings 专属） */
+dialog#restore-confirm { border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); border-radius: var(--radius, 12px); padding: 20px 22px; max-width: 420px; }
+dialog#restore-confirm::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#restore-confirm p { margin: 0 0 14px; line-height: 1.6; }

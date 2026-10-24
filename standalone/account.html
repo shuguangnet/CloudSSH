@@ -11,4 +11,15 @@
 <label><span data-i18n="confirm">确认新密码</span><input id="confirm-password" type="password" autocomplete="new-password" maxlength="256"></label>
 <p class="hint" data-i18n="hint">新密码须为 12–256 个字符。更改密码后需重新登录，旧 MCP 令牌也会失效。服务器配置不会删除。</p>
 <div class="actions"><button id="save" type="submit" class="primary" data-i18n="save" disabled>保存修改</button></div>
-</form></section></main></body></html>
+</form></section>
+<section id="backup-section"><h2 data-i18n="backupTitle">备份与恢复</h2>
+<p class="hint" data-i18n="backupHint">导出包含全部面板数据（服务器、凭据库、片段、MCP 令牌、自动化任务与数据库连接），为 gzip 压缩包。恢复会在下次服务重启时生效；重启前当前数据继续可用。</p>
+<div class="actions">
+<button id="backup-export" type="button" class="primary" data-i18n="backupExport">导出备份</button>
+<button id="backup-restore" type="button" class="ghost" data-i18n="backupRestore" disabled>恢复备份…</button>
+<input id="backup-file" type="file" accept=".gz,application/gzip" hidden>
+</div>
+<dialog id="restore-confirm">
+<form method="dialog"><p id="restore-text"></p>
+<div class="actions"><button value="cancel" class="ghost" data-i18n="cancel">取消</button><button id="restore-ok" value="ok" class="danger" data-i18n="confirmRestore">确认恢复</button></div>
+</form></dialog></section></main></body></html>

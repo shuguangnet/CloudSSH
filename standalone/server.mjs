@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer, WebSocket as NetworkWebSocket } from 'ws';
 import { installWorkerGlobals, LocalNamespace } from './runtime.mjs';
+import { applyPendingRestore, createBackup, stageRestore, RESTORE_MAX_UPLOAD } from './backup.mjs';
 import { AccessStore, tokenHash, clientIpFrom } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
@@ -32,6 +33,12 @@ import { createBatchRoutes } from './batch.mjs';
 const dataDir = resolve(process.env.DATA_DIR || './data');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 chmodSync(dataDir, 0o700);
+// 待应用的恢复包：必须在打开任何数据库 / 读取账号文件之前交换，
+// 否则新库会被旧句柄重建覆盖。现役文件移入 pre-restore-<ts>/ 备查。
+const appliedRestore = applyPendingRestore(dataDir);
+if (appliedRestore) {
+  console.log(`[backup] applied pending restore (${appliedRestore.files.length} files); previous state archived to ${appliedRestore.archived_to}`);
+}
 const baseUrl = new URL(process.env.BASE_URL || 'http://localhost:8787');
 if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.pathname !== '/' || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) {
   throw new Error('BASE_URL must be an HTTP(S) origin without a path');
@@ -486,6 +493,46 @@ const server = createServer(async (req, res) => {
         clientIp: clientIpFrom(req.headers['x-forwarded-for'], req.headers['x-real-ip'], req.socket.remoteAddress),
       }, body);
       return;
+    }
+    // 备份导出 / 恢复（管理员会话 + 同源；恢复包体积可达数百 MB，
+    // 必须在通用 1MiB readBody 之前自行读流）
+    if (pathname === '/api/backup/export' && req.method === 'POST') {
+      const request = requestFromNode(req, undefined, res);
+      if (!await getAuthenticatedUser(request, env)) return sendJson(res, 401, { error: 'Authentication required' });
+      if (!originAllowed(req.headers.origin, req.headers.host, req.headers['x-forwarded-host'])) return sendJson(res, 403, { error: 'Invalid origin' });
+      try {
+        const { buffer, filename } = createBackup(dataDir);
+        return sendResponse(res, new Response(buffer, {
+          headers: {
+            'Content-Type': 'application/gzip',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Cache-Control': 'no-store',
+          },
+        }));
+      } catch (error) {
+        console.error('[backup] export failed:', error);
+        return sendJson(res, 500, { error: 'Backup export failed' });
+      }
+    }
+    if (pathname === '/api/backup/restore' && req.method === 'POST') {
+      const request = requestFromNode(req, undefined, res);
+      if (!await getAuthenticatedUser(request, env)) return sendJson(res, 401, { error: 'Authentication required' });
+      if (!originAllowed(req.headers.origin, req.headers.host, req.headers['x-forwarded-host'])) return sendJson(res, 403, { error: 'Invalid origin' });
+      const chunks = []; let uploadSize = 0; let tooLarge = false;
+      for await (const chunk of req) {
+        uploadSize += chunk.length;
+        if (uploadSize > RESTORE_MAX_UPLOAD) { tooLarge = true; break; }
+        chunks.push(chunk);
+      }
+      if (tooLarge) return sendJson(res, 413, { error: 'Backup exceeds size limit' });
+      try {
+        const result = stageRestore(dataDir, Buffer.concat(chunks));
+        return sendJson(res, 200, { ok: true, requires_restart: true, files: result.manifest.files.map((file) => file.name) });
+      } catch (error) {
+        const status = error.status || 500;
+        if (status >= 500) console.error('[backup] restore staging failed:', error);
+        return sendJson(res, status, { error: error instanceof Error ? error.message : 'Restore failed' });
+      }
     }
     const body = !['GET', 'HEAD'].includes(req.method) ? await readBody(req) : undefined;
     const request = requestFromNode(req, body, res);
