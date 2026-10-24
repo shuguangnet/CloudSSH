@@ -1,5 +1,6 @@
 import type { Env, PasswordAuthParams, UserInfo } from '../types';
 import { captchaActiveFor, verifyCaptcha } from './captcha';
+import { turnstileActive, verifyTurnstileToken } from './turnstile';
 
 /**
  * GitHub OAuth 流程处理 + Session 中间件 + 单管理员密码认证
@@ -531,7 +532,7 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Forbidden origin' }, { status: 403 });
   }
 
-  let body: { key?: unknown; username?: unknown; captcha?: unknown };
+  let body: { key?: unknown; username?: unknown; captcha?: unknown; turnstileToken?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -546,9 +547,17 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const stub = getUserDBStub(env, LOCAL_ADMIN_GITHUB_ID);
 
-  // 图片字符验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
-  // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
-  if (captchaActiveFor(env)) {
+  // Cloudflare Turnstile 人机验证（可选）：公网部署防爆破推荐。配置后必验，
+  // 并取代图片字符验证码（更强人机判定，免去用户读图输入）。
+  if (turnstileActive(env)) {
+    const turnstile = await verifyTurnstileToken(env, body.turnstileToken, clientIP);
+    if (!turnstile.ok) {
+      console.warn(`[Auth] password_login result=denied reason=turnstile:${turnstile.reason} ip=${clientIP}`);
+      return Response.json({ error: 'Turnstile verification failed' }, { status: 403 });
+    }
+  } else if (captchaActiveFor(env)) {
+    // 图片字符验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
+    // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
     const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; answer?: unknown });
     if (!captcha.ok) {
       console.warn(`[Auth] password_login result=denied reason=captcha:${captcha.reason} ip=${clientIP}`);

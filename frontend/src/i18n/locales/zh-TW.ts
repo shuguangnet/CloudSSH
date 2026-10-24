@@ -126,6 +126,8 @@ export const zhTW: Record<keyof typeof zhCN, string> = {
   'auth.incompleteConnection': '連線資訊不完整',
   'auth.incompleteCredentials': '驗證資訊不完整',
   'auth.captchaRequired': '請輸入圖片驗證碼。',
+  'auth.turnstileRequired': '請先完成人機驗證。',
+  'auth.turnstileLoadFailed': '人機驗證元件載入失敗，請檢查網路後重試。',
   'auth.captchaHint': '輸入圖中 4 位字元，不分大小寫',
     'auth.captchaRefreshHint': '看不清？點擊圖片或按鈕換一張',
     'auth.adminLoginOriginForbidden': '請透過面板位址直接存取後再登入。',

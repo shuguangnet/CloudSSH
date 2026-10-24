@@ -377,8 +377,8 @@ async function accountManagement(request) {
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: env.BASE_URL,
       'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || 'unknown' },
     body: JSON.stringify({ username: usernameBefore, key: body.currentKey }),
-  }), { ...env, CAPTCHA_MODE: 'off' });
-  // Already authenticated and origin-checked; retain throttling without a second CAPTCHA.
+  }), { ...env, CAPTCHA_MODE: 'off', TURNSTILE_SECRET_KEY: '' });
+  // Already authenticated and origin-checked; retain throttling without a second CAPTCHA/Turnstile.
   if (!verified.ok) return verified;
   if (generation !== authGeneration || usernameBefore !== env.ADMIN_USERNAME) {
     return Response.json({ error: 'Account changed; sign in again' }, { status: 409 });

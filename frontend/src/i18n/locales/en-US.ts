@@ -166,6 +166,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'auth.incompleteConnection': 'Connection details incomplete',
   'auth.incompleteCredentials': 'Credentials incomplete',
   'auth.captchaRequired': 'Enter the captcha answer first.',
+  'auth.turnstileRequired': 'Complete the human verification first.',
+  'auth.turnstileLoadFailed': 'Could not load the verification widget. Check your network and retry.',
   'auth.captchaHint': 'Type the 4 characters shown (case-insensitive)',
     'auth.captchaRefreshHint': 'Hard to read? Click the image or button for a new code',
     'auth.adminLoginOriginForbidden': 'Open the panel via its address, then sign in again.',

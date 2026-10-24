@@ -26,6 +26,7 @@ import {
   LOCAL_ADMIN_GITHUB_ID,
 } from './auth';
 import { captchaActiveFor, issueCaptchaChallenge } from './captcha';
+import { turnstileActive } from './turnstile';
 import { HTML, PANEL_CSP } from './html';
 
 export { SSHSessionDO } from './durable-object';
@@ -267,6 +268,9 @@ export default {
         return Response.json({
           // 滑块验证码（密码模式默认启用；CAPTCHA_MODE=off 停用）
           captchaEnabled: captchaActiveFor(env),
+          // Turnstile 站点密钥是公开值，仅用于前端渲染 widget；
+          // 未配置（或只配一半）不下发，前端回落图片验证码
+          turnstileSiteKey: turnstileActive(env) ? env.TURNSTILE_SITE_KEY : undefined,
           // 密码模式下 GitHub 入口被权威禁用（即使凭据仍留在变量里，功能确实是关闭的）
           githubAuthEnabled: authMode === 'github',
           githubAuthRequired: isGitHubAuthRequired(env),

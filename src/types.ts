@@ -173,6 +173,10 @@ export interface Env {
   IDLE_TIMEOUT?: string;
   // 滑块验证码模式：on（默认）/off/test（固定目标，自动化测试用）
   CAPTCHA_MODE?: string;
+  /** Cloudflare Turnstile 人机验证（可选，公网部署防爆破推荐）。两个值都需配置才启用；
+   * 仅配置 site key 而缺 secret 时按未启用处理（fail open 到图片验证码防线）。 */
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
   // GitHub OAuth（可选，未配置则登录功能自动禁用）
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;

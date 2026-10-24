@@ -69,6 +69,8 @@ docker compose up -d
 
 管理员登录默认启用自研图片字符验证码：登录对话框输入图中字符（不区分大小写）即可提交密码，看不清可点击图片换一张（服务端校验答案摘要与签名，答错即换图、挑战单次使用）。如需关闭，在 compose.yaml 同目录 `.env` 写入 `CAPTCHA_MODE=off`（或导出环境变量后执行 `docker compose up -d`，compose 已透传该变量，默认 `on`）；`test` 值仅供自动化测试固定答案，生产环境请勿使用。
 
+公网部署可选启用 Cloudflare Turnstile 人机验证（更强真人判定、免读图输入）：在 [Cloudflare Dashboard → Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile) 免费注册站点获取密钥对，在 `.env` 同时写入 `TURNSTILE_SITE_KEY` 与 `TURNSTILE_SECRET_KEY`（compose 已透传；两者缺一不启用）。启用后登录对话框以 Turnstile 组件取代图片验证码，服务端向 `challenges.cloudflare.com` 校验 token（单次使用、10 秒超时、网络异常 fail-closed）；仅需出站访问 Cloudflare，无需公网入站。注意：Turnstile 验证依赖浏览器可达 `challenges.cloudflare.com`，纯内网无外网环境请保持默认图片验证码。
+
 账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
 
 ## 监控指标（/metrics）

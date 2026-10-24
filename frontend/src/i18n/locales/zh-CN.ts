@@ -124,6 +124,8 @@ export const zhCN = {
   'auth.incompleteConnection': '连接信息不完整',
   'auth.incompleteCredentials': '认证信息不完整',
   'auth.captchaRequired': '请输入图片验证码。',
+  'auth.turnstileRequired': '请先完成人机验证。',
+  'auth.turnstileLoadFailed': '人机验证组件加载失败，请检查网络后重试。',
   'auth.captchaHint': '输入图中 4 位字符，不区分大小写',
     'auth.captchaRefreshHint': '看不清？点击图片或按钮换一张',
     'auth.adminLoginOriginForbidden': '请通过面板地址直接访问后再登录。',
