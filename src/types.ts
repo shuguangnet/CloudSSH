@@ -170,7 +170,6 @@ export interface Env {
   SSH_SESSION: DurableObjectNamespace;
   USER_DB: DurableObjectNamespace;
   SSH_SHARE: DurableObjectNamespace;
-  MAX_CONNECTIONS?: string;
   IDLE_TIMEOUT?: string;
   // 滑块验证码模式：on（默认）/off/test（固定目标，自动化测试用）
   CAPTCHA_MODE?: string;

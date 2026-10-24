@@ -266,7 +266,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 - `IDLE_TIMEOUT` - Optional; user inactivity idle timeout duration (e.g. `30m`, `1h`, `1800`; defaults to `30m`; `0` disables idle timeout)。wrangler.toml `[vars]` 默认下发 `"30m"`，自定义请改配置文件
 - `ADMIN_PASSWORD_HASH` - Optional; 单管理员密码登录（`pbkdf2$sha256$<iterations>$<salt>$<verifier>`）。生成方式：部署后站点页脚「管理员密码登录设置」浏览器内生成（主路径，无需本地工具）或 `pnpm run hash-password`。非空即启用密码模式：与 GitHub OAuth 互斥且优先级更高，全实例仅本地管理员一个账号；置空/删除即刻退回 GitHub 模式
 
-> 注意：`Env` 中声明的 `MAX_CONNECTIONS` 属预留变量，当前代码未读取，切勿依赖；`IDLE_TIMEOUT` 现已生效，默认 30 分钟。wrangler 部署以 wrangler.toml 为配置权威：Dashboard 同名普通变量会在部署时被覆盖，Secret 类型不受影响（`keep_vars` 可改变该行为但项目未启用）；`IDLE_TIMEOUT` / `REQUIRE_GITHUB_AUTH` / `ENABLE_SSH_SHARING` / `STRICT_HOST_KEY_VERIFY` 已随 `[vars]` 默认下发。
+> 注意：`IDLE_TIMEOUT` 现已生效，默认 30 分钟。wrangler 部署以 wrangler.toml 为配置权威：Dashboard 同名普通变量会在部署时被覆盖，Secret 类型不受影响（`keep_vars` 可改变该行为但项目未启用）；`IDLE_TIMEOUT` / `REQUIRE_GITHUB_AUTH` / `ENABLE_SSH_SHARING` / `STRICT_HOST_KEY_VERIFY` 已随 `[vars]` 默认下发。
 
 ## API Routes
 
