@@ -10,7 +10,8 @@ import { applyPendingRestore, createBackup, stageRestore, RESTORE_MAX_UPLOAD } f
 import { AccessStore, tokenHash, clientIpFrom } from './access-store.mjs';
 import { handleMcp } from './mcp.mjs';
 import { AdminAccount, validUsername } from './admin-account.mjs';
-import { savedServers, executeSaved, drainSshChainPool, connectionConfig } from './operations.mjs';
+import { savedServers, executeSaved, drainSshChainPool, sshChainPoolStats, connectionConfig } from './operations.mjs';
+import { renderMetrics, metricsAuthorized } from './metrics.mjs';
 import { AutomationStore } from './automation-store.mjs';
 import { DatabaseStore } from './database-store.mjs';
 import { createDatabaseRoutes } from './database-api.mjs';
@@ -455,13 +456,31 @@ async function readHostFile(request, url) {
     return Response.json({ error: 'Unable to read file' }, { status: 500 });
   }
 }
+// /metrics cloudssh_start_time_seconds 用：模块初始化时刻近似进程启动时刻。
+const processStartAt = Date.now();
 const server = createServer(async (req, res) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) return sendJson(res, 400, { error: 'Invalid request target' });
     const requestUrl = new URL(req.url, env.BASE_URL);
     if (requestUrl.origin !== env.BASE_URL) return sendJson(res, 400, { error: 'Invalid request target' });
     const pathname = requestUrl.pathname;
-    if (pathname !== '/api/health' && rateLimited(req.socket.remoteAddress)) return sendJson(res, 429, { error: 'Rate limit exceeded' });
+    if (pathname !== '/api/health' && pathname !== '/metrics' && rateLimited(req.socket.remoteAddress)) return sendJson(res, 429, { error: 'Rate limit exceeded' });
+    if (pathname === '/metrics') {
+      // 监控专用令牌（METRICS_BEARER_TOKEN）；未配置则 404，不暴露端点存在性。
+      // 监控拉取频率高，故豁免 IP 限流（恒定小响应，无放大面）。
+      if (!metricsAuthorized(env.METRICS_BEARER_TOKEN, req.headers.authorization)) return sendJson(res, 404, { error: 'Not found' });
+      const body = renderMetrics({
+        wssClients: wss.clients.size,
+        sshChainPoolIdle: sshChainPoolStats().idle,
+        liveStatus: liveStatusHub.stats(),
+        cronTasks: automationStore.countAllTasks(),
+        monitors: automationStore.countAllMonitors(),
+        mcpTokens: store.countActiveTokens(),
+        startedAt: processStartAt,
+      });
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(body);
+    }
     if (pathname === '/mcp') {
       if (req.headers.origin && !originAllowed(req.headers.origin, req.headers.host, req.headers['x-forwarded-host'])) {
         console.warn(`[MCP] rejected: origin=${req.headers.origin} host=${req.headers.host} xfh=${req.headers['x-forwarded-host']}`);

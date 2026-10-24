@@ -433,6 +433,13 @@ export function createLiveStatusHub({ env, SSHSession, executeSaved, defaultInte
     stopAll() {
       for (const session of [...sessions.values()]) session.stop();
     },
+
+    /** /metrics 用：活跃采样会话数与订阅者数。 */
+    stats() {
+      let subscribers = 0;
+      for (const session of sessions.values()) subscribers += session.clientCount;
+      return { sessions: sessions.size, subscribers };
+    },
   };
   return hub;
 }

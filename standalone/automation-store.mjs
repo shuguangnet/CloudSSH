@@ -114,6 +114,14 @@ export class AutomationStore {
     return this.db.prepare('SELECT * FROM cron_tasks WHERE owner=? ORDER BY id').all(owner);
   }
 
+  /** /metrics 用：全实例（跨 owner）任务与监控计数。 */
+  countAllTasks() {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM cron_tasks').get()?.n ?? 0;
+  }
+  countAllMonitors() {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM monitor_config').get()?.n ?? 0;
+  }
+
   taskById(owner, id) {
     return this.db.prepare('SELECT * FROM cron_tasks WHERE owner=? AND id=?').get(owner, id) || null;
   }

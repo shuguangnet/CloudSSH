@@ -94,6 +94,11 @@ export function drainSshChainPool() {
   }
 }
 
+/** /metrics 用：空闲 SSH 链池当前大小。 */
+export function sshChainPoolStats() {
+  return { idle: idleChainPool.size };
+}
+
 async function acquireChain(env, identity, serverId, SSHSession, signal) {
   // user_id is part of the key: server ids are per-owner rows and two user
   // rows under one owner must never share each other's authenticated chain.

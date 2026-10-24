@@ -71,6 +71,26 @@ docker compose up -d
 
 账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
 
+## 监控指标（/metrics）
+
+自托管运行时提供 Prometheus 抓取端点 `GET /metrics`：
+
+- **鉴权**：需在环境变量配置 `METRICS_BEARER_TOKEN`（任意高熵字符串）；未配置或令牌不匹配一律返回 `404`（不暴露端点存在性）。抓取请求不受 IP 限流约束（固定小响应）。
+- **指标**（全部为进程内即时 gauge）：`cloudssh_up`、`cloudssh_uptime_seconds`、`cloudssh_start_time_seconds`、`cloudssh_process_resident_memory_bytes`、`cloudssh_process_heap_used_bytes`、`cloudssh_ws_connections_active`（终端/SFTP/CLI WebSocket）、`cloudssh_ssh_pool_idle_chains`、`cloudssh_live_status_sessions` / `cloudssh_live_status_subscribers`、`cloudssh_cron_tasks`、`cloudssh_monitors`、`cloudssh_mcp_tokens_active`。
+- **Prometheus scrape 示例**：
+
+```yaml
+scrape_configs:
+  - job_name: cloudssh
+    scheme: http
+    authorization:
+      credentials: <METRICS_BEARER_TOKEN>
+    static_configs:
+      - targets: ['panel.example.com:8787']
+```
+
+该令牌仅供监控读取指标，与面板会话、MCP 令牌体系完全独立。
+
 ## 服务器文件密钥选择（文件浏览器）
 
 自托管部署的保存服务器弹窗（新增／编辑／克隆）和匿名连接表单在「选择密钥文件」旁提供「服务器文件」入口，可浏览部署服务器上已存在的私钥文件（如 `/root/.ssh/id_ed25519`），选中后内容直接填入私钥文本域，无需从手机或电脑上传。后端提供两个需要管理员会话的只读接口：`GET /api/host-files?path=`（目录列表，目录优先、最多 500 项）和 `GET /api/host-file?path=`（读取不超过 1 MiB 的普通文件）；Cloudflare Workers 部署无此路由，前端探测不到时自动隐藏入口。

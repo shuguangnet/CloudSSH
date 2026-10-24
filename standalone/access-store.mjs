@@ -298,5 +298,11 @@ export class AccessStore {
     if (status) { where.push('status=?'); args.push(status); }
     return this.db.prepare(`SELECT * FROM mcp_audit WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 100`).all(...args);
   }
+  /** /metrics 用：未撤销、未过期的令牌数（不回内容，只回计数）。 */
+  countActiveTokens() {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM mcp_tokens WHERE revoked_at IS NULL AND disabled_at IS NULL AND expires_at > ?').get(Date.now());
+    return row?.n ?? 0;
+  }
+
   close() { this.db.close(); }
 }
