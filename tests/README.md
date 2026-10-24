@@ -58,6 +58,10 @@ pnpm run test:coverage
 # 监听模式
 pnpm test --watch
 
+# 自定义 reporter（如 dot / json / junit；注意：新版 vitest 已无 `basic` reporter，
+# `--reporter=basic` 会报 "Reporter [basic] doesn't exist"，可用 dot 替代）
+pnpm test -- --reporter=dot
+
 # 安装并运行 Chromium E2E 与 axe 无障碍检查
 pnpm exec playwright install chromium
 pnpm run test:e2e

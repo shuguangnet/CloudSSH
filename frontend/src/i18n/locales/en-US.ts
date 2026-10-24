@@ -75,8 +75,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'authChallenge.invalid':
     'The remote server sent an invalid interactive authentication request. Automatic reconnect has been stopped.',
   'auth.connectionParameters': 'Connection parameters',
-  'auth.systemReady': 'System ready. Waiting for input.',
-  'auth.brandTagline': 'Enterprise web SSH terminal',
+    'auth.brandTagline': 'Enterprise web SSH terminal',
   'auth.secureBadge': 'Encrypted SSH connection · credentials stay local',
   'auth.host': 'Host address',
   'auth.port': 'Port',
