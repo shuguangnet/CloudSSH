@@ -186,6 +186,7 @@ export const zhTW: Record<keyof typeof zhCN, string> = {
   'server.save': '儲存伺服器',
   'server.edit': '編輯伺服器',
   'server.clone': '克隆',
+  'server.files': '檔案',
   'server.cloneTitle': '克隆伺服器',
   'server.status.button': '伺服器狀態',
   'server.status.title': '伺服器狀態',

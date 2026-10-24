@@ -202,7 +202,12 @@ export class ServerList {
   private user: UserInfo;
   private servers: ServerConfig[] = [];
   private onLogout: () => void;
-  private onConnect: (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => void;
+  private onConnect: (
+    wsUrl: string,
+    serverName: string,
+    hostInfo?: SSHHostInfo,
+    opts?: { openSftpOnReady?: boolean }
+  ) => void;
   private editingServerId: number | null = null;
   private editingOriginalAuthMethod: ServerConfig['auth_method'] | null = null;
   private keyFileReadVersion = 0;
@@ -227,7 +232,12 @@ export class ServerList {
   constructor(
     user: UserInfo,
     onLogout: () => void,
-    onConnect: (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => void
+    onConnect: (
+      wsUrl: string,
+      serverName: string,
+      hostInfo?: SSHHostInfo,
+      opts?: { openSftpOnReady?: boolean }
+    ) => void
   ) {
     this.user = user;
     this.onLogout = onLogout;
@@ -649,6 +659,9 @@ export class ServerList {
         .getElementById(`connect-${server.id}`)
         ?.addEventListener('click', () => this.connectServer(server.id));
       document
+        .getElementById(`files-${server.id}`)
+        ?.addEventListener('click', () => this.connectServer(server.id, { openSftpOnReady: true }));
+      document
         .getElementById(`status-${server.id}`)
         ?.addEventListener('click', () => serverStatusPanel.open(server.id, server.name));
       document
@@ -838,6 +851,9 @@ export class ServerList {
           <button id="docker-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('docker.button')}" aria-label="${t('docker.button')}">
             <span class="material-symbols-outlined" style="font-size: 14px;">deployed_code</span>
           </button>` : ''}
+          <button id="files-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.files')}" aria-label="${t('server.files')}">
+            <span class="material-symbols-outlined" style="font-size: 14px;">folder_open</span>
+          </button>
           <button id="clone-${server.id}" class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center" title="${t('server.clone')}">
             <span class="material-symbols-outlined" style="font-size: 14px;">content_copy</span>
           </button>
@@ -855,7 +871,7 @@ export class ServerList {
 
   // ==================== 服务器操作 ====================
 
-  private async connectServer(serverId: number): Promise<void> {
+  private async connectServer(serverId: number, opts?: { openSftpOnReady?: boolean }): Promise<void> {
     const server = this.servers.find((s) => s.id === serverId);
     if (!server) return;
 
@@ -892,12 +908,17 @@ export class ServerList {
       }
 
       // 在当前页面内创建新标签并连接
-      this.onConnect(wsUrl, server.name, {
-        host: server.host,
-        port: server.port,
-        username: server.username,
-        serverId: server.id,
-      });
+      this.onConnect(
+        wsUrl,
+        server.name,
+        {
+          host: server.host,
+          port: server.port,
+          username: server.username,
+          serverId: server.id,
+        },
+        opts
+      );
     } catch (e) {
       notify(e instanceof Error ? e.message : String(e), {
         title: t('server.connectFailed'),

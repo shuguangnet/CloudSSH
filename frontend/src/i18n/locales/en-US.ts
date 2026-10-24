@@ -222,6 +222,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'server.save': 'Save server',
   'server.edit': 'Edit server',
   'server.clone': 'Clone',
+  'server.files': 'Files',
   'server.cloneTitle': 'Clone server',
   'server.status.button': 'Server status',
   'server.status.title': 'Server status',

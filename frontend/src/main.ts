@@ -128,6 +128,11 @@ function getTabManager(): TabManager {
       }
     });
 
+    // 服务器卡片「文件」入口：连接就绪后自动展开 SFTP 抽屉
+    tabManager.setSftpAutoOpenHandler(() => {
+      applyDrawerToggle('sftp', true);
+    });
+
     // 绑定 new-tab-btn
     bindNewTabButton();
   }
@@ -340,8 +345,13 @@ function showUserSpace(user: {
       showAuthSection();
     },
     // onConnect 回调 — 在当前页面创建新标签
-    (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => {
-      showTerminalFromServer(wsUrl, serverName, hostInfo);
+    (
+      wsUrl: string,
+      serverName: string,
+      hostInfo?: SSHHostInfo,
+      opts?: { openSftpOnReady?: boolean }
+    ) => {
+      showTerminalFromServer(wsUrl, serverName, hostInfo, opts);
     }
   );
 }
@@ -420,7 +430,12 @@ function showTerminalWithNewTab(
   return { tab, terminal: tab.terminal };
 }
 
-function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SSHHostInfo): void {
+function showTerminalFromServer(
+  wsUrl: string,
+  serverName: string,
+  hostInfo?: SSHHostInfo,
+  opts?: { openSftpOnReady?: boolean }
+): void {
   if (!validateWsUrl(wsUrl)) {
     notify(t('server.invalidWs'), {
       title: t('server.connectFailed'),
@@ -429,7 +444,7 @@ function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SS
     return;
   }
 
-  const { terminal } = showTerminalWithNewTab(serverName, hostInfo);
+  const { tab, terminal } = showTerminalWithNewTab(serverName, hostInfo);
 
   terminal.mount();
 
@@ -439,6 +454,11 @@ function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SS
   const serverId = hostInfo?.serverId;
   const reconnectFactory = serverId ? () => requestSavedServerWebSocket(serverId) : undefined;
   terminal.connectWithWebSocket(ws, hostInfo, { reconnectFactory });
+
+  // 「文件」入口：SSH 就绪后自动展开 SFTP 抽屉（由 TabManager 消费标记）
+  if (opts?.openSftpOnReady) {
+    tabManager?.markSftpAutoOpen(tab.id);
+  }
 }
 
 function showSharedTerminal(claim: ClaimedShare): void {

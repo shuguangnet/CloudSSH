@@ -151,6 +151,28 @@ let selectionActionsListenersBound = false;
 const MOBILE_VIEWPORT_QUERY = '(max-width: 767px), (max-width: 1180px) and (pointer: coarse)';
 const MOBILE_CONNECTION_RECOVERY_QUERY = '(pointer: coarse)';
 
+/**
+ * 把服务端下发的 SFTP attach URL 统一改写为当前页面来源。
+ *
+ * 服务端（standalone requestFromNode）恒以 BASE_URL 解析请求 URL，因此下发的
+ * attach 地址携带 BASE_URL 主机；而终端 WS 地址由 externalRequestOrigin 生成，
+ * 跟随浏览器实际访问地址。经 SSH 隐道/反代域名/内网地址访问面板时两者不一致：
+ * SFTP 数据通道会被 CSP connect-src 'self' 拦截或被 sameOriginOrHost 拒绝，
+ * 表现为「终端正常但 SFTP WebSocket 连接错误」。这里对齐到页面自身来源；
+ * 鉴权仍由 session+token 参数在服务端映射表校验，改写仅影响连到哪台面板。
+ */
+function normalizeSFTPAttachUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const url = new URL(raw);
+    url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.host = window.location.host;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function supportsMobileConnectionRecovery(): boolean {
   return (
     navigator.maxTouchPoints > 0 &&
@@ -1067,9 +1089,6 @@ export class SSHTerminal {
       console.warn('WebGL addon failed to load, falling back to canvas/dom', e);
     }
 
-    // 临时探针钩子：诊断后移除
-    (globalThis as any).__cloudsshTerm = this.terminal;
-
     // 容器尺寸自适应：抽屉开合、状态抽屉弹出、分屏、字体后载、软键盘等布局变化
     // 都会改变终端容器大小，而 window resize 事件覆盖不到这些场景（影院全屏
     // 另走 scheduleFit）。ResizeObserver + rAF 去抖统一补齐；fit() 内部有
@@ -1465,7 +1484,7 @@ export class SSHTerminal {
           }
 
           if (msg.type === 'sftp_attach') {
-            this.sftpAttachUrl = msg.url || null;
+            this.sftpAttachUrl = normalizeSFTPAttachUrl(msg.url);
             return;
           }
 
@@ -1484,7 +1503,7 @@ export class SSHTerminal {
             }
             // 断线期间保留的 SFTP attach URL，用于恢复后重建 SFTP 数据通道
             if (typeof msg.sftpAttachUrl === 'string' && msg.sftpAttachUrl) {
-              this.sftpAttachUrl = msg.sftpAttachUrl;
+              this.sftpAttachUrl = normalizeSFTPAttachUrl(msg.sftpAttachUrl);
             }
             this.sessionReady = true;
             this.reconnectAttempts = 0;

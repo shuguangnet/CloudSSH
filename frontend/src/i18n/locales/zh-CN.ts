@@ -184,6 +184,7 @@ export const zhCN = {
   'server.save': '保存服务器',
   'server.edit': '编辑服务器',
   'server.clone': '克隆',
+  'server.files': '文件',
   'server.cloneTitle': '克隆服务器',
   'server.status.button': '服务器状态',
   'server.status.title': '服务器状态',

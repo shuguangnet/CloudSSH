@@ -24,6 +24,8 @@ export interface TabInfo {
   wsLatency?: number;
   selectedText: string;
   selectionAnchor: TerminalSelectionAnchor | null;
+  /** 连接就绪后自动展开 SFTP 抽屉（服务器卡片「文件」入口，消费一次即失效） */
+  autoOpenSftp?: boolean;
 }
 
 /**
@@ -66,6 +68,7 @@ export class TabManager {
 
   /** 克隆会话请求回调 */
   private onDuplicateTab?: (tab: TabInfo) => void;
+  private onSftpAutoOpen?: (tab: TabInfo) => void;
 
   constructor(tabBarId: string, terminalAreaId: string) {
     this.tabBarEl = document.getElementById(tabBarId)!;
@@ -91,6 +94,23 @@ export class TabManager {
 
   setDuplicateTabHandler(handler: (tab: TabInfo) => void): void {
     this.onDuplicateTab = handler;
+  }
+
+  /**
+   * 标记指定标签在 SSH 就绪后自动展开 SFTP 抽屉。
+   * 供主页面服务器卡片「文件」入口使用：连上即看文件，无需先手动开终端抽屉。
+   */
+  markSftpAutoOpen(tabId: string): void {
+    const tab = this.tabs.get(tabId);
+    if (tab) tab.autoOpenSftp = true;
+  }
+
+  /**
+   * SSH 就绪且 SFTP 面板已初始化时回调（用于联动抽屉分段条）。
+   * 仅在 autoOpenSftp 标记被消费时触发一次。
+   */
+  setSftpAutoOpenHandler(handler: (tab: TabInfo) => void): void {
+    this.onSftpAutoOpen = handler;
   }
 
   // ==================== 创建标签 ====================
@@ -162,6 +182,12 @@ export class TabManager {
           tab.sftpPanel.bindEvents();
         }
         tab.sftpPanel.handleSSHReady();
+
+        // 「文件」入口：就绪后自动展开 SFTP 抽屉（一次性消费）
+        if (tab.autoOpenSftp) {
+          tab.autoOpenSftp = false;
+          this.onSftpAutoOpen?.(tab);
+        }
 
         // 初始化 Agent 面板（仅登录用户）
         if (this._isLoggedIn && !tab.agentPanel) {
