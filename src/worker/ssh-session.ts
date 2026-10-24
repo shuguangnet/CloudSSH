@@ -35,6 +35,7 @@ import { SSHTransport } from '../ssh/transport';
 import type { Env } from '../types';
 import type { AgentTaskCheckpoint } from '../agent-task-schema';
 import { DetachedSessionBuffer } from './ssh-detached-buffer';
+import { TerminalOutputCoalescer } from './terminal-output-coalescer';
 import { KeyboardInteractiveAuthHandler, type PendingAuthChallenge } from './ssh-interactive-auth';
 import { parseIdleTimeout } from './idle-timeout';
 import { ShareAuditWriter } from './share-audit-writer';
@@ -223,6 +224,12 @@ export class SSHSession {
 
   // Agent integration
   private terminalContext: TerminalContext = new TerminalContext();
+  /** 终端输出合并器：空闲首包立即转发，突发 8ms 窗口合并，降低浏览器端每消息开销 */
+  private readonly terminalOutputCoalescer = new TerminalOutputCoalescer((data) =>
+    this.deliverTerminalOutput(data)
+  );
+  /** 终端上下文专用流式解码器：{stream:true} 跨包保存 UTF-8 状态，禁止与其他解码点共用 */
+  private readonly terminalTextDecoder = new TextDecoder();
   private agentCore: AgentCore | null = null;
   private activeExecChannels: Map<number, ExecChannelLike> = new Map();
   private directTcpipStreams: Map<number, DirectTcpipStream> = new Map();
@@ -2026,25 +2033,7 @@ export class SSHSession {
             await this.onShellReady();
           }
           const outputData = channel.handleChannelData(payload);
-          if (this.isDetached()) {
-            this.handleDetachedTerminalOutput(outputData, channel);
-          } else {
-            try {
-              this.ws.send(outputData);
-            } catch (e) {
-              this.sendDebug(
-                () => `Send shell output failed: ${e instanceof Error ? e.message : e}`
-              );
-            }
-            this.recordShareTerminalOutput(outputData);
-            this.queueLocalWindowAdjust(outputData.length, channel);
-          }
-          // Feed terminal context for Agent
-          try {
-            this.terminalContext.appendOutput(this.textDecoder.decode(outputData));
-          } catch {
-            /* 解码/追加失败不影响主会话，静默忽略 */
-          }
+          this.enqueueTerminalOutput(outputData);
         } else if (this.sftpHandler && channelID === this.sftpHandler.getChannelID()) {
           // SFTP channel data - forward to SFTP handler
           const sftpData = channel.handleChannelData(payload);
@@ -2086,19 +2075,7 @@ export class SSHSession {
             payload[offset + 3];
           offset += 4;
           const stderrData = payload.subarray(offset, offset + dataLen);
-          if (this.isDetached()) {
-            this.handleDetachedTerminalOutput(stderrData, channel);
-          } else {
-            try {
-              this.ws.send(stderrData);
-            } catch (e) {
-              this.sendDebug(
-                () => `Send stderr output failed: ${e instanceof Error ? e.message : e}`
-              );
-            }
-            this.recordShareTerminalOutput(stderrData);
-            this.queueLocalWindowAdjust(stderrData.length, channel);
-          }
+          this.enqueueTerminalOutput(stderrData);
         } else {
           // Exec channel extended data (stderr for Agent)
           const execCh = this.activeExecChannels.get(channelID);
@@ -3642,6 +3619,42 @@ export class SSHSession {
     }
   }
 
+  /**
+   * 终端输出入口（shell CHANNEL_DATA 与 stderr EXTENDED_DATA 共用）：
+   * 经合并器转发。分离态、分享审计、窗口归还、Agent 上下文都在
+   * deliverTerminalOutput 冲刷时统一处理，语义与逐包转发一致。
+   */
+  private enqueueTerminalOutput(data: Uint8Array): void {
+    if (this.isDetached()) {
+      // 分离态直接投递分离缓冲（有界内存队列），不进合并窗口：
+      // 重连补发路径保持逐包语义，也避免补发数据叠加合并延迟。
+      this.deliverTerminalOutput(data);
+      return;
+    }
+    this.terminalOutputCoalescer.push(data);
+  }
+
+  private deliverTerminalOutput(data: Uint8Array): void {
+    const channel = this.shellChannel;
+    if (this.isDetached()) {
+      if (channel) this.handleDetachedTerminalOutput(data, channel);
+      return;
+    }
+    try {
+      this.ws.send(data);
+    } catch (e) {
+      this.sendDebug(() => `Send shell output failed: ${e instanceof Error ? e.message : e}`);
+    }
+    this.recordShareTerminalOutput(data);
+    if (channel) this.queueLocalWindowAdjust(data.length, channel);
+    // Feed terminal context for Agent（流式解码：多字节字符跨包不裂）
+    try {
+      this.terminalContext.appendOutput(this.terminalTextDecoder.decode(data, { stream: true }));
+    } catch {
+      /* 解码/追加失败不影响主会话，静默忽略 */
+    }
+  }
+
   private handleDetachedTerminalOutput(data: Uint8Array, channel: SSHChannel): void {
     this.detachedBuffer.handleOutput(data, {
       recordTerminalOutput: (d) => this.recordShareTerminalOutput(d),
@@ -3774,6 +3787,9 @@ export class SSHSession {
 
   close(normal: boolean = false): void {
     if (this.closed) return;
+    // 先冲刷合并中的终端输出：优雅收尾时不丢最后一段数据
+    // （ws 已不可发时 deliver 内部逐段吞错；分离态会落入分离缓冲随后一并清理）
+    this.terminalOutputCoalescer.flush();
     this.closed = true;
     this.detachedBuffer.clear();
     this.notifyShareSessionClosed(normal);
@@ -3844,6 +3860,7 @@ export class SSHSession {
     this.channelDataQueueHead = 0;
     this.channelDataQueueOffset = 0;
     this.channelDataQueueBytes = 0;
+    this.terminalOutputCoalescer.reset();
     this.isRekeying = false;
     this.rekeyWaiters = [];
     this.sendMutex = Promise.resolve();

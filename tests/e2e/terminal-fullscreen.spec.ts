@@ -144,6 +144,42 @@ test('全屏按钮进入影院模式并随 Esc 退出', async ({ page }) => {
   await expect(fsBtn).toHaveAttribute('title', '进入全屏');
 });
 
+test('容器尺寸变化（非窗口 resize）也能触发重新 fit 并下发 window-change', async ({ page }) => {
+  await installTestWebSocket(page);
+  await mockSession(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });
+  });
+
+  await page.goto('/?lang=zh-CN');
+  await page.locator('#connect-7').click();
+  await expect(page.locator('#term-status')).toContainText('已连接');
+
+  // 取连接时的初始行列作为基线
+  const initial = await page.waitForFunction(() => {
+    const list = (window as any).__resizeMessages as Array<{ rows?: number }> | undefined;
+    return list && list.length ? (list[0].rows as number) : null;
+  });
+  const initialRows = await initial.jsonValue();
+  expect(initialRows).toBeGreaterThan(0);
+
+  // 不改窗口尺寸，直接压缩终端容器高度：只有 ResizeObserver 能捕捉到这种布局变化
+  // （8cf9ed4 只声明了观察器字段未真正 observe，此用例守护接线不倒退）
+  await page.evaluate(() => {
+    const inner = document.querySelector<HTMLElement>('[id^="terminal-inner-"]');
+    if (inner) inner.style.height = '45%';
+  });
+
+  await page.waitForFunction(
+    (baseline: number) => {
+      const list = (window as any).__resizeMessages as Array<{ rows?: number }> | undefined;
+      return Array.isArray(list) && list.some((m, i) => i > 0 && (m.rows ?? 0) > 0 && (m.rows as number) < baseline);
+    },
+    initialRows as number,
+    { timeout: 5_000 }
+  );
+});
+
 test('无标签时全屏按钮隐藏，连接后出现', async ({ page }) => {
   await installTestWebSocket(page);
   await mockSession(page);

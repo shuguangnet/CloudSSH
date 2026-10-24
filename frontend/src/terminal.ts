@@ -1070,6 +1070,23 @@ export class SSHTerminal {
     // 临时探针钩子：诊断后移除
     (globalThis as any).__cloudsshTerm = this.terminal;
 
+    // 容器尺寸自适应：抽屉开合、状态抽屉弹出、分屏、字体后载、软键盘等布局变化
+    // 都会改变终端容器大小，而 window resize 事件覆盖不到这些场景（影院全屏
+    // 另走 scheduleFit）。ResizeObserver + rAF 去抖统一补齐；fit() 内部有
+    // 行列未变即 no-op 的守卫，不会形成 resize 回环。8cf9ed4 曾只声明字段
+    // 未真正 observe，导致布局变化后 TUI 半屏复发。
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => {
+        if (this.fitPending) return;
+        this.fitPending = true;
+        requestAnimationFrame(() => {
+          this.fitPending = false;
+          if (this.mounted) this.fit();
+        });
+      });
+      this.resizeObserver.observe(this.container);
+    }
+
     this.fit();
   }
 
