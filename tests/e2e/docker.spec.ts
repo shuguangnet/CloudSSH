@@ -32,7 +32,13 @@ const SERVERS_FIXTURE = [
 
 const LOGS_FIXTURE = { logs: '2026-10-11T08:00:01.000000000Z line one\n2026-10-11T08:00:02.000000000Z line two\n' };
 
-async function mockDocker(page: Page, options: { automationEnabled: boolean; actions?: { container: string; action: string }[]; logsRequests?: { container: string; tail: number }[] }): Promise<void> {
+async function mockDocker(page: Page, options: {
+  automationEnabled: boolean;
+  actions?: { container: string; action: string }[];
+  logsRequests?: { container: string; tail: number }[];
+  upgrades?: { container: string; image: string; keep_backup: boolean }[];
+  upgradeReply?: object;
+}): Promise<void> {
   await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 1, github_id: 1, username: 'tester', avatar_url: '' } }));
   await page.route('**/api/config', route => route.fulfill({
     json: { githubAuthEnabled: true, automationEnabled: options.automationEnabled },
@@ -47,6 +53,17 @@ async function mockDocker(page: Page, options: { automationEnabled: boolean; act
     const body = route.request().postDataJSON() as { container: string; action: string };
     options.actions?.push(body);
     return route.fulfill({ json: { ok: true, exit_code: 0, stdout: `ACTION:${body.action} ${body.container}`, stderr: '' } });
+  });
+  await page.route('**/api/docker/*/upgrade', (route: Route) => {
+    const body = route.request().postDataJSON() as { container: string; image: string; keep_backup: boolean };
+    options.upgrades?.push(body);
+    return route.fulfill({ json: options.upgradeReply ?? {
+      ok: true,
+      steps: ['inspect: caddy (caddy:latest)', 'pull: caddy:2', 'stop: caddy', 'rename: caddy-bak-20260102030405', 'run: caddy:2', 'verify: State.Running', 'backup-removed: caddy-bak-20260102030405'],
+      backupRemoved: true,
+      backupName: 'caddy-bak-20260102030405',
+      keepBackup: false,
+    } });
   });
   await page.route('**/api/docker/*/logs', (route: Route) => {
     const body = route.request().postDataJSON() as { container: string; tail: number };
@@ -122,6 +139,56 @@ test('docker button stays hidden on Workers deployments', async ({ page }) => {
   await page.goto('/?lang=zh-CN');
   await expect(page.locator('#connect-7')).toBeVisible();
   await expect(page.locator('#docker-7')).toHaveCount(0);
+});
+
+test('docker upgrade dialog recreates the container with a new image', async ({ page }) => {
+  const upgrades: { container: string; image: string; keep_backup: boolean }[] = [];
+  await blockOptionalThirdPartyAssets(page);
+  await mockDocker(page, { automationEnabled: true, upgrades });
+
+  await page.goto('/?lang=zh-CN');
+  await page.locator('#docker-7').click();
+  const body = page.locator('#docker-modal-body');
+  const exitedCard = body.locator('.rounded-lg', { hasText: 'caddy' });
+
+  await exitedCard.locator('button[data-docker-action="upgrade"]').click();
+  const modal = page.locator('#docker-upgrade-modal');
+  await expect(modal).toBeVisible();
+  await expect(page.locator('#docker-upgrade-container-name')).toHaveText('caddy');
+  await expect(page.locator('#docker-upgrade-current-image')).toHaveText('caddy:latest');
+  await expect(page.locator('#docker-upgrade-image-input')).toHaveValue('caddy:latest');
+
+  // Prefilled current image stays; switching to a new tag and keeping a backup.
+  await page.locator('#docker-upgrade-image-input').fill('caddy:2');
+  await page.locator('#docker-upgrade-keep-backup').check();
+  await page.locator('#docker-upgrade-confirm-btn').click();
+  await expect.poll(() => upgrades.length).toBe(1);
+  expect(upgrades[0]).toEqual({ container: 'caddy', image: 'caddy:2', keep_backup: true });
+  // Success closes the dialog and refreshes the container list.
+  await expect(modal).toBeHidden();
+  await expect(body).toContainText('caddy');
+});
+
+test('docker upgrade failures surface the rollback notice and stay open', async ({ page }) => {
+  const upgrades: { container: string; image: string; keep_backup: boolean }[] = [];
+  await blockOptionalThirdPartyAssets(page);
+  await mockDocker(page, {
+    automationEnabled: true,
+    upgrades,
+    upgradeReply: { ok: false, rolledBack: true, error: 'replacement container is not running', steps: ['inspect: caddy (caddy:latest)'], logs: 'boom' },
+  });
+
+  await page.goto('/?lang=zh-CN');
+  await page.locator('#docker-7').click();
+  const body = page.locator('#docker-modal-body');
+  await body.locator('.rounded-lg', { hasText: 'caddy' }).locator('button[data-docker-action="upgrade"]').click();
+  await page.locator('#docker-upgrade-image-input').fill('caddy:broken');
+  await page.locator('#docker-upgrade-confirm-btn').click();
+  await expect.poll(() => upgrades.length).toBe(1);
+  const modal = page.locator('#docker-upgrade-modal');
+  await expect(modal).toBeVisible();
+  await expect(page.locator('#docker-upgrade-progress')).toContainText('已自动回滚');
+  await expect(page.locator('#docker-upgrade-progress')).toContainText('boom');
 });
 
 test('docker logs dialog fetches and re-fetches with the selected tail', async ({ page }) => {

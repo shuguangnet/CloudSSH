@@ -107,6 +107,7 @@ function actionButtons(container: DockerContainer, supportsExec: boolean): strin
       ${button('stop', 'stop', t('docker.stop'), !running)}
       ${button('logs', 'receipt_long', t('docker.logs'), false)}
       ${supportsExec ? button('terminal', 'terminal', t('docker.terminal'), !running) : ''}
+      ${button('upgrade', 'system_update_alt', t('docker.upgrade'), false)}
       ${button('remove', 'delete', t('docker.delete'), false, true)}
     </div>`;
 }
@@ -153,6 +154,8 @@ export class DockerPanel {
   private view: DockerView = 'containers';
   private images: DockerImage[] = [];
   private imagesLoaded = false;
+  /** 最近一次容器列表（升级弹窗预填当前镜像用）。 */
+  private containers: DockerContainer[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private controller: AbortController | null = null;
   private busy = false;
@@ -426,6 +429,7 @@ export class DockerPanel {
   private render(containers: DockerContainer[]): void {
     const body = document.getElementById('docker-modal-body');
     if (!body) return;
+    this.containers = containers;
     const supportsExec = this.getTerminal !== null;
     const cards = containers.length
       ? containers.map((container) => containerCard(container, supportsExec)).join('')
@@ -451,6 +455,10 @@ export class DockerPanel {
     if (this.serverId === null) return;
     if (action === 'logs') {
       this.openLogs(container);
+      return;
+    }
+    if (action === 'upgrade') {
+      this.openUpgrade(container);
       return;
     }
     if (action === 'terminal') {
@@ -505,6 +513,96 @@ export class DockerPanel {
       return;
     }
     this.close();
+  }
+
+  /** 打开容器升级弹窗：预填当前镜像，用户可改版本号或保持不变（拉取后重建）。 */
+  openUpgrade(container: string): void {
+    if (this.serverId === null) return;
+    const modal = document.getElementById('docker-upgrade-modal');
+    const nameSpan = document.getElementById('docker-upgrade-container-name');
+    const imageSpan = document.getElementById('docker-upgrade-current-image');
+    const input = document.getElementById('docker-upgrade-image-input') as HTMLInputElement | null;
+    const progress = document.getElementById('docker-upgrade-progress');
+    const keepBackup = document.getElementById('docker-upgrade-keep-backup') as HTMLInputElement | null;
+    const confirmBtn = document.getElementById('docker-upgrade-confirm-btn') as HTMLButtonElement | null;
+    if (!modal || !nameSpan || !imageSpan || !input || !progress) return;
+    const current = this.containers.find((item) => item.name === container)?.image ?? '';
+    nameSpan.textContent = container;
+    imageSpan.textContent = current || '—';
+    input.value = current;
+    progress.classList.add('hidden');
+    progress.textContent = '';
+    if (keepBackup) keepBackup.checked = false;
+    confirmBtn?.removeAttribute('disabled');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    input.focus();
+  }
+
+  closeUpgrade(): void {
+    const modal = document.getElementById('docker-upgrade-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+  }
+
+  private async handleUpgrade(): Promise<void> {
+    if (this.serverId === null || this.busy) return;
+    const modal = document.getElementById('docker-upgrade-modal');
+    const nameSpan = document.getElementById('docker-upgrade-container-name');
+    const input = document.getElementById('docker-upgrade-image-input') as HTMLInputElement | null;
+    const keepBackup = document.getElementById('docker-upgrade-keep-backup') as HTMLInputElement | null;
+    const progress = document.getElementById('docker-upgrade-progress');
+    const confirmBtn = document.getElementById('docker-upgrade-confirm-btn') as HTMLButtonElement | null;
+    const container = nameSpan?.textContent?.trim() || '';
+    const image = input?.value.trim() || '';
+    if (!container || !image || !progress) return;
+    if (!CONTAINER_NAME_RE.test(container)) return;
+    this.busy = true;
+    confirmBtn?.setAttribute('disabled', '');
+    modal?.setAttribute('inert', '');
+    progress.classList.remove('hidden');
+    progress.textContent = `${t('docker.upgradeRunning')}\n`;
+    try {
+      const response = await fetch(`/api/docker/${this.serverId}/upgrade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ container, image, keep_backup: keepBackup?.checked ?? false }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean; error?: string; steps?: string[]; rolledBack?: boolean; logs?: string;
+        backupRemoved?: boolean; backupName?: string; keepBackup?: boolean;
+      };
+      const stepsText = (payload.steps || []).map((line) => `· ${line}`).join('\n');
+      if (!response.ok || payload.ok !== true) {
+        progress.textContent = `${stepsText}\n✗ ${payload.error || `HTTP ${response.status}`}`;
+        if (payload.logs) progress.textContent += `\n${payload.logs}`;
+        const notice = payload.rolledBack
+          ? t('docker.upgradeRolledBack', { message: payload.error || '' })
+          : t('docker.actionFailed', { message: payload.error || `HTTP ${response.status}` });
+        progress.textContent += `\n↩ ${notice}`;
+        notify(notice, { variant: 'danger' });
+      } else {
+        const kept = payload.keepBackup || !payload.backupRemoved;
+        progress.textContent = `${stepsText}\n✓ ${kept && payload.backupName ? t('docker.backupKept', { name: payload.backupName }) : t('docker.upgradeDone')}`;
+        notify(t('docker.actionDone', { action: t('docker.upgrade'), name: container }), { variant: 'success' });
+        this.closeUpgrade();
+      }
+    } catch (error) {
+      progress.textContent += `✗ ${error instanceof Error ? error.message : String(error)}`;
+      notify(t('docker.actionFailed', { message: error instanceof Error ? error.message : String(error) }), { variant: 'danger' });
+    } finally {
+      this.busy = false;
+      confirmBtn?.removeAttribute('disabled');
+      modal?.removeAttribute('inert');
+      this.refresh();
+    }
+  }
+
+  /** 升级弹窗确认按钮入口（public 供 initDockerPanel 绑定）。 */
+  handleUpgradePublic(): Promise<void> {
+    return this.handleUpgrade();
   }
 
   private openLogs(container: string): void {
@@ -572,6 +670,10 @@ export function initDockerPanel(): void {
   document.getElementById('docker-modal-backdrop')?.addEventListener('click', () => dockerPanel.close());
   document.getElementById('docker-refresh-btn')?.addEventListener('click', () => dockerPanel.refresh());
   document.getElementById('docker-logs-close-btn')?.addEventListener('click', () => dockerPanel.closeLogs());
+  document.getElementById('docker-upgrade-close-btn')?.addEventListener('click', () => dockerPanel.closeUpgrade());
+  document.getElementById('docker-upgrade-cancel-btn')?.addEventListener('click', () => dockerPanel.closeUpgrade());
+  document.getElementById('docker-upgrade-modal-backdrop')?.addEventListener('click', () => dockerPanel.closeUpgrade());
+  document.getElementById('docker-upgrade-confirm-btn')?.addEventListener('click', () => void dockerPanel.handleUpgradePublic());
   document.getElementById('docker-logs-modal-backdrop')?.addEventListener('click', () => dockerPanel.closeLogs());
   document.getElementById('docker-logs-refresh-btn')?.addEventListener('click', () => {
     const name = document.getElementById('docker-logs-container-name')?.textContent;
@@ -586,6 +688,11 @@ export function initDockerPanel(): void {
       const logsModal = document.getElementById('docker-logs-modal');
       if (!logsModal?.classList.contains('hidden')) {
         dockerPanel.closeLogs();
+        return;
+      }
+      const upgradeModal = document.getElementById('docker-upgrade-modal');
+      if (!upgradeModal?.classList.contains('hidden')) {
+        dockerPanel.closeUpgrade();
         return;
       }
       dockerPanel.close();

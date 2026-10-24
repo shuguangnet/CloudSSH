@@ -5,7 +5,7 @@ import { validateChannel, sendToChannels } from './notify.mjs';
 import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
 import { collectServerStatus } from './status.mjs';
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from './docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction, performContainerUpgrade, assertValidUpgradeInput } from './docker.mjs';
 import { generateVapidKeys } from './webpush.mjs';
 import { originAllowed } from './origin.mjs';
 
@@ -427,6 +427,33 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, dashboa
         return Response.json({ ok: output.exitCode === 0, exit_code: output.exitCode, stdout: output.stdout, stderr: output.stderr });
       } catch (caught) {
         return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
+      }
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/upgrade$/);
+    if (match && request.method === 'POST') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      let body;
+      try { body = await request.json(); } catch { return BAD_REQUEST('Invalid JSON body'); }
+      const container = String(body?.container || '');
+      const image = String(body?.image || '');
+      try { assertValidUpgradeInput(container, image); } catch { return BAD_REQUEST('Invalid container or image'); }
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker-upgrade:${serverId}`, request.signal);
+      if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker upgrade already in progress' : 'Too many requests' }, { status: slot.conflict });
+      try {
+        const { identity } = ownerUser(user);
+        const exec = (command, timeout) => executeSaved(env, identity, serverId, command, timeout, SSHSession, undefined, request.signal);
+        const result = await performContainerUpgrade({ exec, container, image, keepBackup: Boolean(body?.keep_backup) });
+        return Response.json(result, { status: result.ok ? 200 : 502 });
+      } catch (caught) {
+        return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
+      } finally {
+        slot.release();
       }
     }
 

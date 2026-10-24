@@ -259,6 +259,14 @@ test('docker API manages containers over a real SSH connection with a stub docke
     '  echo "2026-10-11T08:00:02.000000000Z stub log line 2"',
     '  exit 0',
     'fi',
+    'if [ "$1" = "inspect" ] && [ "$2" = "caddy" ]; then',
+    `  printf '%s\n' '[{"Name":"/caddy","Id":"26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Config":{"Image":"caddy:latest","Hostname":"","User":"","WorkingDir":"","Env":["X=1"],"Labels":{"a":"b"},"Entrypoint":null,"Cmd":["caddy","run","--config","/etc/caddy/Caddyfile"],"Privileged":false},"HostConfig":{"Privileged":false,"PortBindings":{"80/tcp":[{"HostIp":"","HostPort":"8081"}]},"Binds":["/srv/caddy:/etc/caddy:ro"],"Devices":null,"ExtraHosts":null,"RestartPolicy":{"Name":"unless-stopped","MaximumRetryCount":0},"NetworkMode":"bridge"},"NetworkSettings":{"Networks":{"bridge":{}}},"State":{"Running":true}}]'`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then',
+    '  echo true',
+    '  exit 0',
+    'fi',
     'if [ "$1" = "stop" ] && [ "$2" = "failcase" ]; then',
     '  echo "Error response from daemon: cannot stop container: failcase" >&2',
     '  exit 1',
@@ -354,6 +362,26 @@ test('docker API manages containers over a real SSH connection with a stub docke
     const failedResult = await failed.json();
     assert.equal(failedResult.ok, false);
     assert.match(failedResult.stderr, /cannot stop container: failcase/);
+
+    // Container upgrade: inspect → pull → stop → rename → run → verify → drop backup.
+    const upgraded = await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'caddy:2' });
+    const upgradeBody = await upgraded.json();
+    assert.equal(upgraded.status, 200, JSON.stringify(upgradeBody));
+    assert.equal(upgradeBody.ok, true, JSON.stringify(upgradeBody));
+    const upgradeSteps = upgradeBody.steps.join('\n');
+    assert.match(upgradeSteps, /inspect: caddy \(caddy:latest\)/);
+    assert.match(upgradeSteps, /pull: caddy:2/);
+    assert.match(upgradeSteps, /rename: caddy-bak-/);
+    assert.equal(upgradeBody.backupRemoved, true);
+    // keep_backup keeps the renamed old container around instead of removing it.
+    await delay(1600); // per-server upgrade throttle window
+    const kept = await (await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'caddy:2', keep_backup: true })).json();
+    assert.equal(kept.ok, true, JSON.stringify(kept));
+    assert.match(kept.backupName, /^caddy-bak-/);
+    assert.equal(kept.backupRemoved, false, 'keep_backup must not remove the old container');
+    // Injection attempts are rejected before touching the remote host.
+    assert.equal((await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy; rm -rf /', image: 'caddy:2' })).status, 400);
+    assert.equal((await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'cady; evil' })).status, 400);
 
     // Logs render the stub output with timestamps.
     const logs = await api(`/api/docker/${id}/logs`, 'POST', { container: 'caddy', tail: 100 });

@@ -1212,6 +1212,81 @@
         </div>
       </div>
 
+      <!-- Docker 容器升级弹窗：修改镜像版本 / 拉取最新并按原配置重建 -->
+      <div
+        id="docker-upgrade-modal"
+        class="responsive-modal hidden fixed inset-0 z-[110] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="docker-upgrade-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="docker-upgrade-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-xl mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"></div>
+          <div class="flex items-center justify-between mb-3 pb-3 border-b border-dim shrink-0 gap-2">
+            <span
+              id="docker-upgrade-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)] truncate"
+            >
+              <span data-i18n="docker.upgradeTitle">容器升级</span>
+              <span id="docker-upgrade-container-name" class="text-dim font-mono normal-case"></span>
+            </span>
+            <button
+              id="docker-upgrade-close-btn"
+              class="panel-close-btn shrink-0"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="docker-upgrade-body" class="overflow-y-auto custom-scrollbar min-h-0 grow space-y-3">
+            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+              <span class="text-dim" data-i18n="docker.upgradeCurrentImage">当前镜像</span>
+              <span id="docker-upgrade-current-image" class="font-mono min-w-0 break-all"></span>
+            </div>
+            <label class="block space-y-1">
+              <span class="text-[11px] text-muted" data-i18n="docker.upgradeTargetImage">目标镜像</span>
+              <input
+                id="docker-upgrade-image-input"
+                type="text"
+                data-i18n-placeholder="docker.upgradeTargetImage"
+                placeholder="目标镜像"
+                spellcheck="false"
+                class="w-full bg-surface-2 border border-outline px-2 py-1.5 text-xs font-mono rounded focus:border-primary outline-none"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-[11px] text-on-surface cursor-pointer">
+              <input id="docker-upgrade-keep-backup" type="checkbox" class="accent-[var(--accent-secondary)]" />
+              <span data-i18n="docker.upgradeKeepBackup">保留旧容器备份（升级成功后不删除）</span>
+            </label>
+            <div class="text-[10px] leading-relaxed text-muted space-y-1 border border-dim rounded p-2">
+              <div data-i18n="docker.upgradeHint1">按原容器配置（端口 / 卷 / 环境变量 / 重启策略 / 网络 / 命令）以新镜像重建容器，旧容器先重命名为备份再替换，失败自动回滚。</div>
+              <div data-i18n="docker.upgradeHint2">匿名卷、资源限制等高级选项不会迁移；由 docker compose 管理的容器建议优先在服务器上用 compose 升级。</div>
+            </div>
+            <div id="docker-upgrade-progress" class="hidden text-[11px] font-mono whitespace-pre-wrap break-all border border-dim rounded p-2 max-h-40 overflow-y-auto custom-scrollbar"></div>
+          </div>
+          <div class="flex items-center justify-end gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <button
+              id="docker-upgrade-cancel-btn"
+              class="cyber-button text-muted py-1.5 px-3 text-[10px] font-bold tracking-[0.1em]"
+              data-i18n="common.cancel"
+            >
+              取消
+            </button>
+            <button
+              id="docker-upgrade-confirm-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">system_update_alt</span>
+              <span data-i18n="docker.upgradeStart">开始升级</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 批量命令执行弹窗：由 batch-panel.ts 接管 -->
       <div
         id="batch-modal"
