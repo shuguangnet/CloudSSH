@@ -11,9 +11,15 @@ export function sanitizeComment(comment) {
 
 export function generateKeyPair(comment = '') {
   const cleanComment = sanitizeComment(comment);
-  const { publicKey: rawPublicKey } = generateKeyPairSync('ed25519');
+  const { publicKey: rawPublicKey, privateKey: rawPrivateKey } = generateKeyPairSync('ed25519');
   const spki = rawPublicKey.export({ type: 'spki', format: 'der' });
   const keyBytes = spki.subarray(spki.length - 32);
+  // Ed25519 私钥是 seed(32) + pub(32)，seed 与公钥是两份不同的字节。
+  // 只能从 PKCS#8 私钥导出里取 seed；若误用公钥字节当 seed，签出的名
+  // 对不上部署出去的 authorized_keys，密钥将无法登录（且 ssh-keygen -y
+  // 只回读文件内嵌公钥，不会暴露该错误）。
+  const pkcs8 = rawPrivateKey.export({ type: 'pkcs8', format: 'der' });
+  const seed = pkcs8.subarray(pkcs8.length - 32);
   const pubBlob = Buffer.concat([sshString(bytes('ssh-ed25519')), sshString(keyBytes)]);
 
   // OpenSSH private key (v1, no encryption): checkint ×2, algorithm, pub, priv(seed+pub), comment, padding.
@@ -22,7 +28,7 @@ export function generateKeyPair(comment = '') {
     check, check,
     sshString(bytes('ssh-ed25519')),
     sshString(keyBytes),
-    sshString(Buffer.concat([keyBytes, keyBytes])),
+    sshString(Buffer.concat([seed, keyBytes])),
     sshString(bytes(cleanComment)),
   ]);
   const padLen = 8 - (privSection.length % 8) || 8;

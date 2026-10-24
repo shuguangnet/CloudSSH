@@ -158,5 +158,12 @@ export function initI18n(): Locale {
   document.documentElement.lang = locale;
   mountLanguageSwitchers();
   translateDocument();
+  // 持久化语言选择：独立功能页（/automation、/mcp/settings、/account/settings）
+  // 读取同一 key，避免 URL 指定语言后内嵌页回退浏览器语言。
+  try {
+    localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    /* storage may be disabled */
+  }
   return locale;
 }

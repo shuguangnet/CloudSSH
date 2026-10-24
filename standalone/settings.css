@@ -4,8 +4,57 @@
 .endpoint { margin: 14px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--text-muted); font-size: .92rem; }
 .endpoint code { font-size: .84rem; }
 
-#servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 18px; margin: 4px 0; }
-#servers .choice { margin: 6px 0; }
+/* 创建令牌：服务器多选 / 全选 / 搜索 */
+.server-picker { border: 1px solid var(--border); border-radius: var(--control-radius); overflow: hidden; }
+.server-picker__bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  background: var(--bg-inset); font-size: .88rem;
+}
+.server-picker__bar .choice--mini { margin: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.server-picker__count { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.server-picker__bar input[type="search"] {
+  flex: 1; min-width: 200px; margin: 0; max-width: 420px;
+  padding: 5px 10px; font-size: .86rem;
+}
+.server-picker__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px; padding: 10px 12px; max-height: 264px; overflow: auto;
+}
+.server-picker__empty { margin: 0; padding: 14px 12px; color: var(--text-muted); font-size: .88rem; }
+.server-card {
+  display: flex; align-items: flex-start; gap: 9px; margin: 0; cursor: pointer;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-card, transparent);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.server-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.server-card--selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.server-card input { margin-top: 2px; }
+.server-card__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.server-card__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-card__host { color: var(--text-muted); font-size: .8rem; font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-card__tags { color: var(--text-muted); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-row { display: flex; gap: 18px; flex-wrap: wrap; }
+
+/* 列表工具栏：筛选 + 计数 */
+.toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--control-radius);
+  background: var(--bg-inset);
+}
+.toolbar input[type="search"] { margin: 0; padding: 5px 10px; font-size: .86rem; min-width: 180px; max-width: 260px; }
+.toolbar select { margin: 0; padding: 5px 8px; font-size: .86rem; }
+.toolbar .ghost { margin: 0; }
+.toolbar__count { margin-left: auto; color: var(--text-muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+
+/* 行内操作按钮 */
+.row-actions { white-space: nowrap; text-align: right; }
+.row-actions button { margin-left: 6px; }
 
 #created {
   margin-top: 18px; padding: 16px 18px;
@@ -18,3 +67,54 @@
 #created textarea { min-height: 88px; background: var(--bg-terminal); font-size: .84rem; }
 #created pre { margin: 10px 0 0; background: var(--bg-terminal); }
 #created .actions { margin-top: 12px; }
+
+/* 令牌选择列 + 修改弹窗 */
+.select-col { width: 34px; }
+.select-col input, td input.token-select { margin: 0; vertical-align: middle; }
+.toolbar button { margin: 0; }
+
+dialog#token-edit {
+  width: min(680px, 92vw); padding: 20px 22px; border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius); background: var(--bg-surface); color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+}
+dialog#token-edit::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#token-edit h3 { margin: 0 0 12px; }
+dialog#token-edit .field { display: block; margin-bottom: 14px; }
+dialog#token-edit .field span { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: .88rem; }
+dialog#token-edit .field input { width: 100%; margin: 0; }
+dialog#token-edit fieldset { margin: 0 0 14px; }
+dialog#token-edit .server-picker__grid { max-height: 200px; }
+dialog#token-edit .actions { margin-top: 16px; }
+#edit-message { min-height: 1.4em; margin: 0 0 8px; color: var(--error); font-size: .88rem; }
+
+/* 查看令牌弹窗（复用 #created 的呈现风格） */
+dialog#token-view {
+  width: min(680px, 92vw); padding: 20px 22px; border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius); background: var(--bg-surface); color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+}
+dialog#token-view::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#token-view h3 { margin: 0 0 12px; }
+dialog#token-view .hint { margin: 0 0 10px; }
+dialog#token-view textarea { min-height: 88px; width: 100%; background: var(--bg-terminal); font-size: .84rem; }
+dialog#token-view pre { margin: 10px 0 0; background: var(--bg-terminal); overflow-x: auto; }
+dialog#token-view .actions { margin-top: 12px; }
+#view-message { min-height: 1.4em; margin: 0 0 8px; color: var(--error); font-size: .88rem; }
+
+/* 审计明细折叠区：摘要一行省略，展开后完整 JSON */
+td details { margin: 0; }
+td details summary {
+  cursor: pointer; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: .82rem; color: var(--text-muted);
+}
+td details[open] summary { color: var(--text); white-space: normal; }
+td details pre {
+  margin: 8px 0 0; padding: 10px 12px; max-width: 420px; max-height: 220px;
+  overflow: auto; background: var(--bg-terminal); font-size: .78rem;
+}
+
+/* 备份与恢复（/account/settings 专属） */
+dialog#restore-confirm { border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); border-radius: var(--radius, 12px); padding: 20px 22px; max-width: 420px; }
+dialog#restore-confirm::backdrop { background: rgba(0, 0, 0, .62); }
+dialog#restore-confirm p { margin: 0 0 14px; line-height: 1.6; }

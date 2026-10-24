@@ -5,7 +5,9 @@ import { validateChannel, sendToChannels } from './notify.mjs';
 import { parseCron, nextRun } from './cron-expr.mjs';
 import { generateKeyPair, sanitizeComment, deployCommand, parsePublicKey } from './keys.mjs';
 import { collectServerStatus } from './status.mjs';
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand } from './docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction, performContainerUpgrade, assertValidUpgradeInput } from './docker.mjs';
+import { generateVapidKeys } from './webpush.mjs';
+import { originAllowed } from './origin.mjs';
 
 const BAD_REQUEST = (message) => Response.json({ error: message }, { status: 400 });
 
@@ -17,24 +19,28 @@ function ownerUser(user) {
   return { owner: String(user.github_id), identity: { github_id: String(user.github_id), user_id: user.id } };
 }
 
-export function createAutomationRoutes({ env, SSHSession, store, engine, executeSaved, getAuthenticatedUser }) {
+export function createAutomationRoutes({ env, SSHSession, store, engine, dashboard = null, executeSaved, getAuthenticatedUser, liveStatus = null }) {
   // On-demand collections open a real SSH exec; keep at most one in flight per
   // server and space requests out so a polling UI cannot hammer it.
   const statusQueries = new Map();
-  function acquireThrottledSlot(map, key) {
+  function acquireThrottledSlot(map, key, signal) {
     const now = Date.now();
     const entry = map.get(key);
     if (entry?.inflight) return { conflict: 409 };
     if (entry && now - entry.last < 1500) return { conflict: 429 };
-    map.set(key, { last: now, inflight: true });
+    // Keep the pre-existing cooldown while inflight; an aborted request never
+    // delivered a result, so releasing it must not push the cooldown forward
+    // or the poll that replaced it gets answered with 429.
+    const previousLast = entry?.last ?? 0;
+    map.set(key, { last: previousLast, inflight: true });
     return {
-      release() { map.set(key, { last: Date.now(), inflight: false }); },
+      release() { map.set(key, { last: signal?.aborted ? previousLast : Date.now(), inflight: false }); },
     };
   }
   async function requireUser(request) {
     const user = await getAuthenticatedUser(request, env);
     if (!user) return { error: Response.json({ error: 'Authentication required' }, { status: 401 }) };
-    if (request.method !== 'GET' && request.headers.get('Origin') !== env.BASE_URL) {
+    if (request.method !== 'GET' && !originAllowed(request.headers.get('Origin'), request.headers.get('Host'), request.headers.get('X-Forwarded-Host'), env.BASE_URL)) {
       return { error: Response.json({ error: 'Invalid origin' }, { status: 403 }) };
     }
     return { user };
@@ -57,7 +63,10 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
     return {
       task: {
         name: body.name, server_id: serverId, command: body.command, cron_expr: cronExpr,
-        timeout_seconds: body.timeout_seconds, notify_on_failure: body.notify_on_failure, enabled: body.enabled,
+        timeout_seconds: body.timeout_seconds,
+        notify_on_failure: body.notify_on_failure,
+        notify_on_change: typeof body.notify_on_change === 'boolean' ? body.notify_on_change : false,
+        enabled: body.enabled,
       },
       owner, identity, servers, cronExpr,
     };
@@ -87,6 +96,11 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
     }
 
     // ---------- notification channels ----------
+    if (pathname === '/api/automation/webpush/vapid' && request.method === 'GET') {
+      const { error } = await requireUser(request);
+      if (error) return error;
+      return Response.json({ publicKey: store.getOrCreateVapid(generateVapidKeys).publicKey });
+    }
     if (pathname === '/api/automation/notifications') {
       const { error, user } = await requireUser(request);
       if (error) return error;
@@ -232,10 +246,12 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
           return BAD_REQUEST('Monitoring requires a direct (non-jump, non-tunnel) connection');
         }
         store.saveMonitor(owner, user, serverId, { interval_seconds: interval, failure_threshold: threshold, enabled: body.enabled !== false });
+        dashboard?.poke?.();
         return Response.json({ ok: true });
       }
       if (request.method === 'DELETE') {
         store.deleteMonitor(owner, serverId);
+        dashboard?.poke?.();
         return Response.json({ ok: true });
       }
     }
@@ -259,7 +275,7 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
         return Response.json({ error: 'Unknown server' }, { status: 404 });
       }
       const key = `${user.github_id}:${serverId}`;
-      const slot = acquireThrottledSlot(statusQueries, key);
+      const slot = acquireThrottledSlot(statusQueries, key, request.signal);
       if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Status collection already in progress' : 'Too many status requests' }, { status: slot.conflict });
       try {
         const { identity } = ownerUser(user);
@@ -272,6 +288,35 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       }
     }
 
+    // ---------- live status (terminal status bar, self-hosted only) ----------
+    //
+    // Two transports over one shared sampler, because the status bar must work
+    // on every deployment rather than only where SSE survives the hop:
+    //   GET /api/automation/status/live/:id       → one JSON frame (long-poll)
+    //   GET /api/automation/status/live/:id/stream → text/event-stream
+    //
+    // Both share one sampler per (owner, server), so N viewers of the same
+    // server cost one SSH session, and the sampling stops when the last viewer
+    // detaches. Anonymous terminals are refused here (no owner, no audit trail)
+    // — the frontend renders the local-only skeleton in that case.
+    match = pathname.match(/^\/api\/automation\/status\/live\/(\d+)(\/stream)?$/);
+    if (match && request.method === 'GET') {
+      if (!liveStatus) return Response.json({ error: 'Live status requires the self-hosted deployment' }, { status: 404 });
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const { identity } = ownerUser(user);
+      const session = liveStatus.subscribe({
+        owner: String(user.github_id), identity, serverId,
+        intervalMs: url.searchParams.get('interval'),
+      });
+      if (match[2]) return liveStatus.streamResponse(session, request);
+      return await liveStatus.longPoll(session, request);
+    }
+
     // ---------- Docker container management (per saved server) ----------
 
     match = pathname.match(/^\/api\/docker\/(\d+)\/containers$/);
@@ -282,17 +327,131 @@ export function createAutomationRoutes({ env, SSHSession, store, engine, execute
       if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
         return Response.json({ error: 'Unknown server' }, { status: 404 });
       }
-      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker:${serverId}`);
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker:${serverId}`, request.signal);
       if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker query already in progress' : 'Too many requests' }, { status: slot.conflict });
       try {
         const { identity } = ownerUser(user);
-        const output = await executeSaved(env, identity, serverId, listContainersScript(), 20000, SSHSession);
+        const output = await executeSaved(env, identity, serverId, listContainersScript(), 20000, SSHSession, undefined, request.signal);
         if (output.exitCode !== 0) {
           return Response.json({ error: (output.stderr || output.stdout || `docker ps exited with ${output.exitCode}`).trim().slice(0, 300) }, { status: 502 });
         }
-        return Response.json({ containers: parseContainerLines(output.stdout) });
+        const containers = parseContainerLines(output.stdout);
+        // Best-effort resource usage for the cards: a failing docker stats must
+        // never break the container list itself.
+        try {
+          const statsOutput = await executeSaved(env, identity, serverId, statsScript(), 25000, SSHSession, undefined, request.signal);
+          if (statsOutput.exitCode === 0) {
+            const stats = parseStatsLines(statsOutput.stdout);
+            for (const container of containers) {
+              if (container.state !== 'running') continue;
+              const usage = stats.get(container.name) || stats.get(container.id);
+              if (usage) Object.assign(container, usage);
+            }
+          }
+        } catch { /* stats unavailable — list still renders */ }
+        return Response.json({ containers });
       } catch (caught) {
         return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 502 });
+      } finally {
+        slot.release();
+      }
+    }
+
+    // ---------- dashboard (standalone deployments only) ----------
+    match = pathname.match(/^\/api\/dashboard\/snapshots$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      if (!dashboard) return Response.json({ error: 'Dashboard requires the self-hosted deployment' }, { status: 404 });
+      return Response.json({ snapshots: dashboard.snapshots(String(user.github_id)), interval_seconds: dashboard.intervalSeconds });
+    }
+
+    match = pathname.match(/^\/api\/dashboard\/history$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      if (!dashboard) return Response.json({ error: 'Dashboard requires the self-hosted deployment' }, { status: 404 });
+      const serverId = Number(url.searchParams.get('server_id'));
+      const minutes = Math.min(24 * 60, Math.max(5, Number(url.searchParams.get('minutes')) || 60));
+      if (!Number.isInteger(serverId) || serverId <= 0) return BAD_REQUEST('server_id is required');
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const owner = String(user.github_id);
+      return Response.json({ samples: store.listSamples(owner, serverId, Date.now() - minutes * 60_000) });
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/images$/);
+    if (match && request.method === 'GET') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker-images:${serverId}`, request.signal);
+      if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker query already in progress' : 'Too many requests' }, { status: slot.conflict });
+      try {
+        const { identity } = ownerUser(user);
+        const output = await executeSaved(env, identity, serverId, imagesScript(), 20000, SSHSession, undefined, request.signal);
+        if (output.exitCode !== 0) {
+          return Response.json({ error: (output.stderr || output.stdout || `docker images exited with ${output.exitCode}`).trim().slice(0, 300) }, { status: 502 });
+        }
+        return Response.json({ images: parseImageLines(output.stdout) });
+      } catch (caught) {
+        return Response.json({ error: String(caught?.message || caught).slice(0, 300) }, { status: caught?.status || 502 });
+      } finally {
+        slot.release();
+      }
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/image-action$/);
+    if (match && request.method === 'POST') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      let body;
+      try { body = await request.json(); } catch { return BAD_REQUEST('Invalid JSON body'); }
+      let spec;
+      try {
+        spec = buildImageAction(body?.ref, body?.action);
+      } catch (caught) {
+        return BAD_REQUEST(caught.message);
+      }
+      try {
+        const { identity } = ownerUser(user);
+        const output = await executeSaved(env, identity, serverId, spec.command, spec.timeout, SSHSession);
+        return Response.json({ ok: output.exitCode === 0, exit_code: output.exitCode, stdout: output.stdout, stderr: output.stderr });
+      } catch (caught) {
+        return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
+      }
+    }
+
+    match = pathname.match(/^\/api\/docker\/(\d+)\/upgrade$/);
+    if (match && request.method === 'POST') {
+      const { error, user } = await requireUser(request);
+      if (error) return error;
+      const serverId = Number(match[1]);
+      if (!(await ownedServers(user)).some((item) => item.id === serverId)) {
+        return Response.json({ error: 'Unknown server' }, { status: 404 });
+      }
+      let body;
+      try { body = await request.json(); } catch { return BAD_REQUEST('Invalid JSON body'); }
+      const container = String(body?.container || '');
+      const image = String(body?.image || '');
+      try { assertValidUpgradeInput(container, image); } catch { return BAD_REQUEST('Invalid container or image'); }
+      const slot = acquireThrottledSlot(statusQueries, `${user.github_id}:docker-upgrade:${serverId}`, request.signal);
+      if (slot.conflict) return Response.json({ error: slot.conflict === 409 ? 'Docker upgrade already in progress' : 'Too many requests' }, { status: slot.conflict });
+      try {
+        const { identity } = ownerUser(user);
+        const exec = (command, timeout) => executeSaved(env, identity, serverId, command, timeout, SSHSession, undefined, request.signal);
+        const result = await performContainerUpgrade({ exec, container, image, keepBackup: Boolean(body?.keep_backup) });
+        return Response.json(result, { status: result.ok ? 200 : 502 });
+      } catch (caught) {
+        return Response.json({ ok: false, error: String(caught?.message || caught).slice(0, 300) }, { status: 200 });
       } finally {
         slot.release();
       }

@@ -1,5 +1,9 @@
 import { normalizeAIBaseUrl } from '../ai-endpoint';
 import {
+  normalizeMobileShortcutsPayload,
+  SHORTCUTS_MAX_BYTES,
+} from '../mobile-shortcuts-schema';
+import {
   MAX_CUSTOM_THEMES,
   normalizeThemeData,
   normalizeUserThemePayload,
@@ -18,10 +22,12 @@ import {
   getPasswordAuthParams,
   parseAdminPasswordHash,
   resolveAuthMode,
+  sameOriginOrHost,
   LOCAL_ADMIN_GITHUB_ID,
 } from './auth';
 import { captchaActiveFor, issueCaptchaChallenge } from './captcha';
-import { HTML } from './html';
+import { turnstileActive } from './turnstile';
+import { HTML, PANEL_CSP } from './html';
 
 export { SSHSessionDO } from './durable-object';
 export { SSHShareDO } from './share-do';
@@ -159,6 +165,12 @@ export default {
         return handleThemeRoute(request, env);
       }
 
+      // ==================== 移动端快捷键配置 Routes (需认证) ====================
+
+      if (url.pathname === '/api/user/mobile-shortcuts') {
+        return handleMobileShortcutsRoute(request, env);
+      }
+
       // ==================== known_hosts Routes (需认证) ====================
 
       if (url.pathname === '/api/known-hosts' || url.pathname.startsWith('/api/known-hosts/')) {
@@ -171,13 +183,25 @@ export default {
         return handleSnippetsRoute(request, url, env);
       }
 
+      // ==================== 配置快照 Routes (需认证) ====================
+
+      if (url.pathname === '/api/snapshots' || url.pathname.startsWith('/api/snapshots/')) {
+        return handleSnapshotsRoute(request, url, env);
+      }
+
+      // ==================== 可复用凭据 Routes (需认证) ====================
+
+      if (url.pathname === '/api/credentials' || url.pathname.startsWith('/api/credentials/')) {
+        return handleCredentialsRoute(request, url, env);
+      }
+
       // ==================== AI Config Routes (需认证) ====================
 
       if (url.pathname === '/api/ai/config' || url.pathname === '/api/ai/models') {
         return handleAIRoute(request, url, env);
       }
 
-      // ==================== 滑块验证码挑战（登录前公开，复用 per-IP 限流） ====================
+      // ==================== 图片验证码挑战（登录前公开，复用 per-IP 限流） ====================
 
       if (url.pathname === '/api/captcha/challenge' && request.method === 'GET') {
         const retryAfter = getRateLimitRetryAfter(request.headers.get('CF-Connecting-IP'));
@@ -244,6 +268,9 @@ export default {
         return Response.json({
           // 滑块验证码（密码模式默认启用；CAPTCHA_MODE=off 停用）
           captchaEnabled: captchaActiveFor(env),
+          // Turnstile 站点密钥是公开值，仅用于前端渲染 widget；
+          // 未配置（或只配一半）不下发，前端回落图片验证码
+          turnstileSiteKey: turnstileActive(env) ? env.TURNSTILE_SITE_KEY : undefined,
           // 密码模式下 GitHub 入口被权威禁用（即使凭据仍留在变量里，功能确实是关闭的）
           githubAuthEnabled: authMode === 'github',
           githubAuthRequired: isGitHubAuthRequired(env),
@@ -259,6 +286,7 @@ export default {
       return new Response(HTML, {
         headers: {
           'Content-Type': 'text/html;charset=UTF-8',
+          'Content-Security-Policy': PANEL_CSP,
           'X-Content-Type-Options': 'nosniff',
           'X-Frame-Options': 'DENY',
           'Referrer-Policy': 'strict-origin-when-cross-origin',
@@ -398,7 +426,7 @@ async function handleServersRoute(request: Request, url: URL, env: Env): Promise
       return Response.json(
         {
           id: shareId,
-          url: `${url.origin}/#/share/${token}`,
+          url: `${externalRequestOrigin(request, url)}/#/share/${token}`,
           expiresAt,
           maxSessionSeconds: maxSessionMinutes * 60,
         },
@@ -527,8 +555,7 @@ async function handleServersRoute(request: Request, url: URL, env: Env): Promise
     if (!tokenRes.ok) return tokenRes;
 
     const { token } = await tokenRes.json<{ token: string }>();
-    const wsProtocol = env.SELF_HOSTED === 'true' && url.protocol === 'http:' ? 'ws:' : 'wss:';
-    const wsUrl = `${wsProtocol}//${url.host}/api/ssh?token=${token}`;
+    const wsUrl = `${externalRequestOrigin(request, url).replace(/^http/, 'ws')}/api/ssh?token=${token}`;
 
     return Response.json({ wsUrl });
   }
@@ -658,6 +685,84 @@ async function handleThemeRoute(request: Request, env: Env): Promise<Response> {
   return Response.json({ error: 'Method not allowed' }, { status: 405 });
 }
 
+// ==================== 移动端快捷键配置 routes ====================
+
+async function handleMobileShortcutsRoute(request: Request, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+
+  const stub = getUserDBStub(env, user.github_id);
+
+  if (request.method === 'GET') {
+    return stub.fetch(
+      new Request(`http://internal/internal/mobile-shortcuts?user_id=${user.id}`, {
+        method: 'GET',
+      })
+    );
+  }
+
+  if (request.method === 'PUT') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json<unknown>();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const rawSerialized = JSON.stringify(body);
+    if (new TextEncoder().encode(rawSerialized).byteLength > SHORTCUTS_MAX_BYTES) {
+      return Response.json({ error: 'Shortcuts payload is too large' }, { status: 413 });
+    }
+
+    const normalized = normalizeMobileShortcutsPayload(body);
+    if (!normalized) {
+      return Response.json({ error: 'Invalid shortcuts data' }, { status: 400 });
+    }
+
+    return stub.fetch(
+      new Request('http://internal/internal/mobile-shortcuts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id, shortcuts_data: JSON.stringify(normalized) }),
+      })
+    );
+  }
+
+  if (request.method === 'DELETE') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    return stub.fetch(
+      new Request(`http://internal/internal/mobile-shortcuts?user_id=${user.id}`, {
+        method: 'DELETE',
+      })
+    );
+  }
+
+  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+}
+
 // ==================== known_hosts routes ====================
 
 async function handleKnownHostsRoute(request: Request, url: URL, env: Env): Promise<Response> {
@@ -712,8 +817,59 @@ async function handleKnownHostsRoute(request: Request, url: URL, env: Env): Prom
   return Response.json({ error: 'Method not allowed' }, { status: 405 });
 }
 
-// ==================== 命令片段 routes ====================
+/**
+ * 配置快照公开路由。
+ *
+ * 只做「归属校验 + 转发到 UserDBDO」，真正的隔离在 DO 层（user_id + server_id
+ * 双向匹配），与 known-hosts / snippets 的既有模式一致。
+ * 内容接口单独拆到 /api/snapshots/content，避免列表接口携带 Blob。
+ */
+async function handleSnapshotsRoute(request: Request, url: URL, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+  const stub = getUserDBStub(env, user.github_id);
 
+  // GET /api/snapshots?server_id=N[&path=/x][&mode=paths]  → 版本列表
+  if (url.pathname === '/api/snapshots' && request.method === 'GET') {
+    const qs = new URLSearchParams({ user_id: String(user.id) });
+    for (const key of ['server_id', 'path', 'mode']) {
+      const value = url.searchParams.get(key);
+      if (value !== null) qs.set(key, value);
+    }
+    return stub.fetch(new Request(`http://internal/internal/snapshots?${qs}`, { method: 'GET' }));
+  }
+
+  // GET /api/snapshots/content?server_id=N&id=M  → 单份快照内容
+  if (url.pathname === '/api/snapshots/content' && request.method === 'GET') {
+    const qs = new URLSearchParams({ user_id: String(user.id) });
+    for (const key of ['server_id', 'id']) {
+      const value = url.searchParams.get(key);
+      if (value !== null) qs.set(key, value);
+    }
+    return stub.fetch(
+      new Request(`http://internal/internal/snapshots/content?${qs}`, { method: 'GET' })
+    );
+  }
+
+  // DELETE /api/snapshots  → 删除单份（id）/ 单路径（path）/ 全部（all）
+  if (url.pathname === '/api/snapshots' && request.method === 'DELETE') {
+    const body = await request.json<Record<string, unknown>>();
+    body.user_id = user.id;
+    return stub.fetch(
+      new Request('http://internal/internal/snapshots', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+  }
+
+  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+}
+
+// ==================== 命令片段 routes ====================
 async function handleSnippetsRoute(request: Request, url: URL, env: Env): Promise<Response> {
   const user = await getAuthenticatedUser(request, env);
   if (!user) {
@@ -773,8 +929,97 @@ async function handleSnippetsRoute(request: Request, url: URL, env: Env): Promis
   return Response.json({ error: 'Not Found' }, { status: 404 });
 }
 
-// ==================== AI config routes ====================
+/**
+ * /api/credentials — 可复用凭据库 CRUD。
+ *
+ * 与 snippets 同构：鉴权后转发到该用户的 UserDBDO 内部路由。
+ * **响应永不包含 secret**：DO 只回传元数据与 has_secret 标记。
+ */
+async function handleCredentialsRoute(request: Request, url: URL, env: Env): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
+  }
+  const stub = getUserDBStub(env, user.github_id);
 
+  if (url.pathname === '/api/credentials' && request.method === 'GET') {
+    return stub.fetch(
+      new Request(`http://internal/internal/credentials?user_id=${user.id}`, { method: 'GET' })
+    );
+  }
+  if (url.pathname === '/api/credentials' && request.method === 'POST') {
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json<Record<string, unknown>>();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    body.user_id = user.id;
+    return stub.fetch(
+      new Request('http://internal/internal/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+  }
+
+  // 按需回显明文。POST 属于敏感动作，除会话鉴权外还要求同源 Origin，
+  // 避免被跨站页面触发（与 /api/ai/config 等变更接口同口径）。
+  const revealMatch = url.pathname.match(/^\/api\/credentials\/(\d+)\/reveal$/);
+  if (revealMatch && request.method === 'POST') {
+    const origin = request.headers.get('Origin');
+    let requestOrigin: string | null = null;
+    try {
+      requestOrigin = new URL(request.url).origin;
+    } catch {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (origin && origin !== requestOrigin) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    return stub.fetch(
+      new Request(`http://internal/internal/credentials/${revealMatch[1]}/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id }),
+      })
+    );
+  }
+
+  const credentialMatch = url.pathname.match(/^\/api\/credentials\/(\d+)$/);
+  if (credentialMatch) {
+    const credentialId = credentialMatch[1];
+    if (request.method === 'PUT') {
+      let body: Record<string, unknown>;
+      try {
+        body = await request.json<Record<string, unknown>>();
+      } catch {
+        return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+      }
+      body.user_id = user.id;
+      return stub.fetch(
+        new Request(`http://internal/internal/credentials/${credentialId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+    if (request.method === 'DELETE') {
+      return stub.fetch(
+        new Request(`http://internal/internal/credentials/${credentialId}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: user.id }),
+        })
+      );
+    }
+  }
+  return Response.json({ error: 'Not Found' }, { status: 404 });
+}
+
+// ==================== AI config routes ====================
 function isSameBaseUrl(urlA: string, urlB: string): boolean {
   try {
     return normalizeAIBaseUrl(urlA) === normalizeAIBaseUrl(urlB);
@@ -799,10 +1044,10 @@ async function handleAIRoute(request: Request, url: URL, env: Env): Promise<Resp
     return Response.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  // 同源安全校验（CSRF 防护）
+  // 同源安全校验（CSRF 防护；反代域名部署按实际 Host 判定）
   if (request.method === 'POST' || request.method === 'PUT') {
     const origin = request.headers.get('Origin');
-    if (origin && origin !== url.origin) {
+    if (origin && !sameOriginOrHost(request, url)) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
   }
@@ -985,8 +1230,44 @@ function parseRequestUrl(input: string): URL | null {
   }
 }
 
+/**
+ * 浏览器实际可达的面板 origin（用于生成 WebSocket / 分享链接地址）。
+ * 反代/CDN 链路下 BASE_URL 通常是内网地址，直接用它生成的地址浏览器不可达
+ * （且 https 页面连 ws:// 会被 mixed-content 拦截）。优先级：
+ *  1) Origin 头（浏览器直接告知页面 origin，最准确）；
+ *  2) X-Forwarded-Proto + X-Forwarded-Host（中转反代标准转发头，链首）；
+ *  3) 与 BASE_URL host 不同的 Host 头（反代透传原始 Host）；
+ *  4) 请求 URL 自身（直连，与 BASE_URL 一致）。
+ * 返回字符串只回给请求者自身且前端有同源校验，伪造头无攻击面。
+ */
+function externalRequestOrigin(request: Request, url: URL): string {
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return parsed.origin;
+    } catch {
+      // fallthrough to forwarded headers
+    }
+  }
+  const first = (value: string | null): string => value?.split(',')[0].trim() ?? '';
+  const forwarded = first(request.headers.get('X-Forwarded-Host'));
+  const host = forwarded || (() => {
+    const h = request.headers.get('Host');
+    return h && h.toLowerCase() !== url.host.toLowerCase() ? h : '';
+  })();
+  if (host) {
+    const proto = first(request.headers.get('X-Forwarded-Proto'));
+    const scheme = proto === 'https' || proto === 'http' ? proto :
+      (forwarded ? 'https' : url.protocol.replace(':', ''));
+    return `${scheme}://${host}`;
+  }
+  return url.origin;
+}
+
 function hasSameWebSocketOrigin(request: Request, url: URL): boolean {
-  return request.headers.get('Origin') === url.origin;
+  // 反代域名部署：与登录同源判定同哲学（Origin 与实际 Host 同宿主即放行）
+  return sameOriginOrHost(request, url);
 }
 
 async function handleSSHConnection(request: Request, env: Env): Promise<Response> {
@@ -1108,7 +1389,7 @@ async function handleShareClaim(request: Request, url: URL, env: Env): Promise<R
     sessionExpiresAt: number;
   }>();
   return Response.json({
-    wsUrl: `${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}/api/ssh?share_ref=${encodeURIComponent(shareRef)}&share_ticket=${encodeURIComponent(claim.ticket)}`,
+    wsUrl: `${externalRequestOrigin(request, url).replace(/^http/, 'ws')}/api/ssh?share_ref=${encodeURIComponent(shareRef)}&share_ticket=${encodeURIComponent(claim.ticket)}`,
     serverName: claim.serverName,
     sessionExpiresAt: claim.sessionExpiresAt,
   });

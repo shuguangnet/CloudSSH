@@ -3,7 +3,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { executeSaved, savedServers, validatePath, shellQuote } from './operations.mjs';
 import { tokenHash } from './access-store.mjs';
+import { redactPreview } from './redact.mjs';
 import { collectServerStatus } from './status.mjs';
+import { registerDatabaseTools, databaseDescriptions } from './mcp-database.mjs';
 
 const result = (data, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], isError });
 const serverIdSchema = z.number().int().positive();
@@ -37,14 +39,34 @@ function decodeBase64Payload(value) {
   return { encoded, decoded: Buffer.from(encoded, 'base64') };
 }
 
-export function createMcpServer({ env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal }) {
+export function createMcpServer({
+  env, store, identity, SSHSession, isBlockedCommand, execute = executeSaved, signal,
+  databaseStore, clientIp = null,
+}) {
   const server = new McpServer({ name: 'cloudssh', version: '2.6.2' });
   const authorize = (serverId, scope) => {
-    if (!store.isActive(identity.id)) throw new Error('Token expired or revoked');
+    if (!store.isActive(identity.id)) throw new Error('Token expired or disabled');
     if (serverId !== undefined && !identity.server_ids.includes(serverId)) throw new Error('Server is not authorized for this token');
     if (scope && !identity.scopes.includes(scope)) throw new Error('Operation is not authorized for this token');
   };
-  const tool = (name, scope, inputSchema, handler) => {
+  // 审计明细：记录「执行了什么」——命令/SQL/路径等参数摘要。入库前经
+  // redactPreview 脱敏（命令里经常捎带 PASSWORD=xxx / token，不能整段入库）
+  // 并限长。command_sha256 保留：需要取证比对时可用原文重算。
+  const argDetails = (args, extra = {}) => {
+    const details = { ...extra };
+    if (typeof args.path === 'string') details.path = args.path;
+    if (typeof args.command === 'string') {
+      details.command = redactPreview(args.command);
+      details.command_sha256 = tokenHash(args.command);
+    }
+    if (args.snippet_id !== undefined) details.snippet_id = args.snippet_id;
+    if (args.max_bytes !== undefined) details.max_bytes = args.max_bytes;
+    if (args.offset !== undefined) details.offset = args.offset;
+    if (typeof args.content === 'string') details.bytes = Buffer.byteLength(args.content, 'utf8');
+    if (typeof args.append === 'boolean') details.append = args.append;
+    return details;
+  };
+  const tool = (name, scope, inputSchema, handler, prepare = null) => {
     if (scope && !identity.scopes.includes(scope)) return;
     server.registerTool(name, {
       description: descriptions[name], inputSchema,
@@ -52,25 +74,29 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
         destructiveHint: scope === 'exec' || scope === 'write', openWorldHint: true },
     }, async (args, extra) => {
       let started = false;
+      let summary = {};
       try {
         authorize(args.server_id, scope);
+        // 先用调用参数本身构建摘要（denied 行也能看清「想执行什么」），
+        // prepare 成功后再并入服务端解析出的补充信息（如片段名/命令正文）。
+        summary = argDetails(args);
+        const prepared = prepare ? await prepare(args) : null;
+        if (prepared?.details) summary = argDetails(args, prepared.details);
         // Fail closed before dispatch if the audit cannot be written.
-        store.audit(identity, name, args.server_id, 'started', {
-          ...(args.command ? { command_sha256: tokenHash(args.command) } : {}),
-          ...(args.path ? { path: args.path } : {}),
-          ...(args.snippet_id !== undefined ? { snippet_id: args.snippet_id } : {}),
-        });
+        store.audit(identity, name, args.server_id, 'started', summary, clientIp);
         started = true;
         const callSignal = signal ? AbortSignal.any([signal, extra.signal]) : extra.signal;
         callSignal.throwIfAborted();
-        const data = await handler(args, () => authorize(args.server_id, scope), callSignal);
+        const data = await handler(args, () => authorize(args.server_id, scope), callSignal, prepared?.value);
         const failed = typeof data.exit_code === 'number' && data.exit_code !== 0;
+        // 完成行复述参数摘要：按状态筛审计时每行都能看清「干了什么」。
         store.audit(identity, name, args.server_id, failed ? 'failed' : 'succeeded',
-          typeof data.exit_code === 'number' ? { exit_code: data.exit_code } : {});
+          { ...summary, ...(typeof data.exit_code === 'number' ? { exit_code: data.exit_code } : {}) }, clientIp);
         return result(data, failed);
       } catch (error) {
         // Execution exceptions are uncertain outcomes: never advise blind replay.
-        store.audit(identity, name, args.server_id, started ? 'unknown' : 'denied');
+        store.audit(identity, name, args.server_id, started ? 'unknown' : 'denied',
+          { ...summary, error: redactPreview(error instanceof Error ? error.message : 'Operation failed', 512) }, clientIp);
         return result({ error: error instanceof Error ? error.message : 'Operation failed',
           ...(started ? { instruction: 'Inspect remote state before retrying a modifying operation.' } : {}) }, true);
       }
@@ -133,14 +159,20 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
   tool('run_snippet', 'exec', {
     server_id: serverIdSchema, snippet_id: z.number().int().positive(),
     timeout_ms: z.number().int().min(1000).max(180000).optional(),
-  }, async (args, check, callSignal) => {
-    const snippets = await fetchSnippets(env, identity);
-    const snippet = snippets.find((item) => item.id === args.snippet_id);
-    if (!snippet) throw new Error(`Snippet ${args.snippet_id} not found for this user`);
+  }, async (args, check, callSignal, snippet) => {
     const blocked = isBlockedCommand(snippet.command);
     if (blocked.blocked) throw new Error(`Snippet command blocked: ${blocked.reason}`);
     const data = await run(args, snippet.command, check, callSignal);
     return { ...data, snippet_id: snippet.id, snippet_name: snippet.name };
+  }, async (args) => {
+    // prepare：解析片段一次，审计与执行共用，避免重复拉取片段库。
+    const snippets = await fetchSnippets(env, identity);
+    const snippet = snippets.find((item) => item.id === args.snippet_id);
+    if (!snippet) throw new Error(`Snippet ${args.snippet_id} not found for this user`);
+    return {
+      value: snippet,
+      details: { snippet_name: snippet.name, command: redactPreview(snippet.command), command_sha256: tokenHash(snippet.command) },
+    };
   });
 
   // ==================== 大文件传输（分块） ====================
@@ -213,6 +245,29 @@ export function createMcpServer({ env, store, identity, SSHSession, isBlockedCom
 
   tool('get_server_info', 'read', { server_id: serverIdSchema }, async (args, check, callSignal) =>
     collectServerStatus(env, identity, args.server_id, execute, SSHSession, callSignal, check));
+
+  // ==================== 数据库连接 ====================
+
+  // 数据库工具走独立的授权维度（connection_id），因此不复用上面的 tool()
+  // 包装——那个包装假定第一个参数是 server_id 并据此做主机授权。两者共用
+  // 同一套 scope 与审计表，语义保持一致。
+  registerDatabaseTools(server, {
+    store: databaseStore,
+    identity,
+    authorize: (connectionId, scope) => {
+      if (!store.isActive(identity.id)) throw new Error('Token expired or disabled');
+      if (connectionId !== undefined && connectionId !== null) {
+        const allowed = identity.db_connection_ids ?? [];
+        if (!allowed.includes(connectionId)) throw new Error('Database connection is not authorized for this token');
+      }
+      if (scope && !identity.scopes.includes(scope)) throw new Error('Operation is not authorized for this token');
+    },
+    audit: (toolName, connectionId, status, details = {}) => {
+      // 复用 mcp_audit 表：server_id 留空，连接信息进 details，来源 IP 一并落库。
+      store.audit(identity, toolName, undefined, status, { connection_id: connectionId, ...details }, clientIp);
+    },
+    descriptions: databaseDescriptions,
+  });
   return server;
 }
 

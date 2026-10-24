@@ -6,8 +6,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#eef4fc" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -30,7 +30,7 @@
       <!-- Login Page (匿名连接) -->
       <div
         id="auth-section"
-        class="min-h-screen flex items-center justify-center p-6 relative overflow-y-auto"
+        class="auth-page min-h-screen flex items-center justify-center p-6 relative overflow-y-auto"
       >
         <div class="scanlines"></div>
         <div class="flicker"></div>
@@ -50,46 +50,32 @@
               >返回终端</span
             >
           </button>
-          <div class="mb-8 text-center">
-            <div class="text-3xl font-bold text-primary tracking-tighter mb-2">
-              CloudSSH<span class="blinking-cursor"></span>
+          <div class="auth-brand">
+            <div class="auth-brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
+            <div class="auth-brand-name">CloudSSH</div>
+            <div class="auth-brand-tagline" data-i18n="auth.brandTagline">
+              企业级浏览器 SSH 终端
             </div>
           </div>
-          <div class="cyber-box p-6 shadow-2xl relative">
-            <div
-              class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent opacity-50"
-            ></div>
-            <div
-              class="flex items-center justify-between mb-8 pb-4 border-b border-dim"
-            >
-              <span
-                class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
-                data-i18n="auth.connectionParameters"
-                >连接参数</span
-              >
-              <div class="flex items-center gap-3">
-                <div data-language-switcher></div>
-                <span
-                  class="material-symbols-outlined text-[var(--accent-secondary)]"
-                  style="font-variation-settings: 'FILL' 0"
-                  >terminal</span
-                >
-              </div>
+          <div class="auth-card cyber-box">
+            <div class="auth-card-header">
+              <span class="auth-card-title">
+                <span class="material-symbols-outlined" aria-hidden="true">terminal</span>
+                <span data-i18n="auth.connectionParameters">连接参数</span>
+              </span>
+              <div data-language-switcher></div>
             </div>
             <div id="connection-form-container"></div>
           </div>
-          <div
-            class="mt-8 text-center text-[13px] text-muted opacity-60"
-            data-i18n="auth.systemReady"
-          >
-            系统就绪，等待输入。
-          </div>
-          <div class="mt-4 text-center">
-            <a
-              href="https://github.com/newbietan/CloudSSH"
-              class="text-[13px] text-primary opacity-60 hover:opacity-100 transition-colors tracking-widest uppercase"
-              >[ GitHub Open Source ]</a
-            >
+          <div class="auth-footer-note">
+            <span class="material-symbols-outlined" aria-hidden="true">lock</span>
+            <span data-i18n="auth.secureBadge">SSH 加密直连 · 凭据仅保存在本地</span>
           </div>
         </main>
       </div>
@@ -103,9 +89,16 @@
         <header
           class="user-space-header flex justify-between items-center w-full px-6 h-16 bg-elevated border-b border-outline-variant z-50 relative"
         >
-          <div class="user-space-brand flex items-center gap-6 min-w-0">
+          <div class="user-space-brand flex items-center gap-3 min-w-0">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
             <h1
-              class="text-2xl font-bold text-primary-container tracking-tighter cursor-pointer"
+              class="text-xl font-bold text-primary-container tracking-tight cursor-pointer select-none"
               id="user-space-logo"
             >
               CloudSSH
@@ -130,6 +123,23 @@
               <option value="__custom__" data-i18n="theme.custom">Custom</option>
             </select>
             <div data-language-switcher></div>
+            <button
+              id="mobile-shortcuts-config-btn"
+              type="button"
+              class="user-space-menu-action mobile-only hover:opacity-80 transition-opacity cursor-pointer p-1 flex items-center justify-center"
+              data-i18n-title="mobileShortcuts.title"
+              title="自定义快捷键"
+            >
+              <span
+                class="material-symbols-outlined"
+                style="font-variation-settings: 'FILL' 0"
+                aria-hidden="true"
+                >keyboard</span
+              >
+              <span class="user-space-action-label" data-i18n="mobileShortcuts.title"
+                >自定义快捷键</span
+              >
+            </button>
           </div>
           <button
             id="user-space-more-btn"
@@ -185,11 +195,25 @@
                   <span class="material-symbols-outlined" aria-hidden="true">hub</span>
                   <span class="sidebar-item-label">MCP</span>
                 </a>
+                <a id="menu-database" class="sidebar-item hidden" href="/database">
+                  <span class="material-symbols-outlined" aria-hidden="true">database</span>
+                  <span class="sidebar-item-label" data-i18n="menu.database">数据库</span>
+                </a>
               </div>
               <div class="sidebar-group" data-menu-group="settings">
                 <div class="sidebar-group-label" data-i18n="menu.settings">
                   设置
                 </div>
+                <button
+                  id="credentials-btn"
+                  type="button"
+                  class="sidebar-item"
+                  data-i18n-title="credential.manage"
+                  title="凭据管理"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">key</span>
+                  <span class="sidebar-item-label" data-i18n="credential.manage">凭据管理</span>
+                </button>
                 <a
                   id="menu-account"
                   class="sidebar-item hidden"
@@ -221,6 +245,7 @@
                     >AI Agent 设置</span
                   >
                 </button>
+
               </div>
             </nav>
             <div class="app-sidebar-footer">
@@ -289,6 +314,32 @@
                   >
                 </button>
                 <button
+                  id="dashboard-toggle-btn"
+                  class="cyber-button text-muted py-2 px-3 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-1.5"
+                  data-i18n-title="dashboard.title"
+                  title="服务器总览"
+                >
+                  <span
+                    class="material-symbols-outlined"
+                    style="font-size: 16px"
+                    >dashboard</span
+                  >
+                  <span class="hidden sm:inline" data-i18n="dashboard.title">服务器总览</span>
+                </button>
+                <button
+                  id="batch-exec-btn"
+                  class="cyber-button text-muted py-2 px-3 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-1.5"
+                  data-i18n-title="batch.title"
+                  title="批量执行"
+                >
+                  <span
+                    class="material-symbols-outlined"
+                    style="font-size: 16px"
+                    >terminal</span
+                  >
+                  <span class="hidden sm:inline" data-i18n="batch.title">批量执行</span>
+                </button>
+                <button
                   id="add-server-btn"
                   class="cyber-button text-primary py-2 px-4 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-2"
                 >
@@ -300,6 +351,18 @@
                   <span data-i18n="server.add">添加服务器</span>
                 </button>
               </div>
+            </div>
+            <!-- 总览仪表盘（点击工具栏按钮展开） -->
+            <div id="dashboard-section" class="hidden mb-6">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <h3 class="text-sm font-bold text-primary tracking-[0.08em]" data-i18n="dashboard.title">服务器总览</h3>
+                  <p class="text-[10px] text-muted opacity-60 mt-0.5" data-i18n="dashboard.subtitle">实时指标卡片墙</p>
+                </div>
+                <span class="material-symbols-outlined text-muted animate-pulse" style="font-size: 14px">monitoring</span>
+              </div>
+              <div id="dashboard-notice" class="hidden text-xs text-muted py-2"></div>
+              <div id="dashboard-cards" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div>
             </div>
             <!-- 服务器搜索（仅在存在服务器时显示） -->
             <div id="server-search-wrapper" class="hidden mb-4">
@@ -467,28 +530,66 @@
           </div>
         </main>
 
-        <!-- Footer -->
-        <footer
-          class="user-space-footer px-6 py-0 flex justify-between items-center z-50 bg-elevated border-t border-outline-variant text-xs h-8"
+        <!-- Embedded utility pages (automation / MCP / account) —
+             opened in-place so SSH sessions keep their WebSockets alive;
+             the standalone pages hide their own sidebar when embedded. -->
+        <section
+          id="embedded-page-section"
+          class="embedded-page-section hidden flex-1 flex-col min-h-0"
         >
-          <div
-            class="user-space-footer-source text-secondary-container opacity-60"
+          <header
+            class="embedded-page-header flex items-center justify-between px-5 h-14 border-b border-outline-variant"
           >
-            © <span id="user-copyright-year"></span> CLOUD_SSH_TERMINAL<span
-              class="user-space-footer-url"
+            <h2 id="embedded-page-title" class="text-base font-semibold text-on-surface"></h2>
+            <button
+              id="embedded-page-close"
+              type="button"
+              class="embedded-page-close flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-outline-variant text-on-surface-variant hover:text-on-surface hover:border-on-surface-variant bg-transparent cursor-pointer"
+              data-i18n-title="nav.backToPanel"
+              title="返回面板"
             >
-              - https://github.com/newbietan/CloudSSH</span
+              <span class="material-symbols-outlined" style="font-size: 16px">arrow_back</span>
+              <span data-i18n="nav.backToPanel">返回面板</span>
+            </button>
+          </header>
+          <iframe
+            id="embedded-page-frame"
+            class="embedded-page-frame flex-1 w-full border-none bg-surface"
+            title="CloudSSH"
+          ></iframe>
+        </section>
+
+        <!-- 凭据管理页。与内嵌 iframe 页不同，它直接渲染在主内容区里
+             （而不是 iframe），这样左侧导航栏保持可见可点，切换回来也不丢状态。 -->
+        <section
+          id="credentials-page-section"
+          class="credentials-page-section hidden flex-1 flex-col min-h-0"
+        >
+          <header
+            class="flex items-center justify-between px-5 h-14 border-b border-outline-variant shrink-0"
+          >
+            <h2
+              class="text-base font-semibold text-on-surface"
+              data-i18n="credential.title"
             >
-          </div>
-          <div class="flex gap-4">
-            <a
-              class="text-on-surface-variant opacity-60 hover:opacity-100 transition-opacity"
-              href="https://github.com/newbietan/CloudSSH"
-              data-i18n="common.documentation"
-              >文档</a
+              凭据管理
+            </h2>
+            <button
+              id="credentials-page-close"
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-outline-variant text-on-surface-variant hover:text-on-surface hover:border-on-surface-variant bg-transparent cursor-pointer"
+              data-i18n-title="nav.backToPanel"
+              title="返回面板"
             >
-          </div>
-        </footer>
+              <span class="material-symbols-outlined" style="font-size: 16px">arrow_back</span>
+              <span data-i18n="nav.backToPanel">返回面板</span>
+            </button>
+          </header>
+          <div
+            id="credentials-page-body"
+            class="credentials-page-body flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+          ></div>
+        </section>
           </div>
         </div>
       </div>
@@ -757,6 +858,40 @@
                 data-i18n="server.cfAccessHint"
               >
                 若在 Cloudflare Zero Trust 中为该域名开启了 Access 策略，需填入 Service Token
+              </div>
+            </div>
+            <div id="server-credential-source">
+              <label
+                class="block text-xs font-bold tracking-[0.1em] text-muted mb-2"
+                data-i18n="credential.source"
+                >凭据来源</label
+              >
+              <div class="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  id="server-cred-source-inline"
+                  class="auth-tab auth-tab-active px-3 py-1 text-[11px] font-bold tracking-[0.1em] cursor-pointer transition-all"
+                  data-i18n="credential.sourceInline"
+                >
+                  直接填写
+                </button>
+                <button
+                  type="button"
+                  id="server-cred-source-library"
+                  class="auth-tab px-3 py-1 text-[11px] font-bold tracking-[0.1em] cursor-pointer transition-all"
+                  data-i18n="credential.sourceLibrary"
+                >
+                  从凭据库选择
+                </button>
+              </div>
+              <div id="server-credential-picker" class="hidden">
+                <select
+                  id="server-credential-id"
+                  class="terminal-input text-[13px] w-full"
+                  data-i18n-aria-label="credential.select"
+                  aria-label="选择凭据"
+                ></select>
+                <p id="server-credential-hint" class="text-[10px] text-muted mt-1"></p>
               </div>
             </div>
             <div>
@@ -1077,6 +1212,174 @@
         </div>
       </div>
 
+      <!-- Docker 容器升级弹窗：修改镜像版本 / 拉取最新并按原配置重建 -->
+      <div
+        id="docker-upgrade-modal"
+        class="responsive-modal hidden fixed inset-0 z-[110] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="docker-upgrade-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="docker-upgrade-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-xl mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"></div>
+          <div class="flex items-center justify-between mb-3 pb-3 border-b border-dim shrink-0 gap-2">
+            <span
+              id="docker-upgrade-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)] truncate"
+            >
+              <span data-i18n="docker.upgradeTitle">容器升级</span>
+              <span id="docker-upgrade-container-name" class="text-dim font-mono normal-case"></span>
+            </span>
+            <button
+              id="docker-upgrade-close-btn"
+              class="panel-close-btn shrink-0"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+          <div id="docker-upgrade-body" class="overflow-y-auto custom-scrollbar min-h-0 grow space-y-3">
+            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+              <span class="text-dim" data-i18n="docker.upgradeCurrentImage">当前镜像</span>
+              <span id="docker-upgrade-current-image" class="font-mono min-w-0 break-all"></span>
+            </div>
+            <label class="block space-y-1">
+              <span class="text-[11px] text-muted" data-i18n="docker.upgradeTargetImage">目标镜像</span>
+              <input
+                id="docker-upgrade-image-input"
+                type="text"
+                data-i18n-placeholder="docker.upgradeTargetImage"
+                placeholder="目标镜像"
+                spellcheck="false"
+                class="w-full bg-surface-2 border border-outline px-2 py-1.5 text-xs font-mono rounded focus:border-primary outline-none"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-[11px] text-on-surface cursor-pointer">
+              <input id="docker-upgrade-keep-backup" type="checkbox" class="accent-[var(--accent-secondary)]" />
+              <span data-i18n="docker.upgradeKeepBackup">保留旧容器备份（升级成功后不删除）</span>
+            </label>
+            <div class="text-[10px] leading-relaxed text-muted space-y-1 border border-dim rounded p-2">
+              <div data-i18n="docker.upgradeHint1">按原容器配置（端口 / 卷 / 环境变量 / 重启策略 / 网络 / 命令）以新镜像重建容器，旧容器先重命名为备份再替换，失败自动回滚。</div>
+              <div data-i18n="docker.upgradeHint2">匿名卷、资源限制等高级选项不会迁移；由 docker compose 管理的容器建议优先在服务器上用 compose 升级。</div>
+            </div>
+            <div id="docker-upgrade-progress" class="hidden text-[11px] font-mono whitespace-pre-wrap break-all border border-dim rounded p-2 max-h-40 overflow-y-auto custom-scrollbar"></div>
+          </div>
+          <div class="flex items-center justify-end gap-2 pt-3 mt-3 border-t border-dim shrink-0">
+            <button
+              id="docker-upgrade-cancel-btn"
+              class="cyber-button text-muted py-1.5 px-3 text-[10px] font-bold tracking-[0.1em]"
+              data-i18n="common.cancel"
+            >
+              取消
+            </button>
+            <button
+              id="docker-upgrade-confirm-btn"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center gap-1"
+            >
+              <span class="material-symbols-outlined" style="font-size: 14px">system_update_alt</span>
+              <span data-i18n="docker.upgradeStart">开始升级</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 批量命令执行弹窗：由 batch-panel.ts 接管 -->
+      <div
+        id="batch-modal"
+        class="responsive-modal hidden fixed inset-0 z-[100] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="batch-modal-title"
+      >
+        <div class="modal-overlay absolute inset-0" id="batch-modal-backdrop"></div>
+        <div
+          class="responsive-modal-panel cyber-box p-5 shadow-2xl relative z-10 w-full max-w-3xl mx-4 max-h-[85vh] flex flex-col"
+        >
+          <div class="theme-accent-line absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--accent-secondary)] to-transparent opacity-50"></div>
+          <div class="flex items-center justify-between mb-4 pb-3 border-b border-dim shrink-0">
+            <span
+              id="batch-modal-title"
+              class="text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)]"
+              data-i18n="batch.title"
+              >批量执行</span
+            >
+            <button
+              id="batch-modal-close-btn"
+              class="text-muted hover:text-on-surface transition-colors cursor-pointer"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" style="font-size: 18px">close</span>
+            </button>
+          </div>
+          <div class="overflow-y-auto custom-scrollbar min-h-0 grow pr-1">
+            <div class="mb-3">
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-[10px] font-bold tracking-[0.1em] uppercase text-muted" data-i18n="batch.servers">目标服务器</span>
+                <div class="flex items-center gap-2">
+                  <button id="batch-select-all-btn" class="text-[10px] text-muted hover:text-on-surface transition-colors cursor-pointer" data-i18n="batch.selectAll">全选</button>
+                  <button id="batch-clear-btn" class="text-[10px] text-muted hover:text-on-surface transition-colors cursor-pointer" data-i18n="batch.clear">清空</button>
+                </div>
+              </div>
+              <div
+                id="batch-server-list"
+                class="max-h-40 overflow-y-auto custom-scrollbar border border-dim rounded divide-y divide-[var(--dim)]"
+              ></div>
+              <p class="text-[10px] text-muted opacity-60 mt-1" data-i18n="batch.subtitle">多选服务器并发执行同一条命令，实时聚合输出</p>
+            </div>
+            <div class="mb-3">
+              <label for="batch-command" class="block text-[10px] font-bold tracking-[0.1em] uppercase text-muted mb-1.5" data-i18n="batch.command">命令</label>
+              <textarea
+                id="batch-command"
+                rows="2"
+                class="w-full bg-background border border-dim rounded px-2 py-1.5 text-xs font-mono text-on-surface outline-none focus:border-primary resize-y custom-scrollbar"
+                data-i18n-placeholder="batch.commandPlaceholder"
+                placeholder="例如：uname -a && uptime"
+                spellcheck="false"
+              ></textarea>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+              <label class="flex items-center gap-1.5 text-[10px] text-muted" for="batch-timeout">
+                <span data-i18n="batch.timeout">超时（秒）</span>
+                <select
+                  id="batch-timeout"
+                  class="bg-background border border-dim rounded px-1 py-0.5 text-xs text-on-surface outline-none cursor-pointer"
+                >
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                  <option value="120" selected>120</option>
+                  <option value="300">300</option>
+                  <option value="600">600</option>
+                </select>
+              </label>
+              <button
+                id="batch-run-btn"
+                class="cyber-button text-primary py-1.5 px-4 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span class="material-symbols-outlined" style="font-size: 15px">play_arrow</span>
+                <span data-i18n="batch.run">执行</span>
+              </button>
+              <button
+                id="batch-stop-btn"
+                class="cyber-button text-[var(--error)] py-1.5 px-4 text-xs font-bold tracking-[0.1em] uppercase flex items-center gap-1.5 hidden"
+              >
+                <span class="material-symbols-outlined" style="font-size: 15px">stop</span>
+                <span data-i18n="batch.stop">停止</span>
+              </button>
+              <p id="batch-hint" class="text-[10px] text-muted opacity-60 flex-1 min-w-[12rem]" data-i18n="batch.hint">命令在每台服务器上独立执行，输出实时回传。</p>
+            </div>
+            <div id="batch-results" class="hidden">
+              <div class="text-[10px] font-bold tracking-[0.1em] uppercase text-muted mb-1.5" data-i18n="batch.results">执行结果</div>
+              <div id="batch-result-cards" class="space-y-2"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Terminal Page -->
       <div
         id="terminal-section"
@@ -1086,9 +1389,16 @@
         <header
           class="terminal-app-header flex justify-between items-center w-full px-6 h-16 bg-background border-b border-outline-variant z-50 relative"
         >
-          <div class="flex items-center gap-6">
+          <div class="flex items-center gap-3">
+            <div class="brand-mark brand-mark--sm" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="m7 9.5 3 2.5-3 2.5" />
+                <path d="M12.5 15h4" />
+              </svg>
+            </div>
             <h1
-              class="terminal-app-title text-2xl font-bold text-primary-container tracking-tighter cursor-pointer"
+              class="terminal-app-title text-xl font-bold text-primary-container tracking-tight cursor-pointer select-none"
             >
               CloudSSH
             </h1>
@@ -1096,6 +1406,16 @@
           <div
             class="terminal-header-actions flex items-center gap-2 sm:gap-4 text-primary-container flex-wrap"
           >
+            <button
+              id="terminal-back-btn"
+              type="button"
+              class="cyber-button text-primary py-1.5 px-3 text-[10px] font-bold tracking-[0.1em] flex items-center justify-center gap-1.5"
+              data-i18n-title="terminal.backToList"
+              title="返回服务器列表"
+            >
+              <span class="material-symbols-outlined" style="font-size: 15px">arrow_back</span>
+              <span data-i18n="terminal.backToList">返回列表</span>
+            </button>
             <select
               id="theme-selector"
               data-theme-selector
@@ -1273,6 +1593,11 @@
                 >terminal</span
               ><span data-i18n="snippets.title">Command snippets</span>
             </button>
+            <button id="mobile-shortcuts-terminal-btn" type="button" class="hidden">
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >keyboard</span
+              ><span data-i18n="mobileShortcuts.title">自定义快捷键</span>
+            </button>
             <button id="mobile-sftp-btn" type="button">
               <span class="material-symbols-outlined" aria-hidden="true"
                 >folder_open</span
@@ -1333,7 +1658,7 @@
 
         <!-- Main Terminal -->
         <main
-          class="terminal-main flex-1 relative bg-surface-container-lowest overflow-hidden"
+          class="terminal-main flex-1 relative bg-background overflow-hidden"
         >
           <div
             class="absolute inset-0 scanline pointer-events-none z-10 opacity-30"
@@ -1360,6 +1685,17 @@
                   >用户：-</span
                 >
                 <span id="term-port">端口：-</span>
+                <!-- 实时状态胶囊：由 live-status.ts 渲染，点击开合右侧状态抽屉。
+                     仅在自托管部署且连接的是已保存服务器时出现，条件与顶栏状态按钮一致。 -->
+                <button
+                  id="term-live-pills"
+                  type="button"
+                  class="hidden"
+                  aria-expanded="false"
+                  aria-controls="status-panel"
+                  data-i18n-aria-label="server.status.liveToggle"
+                  aria-label="实时状态"
+                ></button>
               </div>
               <div>
                 <span id="term-info"></span>
@@ -1479,6 +1815,44 @@
           </div>
         </nav>
 
+        <!-- 移动端选区操作条：长按选中后就地浮出，一次点击即复制。
+             它是「选中即可操作」的落点，避免用户长按后找不到任何可点的东西。 -->
+        <div
+          id="terminal-selection-actions"
+          class="terminal-selection-actions hidden"
+          role="toolbar"
+          data-i18n-aria-label="terminal.selectionActions"
+          aria-label="选区操作"
+        >
+          <button
+            id="terminal-selection-copy-btn"
+            type="button"
+            data-i18n-title="terminal.copySelection"
+            title="复制选区"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">content_copy</span>
+            <span data-i18n="terminal.copySelection">复制选区</span>
+          </button>
+          <button
+            id="terminal-selection-all-btn"
+            type="button"
+            data-i18n-title="terminal.selectAll"
+            title="全选"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">select_all</span>
+            <span data-i18n="terminal.selectAll">全选</span>
+          </button>
+          <button
+            id="terminal-selection-cancel-btn"
+            type="button"
+            data-i18n-title="terminal.cancelSelection"
+            title="取消选择"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            <span data-i18n="terminal.cancelSelection">取消</span>
+          </button>
+        </div>
+
         <button
           id="ask-ai-selection-btn"
           type="button"
@@ -1495,23 +1869,51 @@
           <span data-i18n="terminal.askAISelection">询问 AI 助手</span>
         </button>
 
-        <!-- Footer -->
-        <footer
-          class="terminal-footer px-6 py-0 flex justify-between items-center z-50 bg-elevated border-t border-outline-variant text-xs h-8 shrink-0"
+        <!-- 实时状态抽屉：连上已保存服务器并收到首帧后自动展开，顶部胶囊可随时开合。
+             它不参与 SFTP / 命令片段 / Agent 的互斥分组，可盖在终端之上独立存在。 -->
+        <div id="status-panel-backdrop" class="status-panel-backdrop"></div>
+        <aside
+          id="status-panel"
+          class="status-panel"
+          role="dialog"
+          aria-modal="false"
+          aria-hidden="true"
+          aria-labelledby="status-panel-title"
         >
-          <div class="text-secondary-container opacity-60">
-            © <span id="copyright-year"></span> CLOUD_SSH_TERMINAL -
-            https://github.com/newbietan/CloudSSH
-          </div>
-          <div class="flex gap-4">
-            <a
-              class="text-on-surface-variant opacity-60 hover:opacity-100 transition-opacity"
-              href="https://github.com/newbietan/CloudSSH"
-              data-i18n="common.documentation"
-              >文档</a
+          <div class="status-panel-header">
+            <span
+              class="material-symbols-outlined text-[var(--accent-secondary)]"
+              style="font-size: 18px"
+              aria-hidden="true"
+              >monitoring</span
             >
+            <div class="status-panel-heading">
+              <span
+                id="status-panel-title"
+                class="status-panel-title"
+                data-i18n="server.status.title"
+                >服务器状态</span
+              >
+              <span id="status-panel-host" class="status-panel-host"></span>
+            </div>
+            <span
+              id="status-panel-badge"
+              class="status-panel-badge"
+              data-state="connecting"
+              >正在连接</span
+            >
+            <button
+              id="status-panel-close-btn"
+              type="button"
+              class="panel-close-btn"
+              data-i18n-aria-label="common.close"
+              aria-label="关闭"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
           </div>
-        </footer>
+          <div id="status-panel-body" class="status-panel-body custom-scrollbar"></div>
+        </aside>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

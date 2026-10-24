@@ -5,12 +5,12 @@ import test from 'node:test';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
-import { pbkdf2Sync, createHash } from 'node:crypto';
+import { pbkdf2Sync, createHash, createPublicKey } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -122,14 +122,84 @@ test('sendToChannels never throws and reports per-channel outcomes', async () =>
 });
 
 // ---------- ssh keypairs ----------
-test('generated ed25519 keypairs are valid OpenSSH keys', { skip: !existsSync('/usr/bin/ssh-keygen') && !existsSync('/usr/local/bin/ssh-keygen') }, () => {
+// 回归：私钥必须真的能与声明公钥配对。
+// 历史 bug：generateKeyPair 丢弃了真私钥，把公钥字节当 seed 写入私钥文件；
+// 此时 ssh-keygen -y 仍会通过（它只回读内嵌公钥字段），只有真正签名验签才暴露。
+const sshKeygen = ['/usr/bin/ssh-keygen', '/usr/local/bin/ssh-keygen'].find((p) => existsSync(p));
+
+/** 用 OpenSSH 自身签名验签：私钥签，声明公钥验。 */
+function signVerify(keyDir, pair) {
+  const keyFile = join(keyDir, 'id_ed25519');
+  const pubFile = join(keyDir, 'declared.pub');
+  const msgFile = join(keyDir, 'msg.txt');
+  const allowed = join(keyDir, 'allowed_signers');
+  writeFileSync(keyFile, pair.privateKey, { mode: 0o600 });
+  writeFileSync(pubFile, pair.publicKey);
+  writeFileSync(msgFile, 'cloudssh-credential-probe\n');
+  const declared = readFileSync(pubFile, 'utf8').trim();
+  writeFileSync(allowed, `probe@cloudssh ${declared}\n`);
+  execFileSync(sshKeygen, ['-Y', 'sign', '-f', keyFile, '-n', 'probe', msgFile], { stdio: 'pipe' });
+  // 验签失败时 ssh-keygen 以非零码退出：这里让它抛异常。
+  execFileSync(
+    sshKeygen,
+    ['-Y', 'verify', '-f', allowed, '-I', 'probe@cloudssh', '-n', 'probe', '-s', `${msgFile}.sig`],
+    { stdio: ['pipe', 'pipe', 'pipe'], input: 'cloudssh-credential-probe\n' }
+  );
+}
+
+test('generated ed25519 keypairs are valid OpenSSH keys', { skip: !sshKeygen }, () => {
   const pair = generateKeyPair('deploy@cloudssh 2026');
   assert.match(pair.privateKey, /^-----BEGIN OPENSSH PRIVATE KEY-----\n/);
   assert.match(pair.publicKey, /^ssh-ed25519 AAAA[^\s]+ deploy@cloudssh 2026\n$/);
   assert.equal(sanitizeComment("bad'quote\ninjection; rm -rf"), 'badquoteinjection rm -rf');
-  // The private key parses with OpenSSH tooling.
-  const fs = { writeFileSync: () => {}, readFileSync: () => {} };
-  void fs;
+
+  const dir = mkdtempSync(join(tmpdir(), 'cloudssh-keycheck-'));
+  try {
+    // 私钥真的解析得开（结构合法）。
+    const keyFile = join(dir, 'id_ed25519');
+    writeFileSync(keyFile, pair.privateKey, { mode: 0o600 });
+    const fingerprint = execFileSync(sshKeygen, ['-l', '-f', keyFile], { encoding: 'utf8' });
+    assert.match(fingerprint, /^256 SHA256:[A-Za-z0-9+/]{43} deploy@cloudssh 2026 \(ED25519\)$/m);
+    // 关键断言：私钥签出的名必须能被声明公钥验过。
+    signVerify(dir, pair);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated private key embeds the real ed25519 seed, not the public key', () => {
+  // 不依赖 ssh-keygen 的结构性断言：Ed25519 私钥是 seed(32) + pub(32)，
+  // 且由 seed 派生出的公钥必须等于声明公钥。
+  const pair = generateKeyPair('seed-probe');
+  const blob = Buffer.from(pair.privateKey.replace(/-----[^-]+-----|\s/g, ''), 'base64');
+  assert.equal(blob.subarray(0, 15).toString('latin1'), 'openssh-key-v1\0');
+  const readString = (buffer, offset) => {
+    const length = buffer.readUInt32BE(offset);
+    return [buffer.subarray(offset + 4, offset + 4 + length), offset + 4 + length];
+  };
+  let cursor = 15;
+  for (let i = 0; i < 3; i += 1) [, cursor] = readString(blob, cursor);
+  cursor += 4; // nkeys
+  const [pubBlob] = readString(blob, cursor);
+  const [inner] = readString(blob, readString(blob, cursor)[1]);
+  const [, pubBlobOffset] = readString(pubBlob, 0);
+  const [declaredPub] = readString(pubBlob, pubBlobOffset);
+
+  let innerCursor = 8; // checkint ×2
+  for (let i = 0; i < 2; i += 1) [, innerCursor] = readString(inner, innerCursor);
+  const [privateSection] = readString(inner, innerCursor);
+  assert.equal(privateSection.length, 64);
+  const seed = privateSection.subarray(0, 32);
+  const embeddedPub = privateSection.subarray(32);
+  assert.ok(embeddedPub.equals(declaredPub), '私钥内嵌公钥应与声明公钥一致');
+  assert.ok(!seed.equals(declaredPub), 'seed 不应等于公钥（历史 bug 的形态）');
+
+  // seed 真实派生出的公钥必须等于声明公钥。
+  const pkcs8 = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
+  const derived = createPublicKey({ key: pkcs8, format: 'der', type: 'pkcs8' })
+    .export({ type: 'spki', format: 'der' })
+    .subarray(-32);
+  assert.ok(derived.equals(declaredPub), 'seed 派生公钥应等于声明公钥');
 });
 
 test('deploy command is idempotent and shell-safe', () => {
@@ -273,6 +343,44 @@ test('scheduler runs due tasks, records history, skips long-overdue runs and adv
   const before = executed.length;
   await engine.cronTick();
   assert.equal(executed.length, before, 'overdue run skipped');
+});
+
+test('notify-on-change establishes a baseline, alerts on change, stays silent on repeat and resets on command edit', async () => {
+  const { store, engine, notifications } = makeEngine({
+    servers: [{ id: 3, name: 'srv', host: '127.0.0.1', port: 22 }],
+    execResults: [
+      { stdout: 'v1', stderr: '', exitCode: 0 }, // baseline
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // changed → notify
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // unchanged → silent
+      { stdout: 'v2', stderr: '', exitCode: 0 }, // after command edit → new baseline, silent
+    ],
+  });
+  const { id } = store.createTask(OWNER, USER, { name: 'job', server_id: 3, command: 'x', cron_expr: '0 0 * * *',
+    timeout_seconds: 60, notify_on_failure: false, notify_on_change: true, enabled: true }, null);
+
+  await engine.runTask(store.taskById(OWNER, id)); // first run only stores the baseline
+  assert.equal(notifications.length, 0);
+  assert.ok(store.taskById(OWNER, id).last_output_sha, 'baseline hash stored on the task');
+
+  await engine.runTask(store.taskById(OWNER, id));
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].message.title, /output changed/);
+  assert.match(notifications[0].message.body, /v2/);
+
+  await engine.runTask(store.taskById(OWNER, id)); // identical output → no alert
+  assert.equal(notifications.length, 1);
+
+  store.updateTask(OWNER, id, { command: 'y' }, null); // editing resets the baseline
+  assert.equal(store.taskById(OWNER, id).last_output_sha, null);
+  await engine.runTask(store.taskById(OWNER, id));
+  assert.equal(notifications.length, 1, 'first run of a new command only re-baselines');
+
+  // Tasks without the flag never notify on output changes.
+  const { id: plainId } = store.createTask(OWNER, USER, { name: 'plain', server_id: 3, command: 'x', cron_expr: '0 0 * * *',
+    timeout_seconds: 60, notify_on_failure: false, notify_on_change: false, enabled: true }, null);
+  await engine.runTask(store.taskById(OWNER, plainId));
+  await engine.runTask(store.taskById(OWNER, plainId));
+  assert.equal(notifications.length, 1, 'notify_on_change disabled → always silent on success');
 });
 
 test('scheduler notifies on failure and manual runs share the same path', async () => {
@@ -440,11 +548,12 @@ test('automation and key APIs enforce auth and persist across restart', { timeou
     const servers = await (await api('/api/servers')).json();
     const serverId = servers[0].id;
     assert.equal((await api('/api/automation/cron', 'POST', { name: 'other-owner task', server_id: 999999, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: true, enabled: true })).status, 400, 'tasks require an owned server');
-    const created2 = await api('/api/automation/cron', 'POST', { name: 'probe task', server_id: serverId, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: false, enabled: true });
+    const created2 = await api('/api/automation/cron', 'POST', { name: 'probe task', server_id: serverId, command: 'printf scheduled-ok', cron_expr: '*/5 * * * *', timeout_seconds: 60, notify_on_failure: false, notify_on_change: true, enabled: true });
     assert.equal(created2.status, 201);
     const taskId = (await created2.json()).id;
     const tasks = (await (await api('/api/automation/cron')).json()).tasks;
     assert.equal(tasks[0].server_name, servers[0].name);
+    assert.equal(tasks[0].notify_on_change, 1, 'notify_on_change round-trips through the API');
     assert.ok(tasks[0].next_run_at > Date.now() - 1000);
     assert.equal((await api(`/api/automation/cron/${taskId}`, 'PUT', { name: 'renamed', server_id: serverId, command: 'printf updated', cron_expr: '0 * * * *', timeout_seconds: 90, notify_on_failure: true, enabled: true })).status, 200);
     assert.equal((await api('/api/automation/cron/424242/run', 'POST')).status, 404);

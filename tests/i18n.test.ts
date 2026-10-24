@@ -12,6 +12,20 @@ describe('国际化核心', () => {
     expect(Object.keys(zhTW).sort()).toEqual(Object.keys(zhCN).sort());
   });
 
+  it('所有词条都是非空字符串', () => {
+    // 语言自称接原文展示，不随界面语言翻译。
+    const exempt = new Set(['language.zhCN', 'language.zhTW']);
+    for (const [locale, messages] of [['zh-CN', zhCN], ['zh-TW', zhTW], ['en-US', enUS]] as const) {
+      for (const [key, value] of Object.entries(messages)) {
+        if (exempt.has(key)) continue;
+        expect(
+          typeof value === 'string' && value.trim().length > 0,
+          `${locale} 的 ${key} 必须是非空字符串`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('按 URL、持久化设置、浏览器语言的优先级解析语言', () => {
     expect(resolveLocale({
       urlLocale: 'en',

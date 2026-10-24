@@ -1,6 +1,10 @@
 {
   "name": "cloudssh",
-  "version": "2.6.2",
+  "version": "2.6.4",
+  "bin": {
+    "cssh": "standalone/cli.mjs",
+    "cloudssh": "standalone/cli.mjs"
+  },
   "packageManager": "pnpm@11.8.0",
   "description": "纯 Cloudflare 架构 Web SSH 工具",
   "main": "src/worker/index.ts",
@@ -50,6 +54,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
+    "ioredis": "^5.11.1",
+    "mysql2": "^3.24.5",
+    "pg": "^8.23.1",
     "ws": "^8.21.0",
     "zod": "^3.25.76"
   }

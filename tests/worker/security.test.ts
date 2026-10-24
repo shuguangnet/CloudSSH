@@ -12,7 +12,7 @@ import type { Env } from '../../src/types';
 //   2. GitHub 策略 — 登录白名单、强制登录及 token 归属
 //   3. IDOR/越权   — handler 强制覆盖 body.user_id、DO 层二次归属校验
 //   4. SSRF 接缝   — AI base_url 经 validateBaseUrl 在路由层拦截
-//   5. 滑块验证码  — 挑战端点限流与挑战伪造
+//   5. 图片验证码  — 挑战端点限流与挑战伪造
 //   6. CSWSH       — 跨站 WebSocket 劫持（Origin 校验）
 //   附：一次性 token 防重放、SFTP attach 鉴权、速率限制
 //
@@ -867,10 +867,10 @@ describe('安全 — SSRF 接缝（AI base_url）', () => {
 });
 
 // =====================================================================
-// 5. 滑块验证码 — 挑战端点限流与挑战伪造
+// 5. 图片验证码 — 挑战端点限流与挑战伪造
 // =====================================================================
 
-describe('安全 — 滑块验证码挑战端点', () => {
+describe('安全 — 图片验证码挑战端点', () => {
   it('CAPTCHA_MODE=off → 挑战端点 501', async () => {
     const worker = await loadWorker();
     const env = makeEnv({ CAPTCHA_MODE: 'off' });
@@ -1176,6 +1176,45 @@ describe('安全 — 一次性 SSH 分享边界', () => {
 
     expect(malformed.status).toBe(400);
     expect(invalidToken.status).toBe(400);
+  });
+
+  it('反代域名下 claim 生成的 wsUrl 指向浏览器实际 origin（Origin 头优先）', async () => {
+    // 域名 https://ssh.example.com 访问但 BASE_URL=https://cloudssh.test：
+    // wsUrl 必须是 wss://ssh.example.com/...，否则前端同源校验拒绝且
+    // https 页面连 ws:// 会被 mixed-content 拦截
+    const worker = await loadWorker();
+    const shareStub = makeDOStub(() =>
+      Response.json({ ticket: 'b'.repeat(43), serverName: 'production', sessionExpiresAt: Date.now() + 60_000 }));
+    const env = makeEnv({ ENABLE_SSH_SHARING: 'true', sshShareStub: shareStub });
+    env.SSH_SHARE = { idFromName: vi.fn(() => 'share-do'), get: () => shareStub } as any;
+    const response = await worker.fetch(
+      makeRequest('/api/share/claim', {
+        method: 'POST',
+        headers: { Origin: 'https://ssh.example.com' },
+        body: { token: 'a'.repeat(43) },
+      }),
+      env
+    );
+    const payload = (await response.json()) as { wsUrl: string };
+    expect(payload.wsUrl.startsWith('wss://ssh.example.com/api/ssh?')).toBe(true);
+  });
+
+  it('无 Origin 头时 claim 的 wsUrl 退回 X-Forwarded-Host/Proto 链首', async () => {
+    const worker = await loadWorker();
+    const shareStub = makeDOStub(() =>
+      Response.json({ ticket: 'b'.repeat(43), serverName: 'production', sessionExpiresAt: Date.now() + 60_000 }));
+    const env = makeEnv({ ENABLE_SSH_SHARING: 'true', sshShareStub: shareStub });
+    env.SSH_SHARE = { idFromName: vi.fn(() => 'share-do'), get: () => shareStub } as any;
+    const response = await worker.fetch(
+      makeRequest('/api/share/claim', {
+        method: 'POST',
+        headers: { 'X-Forwarded-Host': 'ssh.example.com', 'X-Forwarded-Proto': 'https' },
+        body: { token: 'a'.repeat(43) },
+      }),
+      env
+    );
+    const payload = (await response.json()) as { wsUrl: string };
+    expect(payload.wsUrl.startsWith('wss://ssh.example.com/api/ssh?')).toBe(true);
   });
 
   it('领取接口只返回短期 WebSocket 票据，不把原始分享凭证放入连接 URL', async () => {

@@ -394,7 +394,7 @@ test('自定义主题分段控制器交互与管理弹窗上传/多套管理/删
   await themeModal.locator('#custom-theme-modal-close-btn').click();
   await expect(themeModal).toBeHidden();
 
-  // 验证主题回退到内置主题（cyberpunk），Custom 不再处于选中状态
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'cyberpunk');
+  // 验证主题回退到内置默认主题（企业蓝改版后默认为 standard-light），Custom 不再处于选中状态
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'standard-light');
   await expect(customSegmentBtn).toHaveAttribute('aria-selected', 'false');
 });

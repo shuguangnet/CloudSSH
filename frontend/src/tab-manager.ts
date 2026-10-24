@@ -5,6 +5,7 @@ import { t } from './i18n';
 import { getNetworkQuality } from './network-quality';
 import { SFTPPanel } from './sftp-panel';
 import { SSHTerminal, type TerminalSelectionAnchor } from './terminal';
+import { isTerminalCinemaActive } from './terminal-fullscreen';
 import { notify } from './ui-feedback';
 
 export type TabState = 'connecting' | 'connected' | 'disconnected';
@@ -23,6 +24,8 @@ export interface TabInfo {
   wsLatency?: number;
   selectedText: string;
   selectionAnchor: TerminalSelectionAnchor | null;
+  /** 连接就绪后自动展开 SFTP 抽屉（服务器卡片「文件」入口，消费一次即失效） */
+  autoOpenSftp?: boolean;
 }
 
 /**
@@ -65,6 +68,7 @@ export class TabManager {
 
   /** 克隆会话请求回调 */
   private onDuplicateTab?: (tab: TabInfo) => void;
+  private onSftpAutoOpen?: (tab: TabInfo) => void;
 
   constructor(tabBarId: string, terminalAreaId: string) {
     this.tabBarEl = document.getElementById(tabBarId)!;
@@ -90,6 +94,23 @@ export class TabManager {
 
   setDuplicateTabHandler(handler: (tab: TabInfo) => void): void {
     this.onDuplicateTab = handler;
+  }
+
+  /**
+   * 标记指定标签在 SSH 就绪后自动展开 SFTP 抽屉。
+   * 供主页面服务器卡片「文件」入口使用：连上即看文件，无需先手动开终端抽屉。
+   */
+  markSftpAutoOpen(tabId: string): void {
+    const tab = this.tabs.get(tabId);
+    if (tab) tab.autoOpenSftp = true;
+  }
+
+  /**
+   * SSH 就绪且 SFTP 面板已初始化时回调（用于联动抽屉分段条）。
+   * 仅在 autoOpenSftp 标记被消费时触发一次。
+   */
+  setSftpAutoOpenHandler(handler: (tab: TabInfo) => void): void {
+    this.onSftpAutoOpen = handler;
   }
 
   // ==================== 创建标签 ====================
@@ -154,10 +175,19 @@ export class TabManager {
 
         // 初始化 SFTP 面板
         if (!tab.sftpPanel) {
-          tab.sftpPanel = new SFTPPanel(() => tab.terminal.getSFTPWebSocketUrl());
+          tab.sftpPanel = new SFTPPanel(
+            () => tab.terminal.getSFTPWebSocketUrl(),
+            () => tab.hostInfo?.serverId ?? null
+          );
           tab.sftpPanel.bindEvents();
         }
         tab.sftpPanel.handleSSHReady();
+
+        // 「文件」入口：就绪后自动展开 SFTP 抽屉（一次性消费）
+        if (tab.autoOpenSftp) {
+          tab.autoOpenSftp = false;
+          this.onSftpAutoOpen?.(tab);
+        }
 
         // 初始化 Agent 面板（仅登录用户）
         if (this._isLoggedIn && !tab.agentPanel) {
@@ -509,6 +539,11 @@ export class TabManager {
     });
   }
 
+  /** 全屏切换等外部入口：重算当前可见终端尺寸并下发 resize */
+  fitTerminals(): void {
+    this.fitVisibleTerminals();
+  }
+
   /** 对分屏两个窗格（或单栏的当前标签）统一 fit；隐藏/未挂载的终端自动跳过 */
   private fitVisibleTerminals(): void {
     requestAnimationFrame(() => {
@@ -758,9 +793,10 @@ export class TabManager {
   // ==================== 渲染标签栏 ====================
 
   renderTabBar(): void {
-    // 保留 new-tab-btn 与 split-view-btn，清除其他标签按钮
+    // 保留 new-tab-btn、split-view-btn 与全屏按钮，清除其他标签按钮
     const newTabBtn = this.tabBarEl.querySelector('#new-tab-btn');
     const existingSplitBtn = this.tabBarEl.querySelector('#split-view-btn');
+    const existingFullscreenBtn = this.tabBarEl.querySelector('#terminal-fullscreen-btn');
     this.tabBarEl.replaceChildren();
 
     for (const tab of this.tabs.values()) {
@@ -840,6 +876,22 @@ export class TabManager {
     splitBtn.classList.toggle('tab-split-active', this.splitMode);
     splitBtn.classList.toggle('hidden', this.tabs.size === 0);
     this.tabBarEl.appendChild(splitBtn);
+
+    // 追加终端全屏按钮（桌面+移动通用；点击逻辑由 terminal-fullscreen 控制器委托处理）
+    let fullscreenBtn = existingFullscreenBtn as HTMLButtonElement | null;
+    if (!fullscreenBtn) {
+      fullscreenBtn = document.createElement('button');
+      fullscreenBtn.id = 'terminal-fullscreen-btn';
+      fullscreenBtn.type = 'button';
+      fullscreenBtn.className = 'tab-new-btn';
+      fullscreenBtn.appendChild(this.createIcon('fullscreen', '16px'));
+    }
+    const cinemaActive = isTerminalCinemaActive();
+    fullscreenBtn.title = cinemaActive ? t('terminal.exitFullscreen') : t('terminal.fullscreen');
+    fullscreenBtn.setAttribute('aria-label', fullscreenBtn.title);
+    fullscreenBtn.setAttribute('aria-pressed', String(cinemaActive));
+    fullscreenBtn.classList.toggle('hidden', this.tabs.size === 0);
+    this.tabBarEl.appendChild(fullscreenBtn);
   }
 
   private tabDotClass(state: TabState): string {

@@ -1,8 +1,10 @@
 import { AIConfigPanel } from './ai-config';
+import { credentialLibrary, CREDENTIALS_PAGE_SECTION_ID } from './credentials-panel';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
-import { initI18n, onLocaleChange, t } from './i18n';
+import { initI18n, onLocaleChange, t, type TranslationKey } from './i18n';
 import { MobileTerminalController } from './mobile-terminal';
+import { MobileShortcutsManager } from './mobile-shortcuts-manager';
 import { ServerList } from './server-list';
 import {
   type ClaimedShare,
@@ -14,7 +16,10 @@ import { SnippetManager } from './snippet-manager';
 import { TabManager } from './tab-manager';
 import type { SSHHostInfo, SSHTerminal } from './terminal';
 import { serverStatusPanel, initServerStatusPanel } from './server-status';
+import { initLiveStatus, statusDrawer, syncLiveStatus } from './live-status';
 import { dockerPanel, initDockerPanel } from './server-docker';
+import { initBatchPanel } from './batch-panel';
+import { dashboardPanel } from './dashboard';
 import {
   applyBuiltInTheme,
   applyImportedTheme,
@@ -27,6 +32,7 @@ import { LiquidSegmentedThemeControl } from './theme-segmented';
 import { LiquidSegmentedDrawerControl } from './drawer-segmented';
 import { customThemeModal, customThemeStore } from './custom-theme-manager';
 import { notify } from './ui-feedback';
+import { initTerminalFullscreen } from './terminal-fullscreen';
 
 // ==================== 全局状态 ====================
 
@@ -35,8 +41,10 @@ let connectionForm: ConnectionForm | null = null;
 let serverList: ServerList | null = null;
 let isLoggedIn = false;
 let sharedSessionMode = false;
+const mobileShortcutsManager = new MobileShortcutsManager();
 const mobileTerminalController = new MobileTerminalController(
-  () => tabManager?.getActiveTab()?.terminal ?? null
+  () => tabManager?.getActiveTab()?.terminal ?? null,
+  mobileShortcutsManager
 );
 const snippetManager = new SnippetManager({
   getTerminal: () => tabManager?.getActiveTab()?.terminal ?? null,
@@ -89,6 +97,7 @@ function initServerPaginationBreakpoints(): void {
 function getTabManager(): TabManager {
   if (!tabManager) {
     tabManager = new TabManager('tab-bar', 'terminal-area');
+    initTerminalFullscreen({ fit: () => tabManager?.fitTerminals() });
     tabManager.setAllTabsClosedHandler(() => {
       showOfflineUI();
     });
@@ -117,6 +126,11 @@ function getTabManager(): TabManager {
       } catch (e) {
         notify(e instanceof Error ? e.message : String(e), { variant: 'danger' });
       }
+    });
+
+    // 服务器卡片「文件」入口：连接就绪后自动展开 SFTP 抽屉
+    tabManager.setSftpAutoOpenHandler(() => {
+      applyDrawerToggle('sftp', true);
     });
 
     // 绑定 new-tab-btn
@@ -164,8 +178,15 @@ function showTerminalSection(): void {
 }
 
 function bindBackToTerminalButtons(): void {
+  // 终端视图 → 返回服务器列表（tab 与 WebSocket 保持活跃，可随时切回）
+  document.getElementById('terminal-back-btn')?.addEventListener('click', () => {
+    showConnectionPage();
+  });
   document.getElementById('back-to-terminal-btn')?.addEventListener('click', () => {
     showTerminalSection();
+  });
+  document.getElementById('dashboard-toggle-btn')?.addEventListener('click', () => {
+    dashboardPanel.toggle();
   });
   document.getElementById('back-to-terminal-from-auth-btn')?.addEventListener('click', () => {
     showTerminalSection();
@@ -233,10 +254,19 @@ function initTerminalTab(): void {
   // 匿名模式直连：确保 AI Agent 入口隐藏
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
 
   // 隐藏标签栏（URL 直连模式只有一个标签，不需要标签栏）
   const tabBar = document.getElementById('tab-bar');
   if (tabBar) tabBar.style.display = 'none';
+
+  // 返回面板入口：分享页是独立窗口，提供回主面板的路径
+  const backLink = document.createElement('a');
+  backLink.href = '/';
+  backLink.className = 'share-back-link';
+  backLink.dataset.i18n = 'terminal.backToPanel';
+  backLink.textContent = t('terminal.backToPanel');
+  document.body.appendChild(backLink);
 
   const tm = getTabManager();
   const tab = tm.createTab(serverName, host && port ? { host, port } : undefined);
@@ -269,6 +299,8 @@ function showAuthSection(): void {
   // 匿名模式/退出登录：隐藏 AI Agent 按钮（桌面分段条与移动端菜单）
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
+  mobileShortcutsManager.setLoggedIn(false);
 
   if (!connectionForm) {
     connectionForm = new ConnectionForm({
@@ -297,6 +329,8 @@ function showUserSpace(user: {
   // Show agent toggle button for logged-in users
   document.getElementById('agent-toggle-btn')?.classList.remove('hidden');
   document.getElementById('mobile-agent-btn')?.classList.remove('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.remove('hidden');
+  mobileShortcutsManager.setLoggedIn(true);
 
   serverList = new ServerList(
     user,
@@ -311,8 +345,13 @@ function showUserSpace(user: {
       showAuthSection();
     },
     // onConnect 回调 — 在当前页面创建新标签
-    (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => {
-      showTerminalFromServer(wsUrl, serverName, hostInfo);
+    (
+      wsUrl: string,
+      serverName: string,
+      hostInfo?: SSHHostInfo,
+      opts?: { openSftpOnReady?: boolean }
+    ) => {
+      showTerminalFromServer(wsUrl, serverName, hostInfo, opts);
     }
   );
 }
@@ -320,6 +359,10 @@ function showUserSpace(user: {
 /** 显示连接页面（匿名 → auth-form，登录 → 服务器列表） */
 function showConnectionPage(): void {
   closeAllDrawers();
+  // 凭据页是主内容区视图之一，回主入口时必须一起收起（并清掉内存里的明文）。
+  credentialLibrary.hide();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
 
   // 如果还有活跃标签，不需要隐藏终端区域；只需要覆盖显示连接页面
   // 但为了简单起见，我们先切回对应的入口页面
@@ -382,11 +425,17 @@ function showTerminalWithNewTab(
 
   const tm = getTabManager();
   const tab = tm.createTab(displayLabel, hostInfo);
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.toggle('hidden', !isLoggedIn || sharedSessionMode);
 
   return { tab, terminal: tab.terminal };
 }
 
-function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SSHHostInfo): void {
+function showTerminalFromServer(
+  wsUrl: string,
+  serverName: string,
+  hostInfo?: SSHHostInfo,
+  opts?: { openSftpOnReady?: boolean }
+): void {
   if (!validateWsUrl(wsUrl)) {
     notify(t('server.invalidWs'), {
       title: t('server.connectFailed'),
@@ -395,7 +444,7 @@ function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SS
     return;
   }
 
-  const { terminal } = showTerminalWithNewTab(serverName, hostInfo);
+  const { tab, terminal } = showTerminalWithNewTab(serverName, hostInfo);
 
   terminal.mount();
 
@@ -405,6 +454,11 @@ function showTerminalFromServer(wsUrl: string, serverName: string, hostInfo?: SS
   const serverId = hostInfo?.serverId;
   const reconnectFactory = serverId ? () => requestSavedServerWebSocket(serverId) : undefined;
   terminal.connectWithWebSocket(ws, hostInfo, { reconnectFactory });
+
+  // 「文件」入口：SSH 就绪后自动展开 SFTP 抽屉（由 TabManager 消费标记）
+  if (opts?.openSftpOnReady) {
+    tabManager?.markSftpAutoOpen(tab.id);
+  }
 }
 
 function showSharedTerminal(claim: ClaimedShare): void {
@@ -416,6 +470,7 @@ function showSharedTerminal(claim: ClaimedShare): void {
   isLoggedIn = false;
   document.getElementById('agent-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-agent-btn')?.classList.add('hidden');
+  document.getElementById('mobile-shortcuts-terminal-btn')?.classList.add('hidden');
   document.getElementById('snippet-toggle-btn')?.classList.add('hidden');
   document.getElementById('mobile-snippets-btn')?.classList.add('hidden');
   const tabBar = document.getElementById('tab-bar');
@@ -460,6 +515,9 @@ function syncTerminalServerTools(): void {
   for (const id of ['terminal-status-btn', 'mobile-status-btn', 'terminal-docker-btn', 'mobile-docker-btn']) {
     document.getElementById(id)?.classList.toggle('hidden', !eligible);
   }
+  // 实时状态与这些按钮同一可见性条件：非自托管 / URL 直连 / 未保存服务器时停表，
+  // 状态栏胶囊随之消失（后端也不会为匿名连接开采样器）。
+  syncLiveStatus(eligible ? tab!.hostInfo!.serverId! : null, tab?.label || tab?.hostInfo?.host || '');
 }
 
 function openTerminalServerTool(tool: 'status' | 'docker'): void {
@@ -468,7 +526,7 @@ function openTerminalServerTool(tool: 'status' | 'docker'): void {
   if (!serverId) return; // 按钮仅在有已保存服务器连接时可见，此处仅作兑底
   const serverName = tab.label || tab.hostInfo?.host || '';
   if (tool === 'status') serverStatusPanel.open(serverId, serverName);
-  else dockerPanel.open(serverId, serverName);
+  else dockerPanel.open(serverId, serverName, () => tabManager?.getActiveTab()?.terminal ?? null);
 }
 
 function initTerminalServerTools(): void {
@@ -614,6 +672,31 @@ document.getElementById('ai-config-btn')?.addEventListener('click', () => {
   aiConfigPanel.show();
 });
 
+document.getElementById('credentials-btn')?.addEventListener('click', () => {
+  // 凭据页与内嵌 iframe 页互斥：先收起对方的视图再打开自己。
+  void credentialLibrary.show();
+  showMainView('credentials');
+  sidebarSetCurrent('credentials-btn');
+});
+
+// 凭据页内的「返回面板」按钮：收起页面并把高亮交还给服务器列表。
+document.getElementById('credentials-page-close')?.addEventListener('click', () => {
+  credentialLibrary.hide();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
+});
+// 「服务器列表」也要能从凭据页或内嵌页切回来。
+document.getElementById('sidebar-servers')?.addEventListener('click', () => {
+  credentialLibrary.hide();
+  closeEmbeddedPage();
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
+});
+
+document.getElementById('mobile-shortcuts-config-btn')?.addEventListener('click', () => {
+  mobileShortcutsManager.showModal();
+});
+
 const askAISelectionButton = document.getElementById('ask-ai-selection-btn');
 askAISelectionButton?.addEventListener('pointerdown', (event) => {
   // 阻止浮动入口的指针事件干扰终端拖拽状态。
@@ -638,6 +721,12 @@ document.getElementById('export-btn')?.addEventListener('click', () => {
 // ==================== 主题切换 ====================
 
 const CUSTOM_THEME_VALUE = '__custom__';
+// 企业蓝改版后的默认主题：淡蓝企业风（standard-light），终端保持深海军蓝。
+// 首选仍是用户显式保存的选择，仅在无选择或老默认迁移时落到这里
+const DEFAULT_BUILT_IN_THEME: BuiltInThemeName = 'standard-light';
+// 一次性品牌迁移标记：老默认（cyberpunk）用户首次访问时切到新默认；
+// 之后用户随时可以主动切回 cyberpunk，不再被迁移打扰
+const THEME_REBRAND_FLAG = 'cloudssh_theme_enterprise_v3';
 let themeSelectionRevision = 0;
 let userThemeSegmentedControl: LiquidSegmentedThemeControl | null = null;
 const themeSelectors = Array.from(
@@ -648,7 +737,7 @@ function handleThemeSelection(value: string): void {
   if (value === CUSTOM_THEME_VALUE) {
     if (!customThemeStore.hasThemes()) {
       // 未上传过自定义主题 -> 弹窗要求上传
-      const fallback = localStorage.getItem('cloudssh_theme_selection') || 'cyberpunk';
+      const fallback = localStorage.getItem('cloudssh_theme_selection') || DEFAULT_BUILT_IN_THEME;
       syncThemeSelectors(fallback);
       customThemeModal.show({
         onApplied: () => {
@@ -658,7 +747,7 @@ function handleThemeSelection(value: string): void {
         },
         onClosed: () => {
           if (!customThemeStore.hasThemes()) {
-            const cur = localStorage.getItem('cloudssh_theme_selection') || 'cyberpunk';
+            const cur = localStorage.getItem('cloudssh_theme_selection') || DEFAULT_BUILT_IN_THEME;
             syncThemeSelectors(cur);
           }
         },
@@ -751,7 +840,7 @@ globalImportThemeInput?.addEventListener('change', async (e) => {
 customThemeStore.subscribe(() => {
   const current = localStorage.getItem('cloudssh_theme_selection');
   if (current === CUSTOM_THEME_VALUE && !customThemeStore.hasThemes()) {
-    handleThemeSelection('cyberpunk');
+    handleThemeSelection(DEFAULT_BUILT_IN_THEME);
   }
 });
 
@@ -767,8 +856,19 @@ const LEGACY_THEME_MIGRATION: Record<string, BuiltInThemeName> = {
 
 /** 恢复主题（在 init 时调用，此时还没有终端实例，只设置 UI 变量） */
 function restoreTheme(): void {
-  const selection = localStorage.getItem('cloudssh_theme_selection');
+  let selection = localStorage.getItem('cloudssh_theme_selection');
   localStorage.removeItem('cloudssh_theme');
+
+  // 企业蓝改版一次性迁移：老默认 cyberpunk → 新默认（不覆盖显式的其他选择）
+  if (selection === 'cyberpunk' && !localStorage.getItem(THEME_REBRAND_FLAG)) {
+    try {
+      localStorage.setItem(THEME_REBRAND_FLAG, '1');
+    } catch {
+      /* 私密模式写入失败则跳过迁移，保持原选择 */
+    }
+    selection = DEFAULT_BUILT_IN_THEME;
+    localStorage.setItem('cloudssh_theme_selection', selection);
+  }
 
   // 旧版内置主题平滑迁移到当前最契合的内置主题
   if (selection && selection in LEGACY_THEME_MIGRATION) {
@@ -813,9 +913,9 @@ function restoreTheme(): void {
     }
   }
 
-  localStorage.setItem('cloudssh_theme_selection', 'cyberpunk');
-  applyBuiltInTheme('cyberpunk');
-  syncThemeSelectors('cyberpunk');
+  localStorage.setItem('cloudssh_theme_selection', DEFAULT_BUILT_IN_THEME);
+  applyBuiltInTheme(DEFAULT_BUILT_IN_THEME);
+  syncThemeSelectors(DEFAULT_BUILT_IN_THEME);
 }
 
 async function saveThemeToCloud(
@@ -977,6 +1077,93 @@ function consumeAdminSetupRoute(): void {
   openAdminHashGeneratorDialog();
 }
 
+// ==================== 内嵌功能页（自动化 / MCP / 账号设置） ====================
+// 点击侧边栏入口时不再整页跳转（会断开所有 SSH WebSocket），
+// 改为在主内容区内嵌 iframe 打开；关闭即返回，SSH 会话全程保活。
+const EMBED_PAGES: Record<string, { titleKey: TranslationKey; frameTitle: string }> = {
+  '/automation': { titleKey: 'auth.automation', frameTitle: 'CloudSSH Automation' },
+  '/mcp/settings': { titleKey: 'menu.mcp', frameTitle: 'CloudSSH MCP' },
+  '/account/settings': { titleKey: 'auth.adminAccountSettings', frameTitle: 'CloudSSH Account' },
+};
+
+const SIDEBAR_ITEM_IDS = [
+  'sidebar-servers',
+  'credentials-btn',
+  'menu-automation',
+  'menu-mcp',
+  'menu-account',
+];
+
+function sidebarSetCurrent(itemId: string | null): void {
+  for (const id of SIDEBAR_ITEM_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const active = id === itemId;
+    el.classList.toggle('sidebar-item--active', active);
+    if (active) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
+  }
+}
+
+/**
+ * 主内容区内的三个互斥视图：服务器列表 / 内嵌 iframe 页 / 凭据页。
+ * 统一在这里切换，避免各处各自 toggle 导致两个视图同时可见。
+ */
+type MainView = 'servers' | 'embedded' | 'credentials';
+
+function showMainView(view: MainView): void {
+  const main = document.querySelector('.user-space-main');
+  const embedded = document.getElementById('embedded-page-section');
+  const credentials = document.getElementById(CREDENTIALS_PAGE_SECTION_ID);
+
+  main?.classList.toggle('hidden', view !== 'servers');
+  embedded?.classList.toggle('hidden', view !== 'embedded');
+  embedded?.classList.toggle('flex', view === 'embedded');
+  credentials?.classList.toggle('hidden', view !== 'credentials');
+  credentials?.classList.toggle('flex', view === 'credentials');
+}
+
+function openEmbeddedPage(url: string): void {
+  const entry = EMBED_PAGES[url];
+  if (!entry) return;
+  const frame = document.getElementById('embedded-page-frame') as HTMLIFrameElement | null;
+  const title = document.getElementById('embedded-page-title');
+  if (!frame || !title) return;
+  title.textContent = t(entry.titleKey);
+  frame.title = entry.frameTitle;
+  if (frame.dataset.src !== url) {
+    frame.dataset.src = url;
+    frame.src = url;
+  }
+  // 先收干净凭据页（明文不能留在后台 DOM 里），再切到内嵌页——
+  // hide() 只清自身状态，视图互斥由 showMainView() 负责。
+  credentialLibrary.hide();
+  showMainView('embedded');
+  sidebarSetCurrent(
+    url === '/automation' ? 'menu-automation' : url === '/mcp/settings' ? 'menu-mcp' : 'menu-account'
+  );
+}
+
+function closeEmbeddedPage(): void {
+  const section = document.getElementById('embedded-page-section');
+  if (!section || section.classList.contains('hidden')) return;
+  showMainView('servers');
+  sidebarSetCurrent('sidebar-servers');
+}
+
+function bindEmbeddedPageNav(): void {
+  document.getElementById('embedded-page-close')?.addEventListener('click', closeEmbeddedPage);
+  for (const url of Object.keys(EMBED_PAGES)) {
+    const link = document.querySelector<HTMLAnchorElement>(`#user-space-section a.sidebar-item[href="${url}"]`);
+    link?.addEventListener('click', (event) => {
+      // 中键 / 修饰键点击保留浏览器默认行为（新标签打开独立页）
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openEmbeddedPage(url);
+    });
+  }
+}
+
 async function init(): Promise<void> {
   initI18n();
   // PWA：仅在安全上下文（HTTPS 或本机）注册 Service Worker，失败时静默降级。
@@ -987,6 +1174,7 @@ async function init(): Promise<void> {
   initUserSpaceMobileMenu();
   initServerPaginationBreakpoints();
   bindBackToTerminalButtons();
+  bindEmbeddedPageNav();
   initPointerSpecularTracking();
   const userSegmentedContainer = document.getElementById('user-theme-segmented-container');
   const userSelect = document.getElementById('user-theme-selector') as HTMLSelectElement | null;
@@ -1037,13 +1225,20 @@ async function init(): Promise<void> {
   });
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && statusDrawer.isOpen()) {
+      // 实时状态抽屉是覆盖层：Esc 先收它，再轮到左侧三大抽屉的状态同步。
+      statusDrawer.hide();
+      return;
+    }
     if (e.key === 'Escape') {
       setTimeout(() => syncDrawerSegmentedControl(), 50);
     }
   });
   mobileTerminalController.start();
   initServerStatusPanel();
+  initLiveStatus();
   initDockerPanel();
+  initBatchPanel();
   initTerminalServerTools();
   void fetch('/api/config').then(async (response) => {
     if (!response.ok) return;
@@ -1054,14 +1249,15 @@ async function init(): Promise<void> {
   onLocaleChange(() => {
     if (localStorage.getItem('cloudssh_imported_theme')) ensureCustomOption();
     tabManager?.refreshTranslations();
+    // 内嵌功能页标题随语言刷新（JS 设置的 textContent 不在 data-i18n 体系内）
+    const openFrame = document.getElementById('embedded-page-frame') as HTMLIFrameElement | null;
+    if (openFrame?.dataset.src) {
+      const entry = EMBED_PAGES[openFrame.dataset.src];
+      if (entry) document.getElementById('embedded-page-title')!.textContent = t(entry.titleKey);
+    }
   });
   const initialThemeSelection = localStorage.getItem('cloudssh_theme_selection');
   restoreTheme();
-  // 设置版权年份
-  const copyrightYearSpan = document.getElementById('copyright-year');
-  if (copyrightYearSpan) {
-    copyrightYearSpan.textContent = new Date().getFullYear().toString();
-  }
 
   const shareToken = takeShareTokenFromLocation();
   if (shareToken) {

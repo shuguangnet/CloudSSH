@@ -35,6 +35,7 @@ tests/
 ├── terminal-shortcuts.test.ts     # 终端快捷键（Cmd+F 搜索、Cmd+K 清屏）
 ├── terminal-size.test.ts          # 终端尺寸归一化与范围越界校验
 ├── terminal-status.test.ts        # SSH 状态事件翻译
+├── status-view.test.ts            # 服务器状态指标/速率/时长的字节与百分比格式化
 ├── terminal-text.test.ts          # 终端文本处理
 ├── theme.test.ts                  # 内置/自定义主题
 └── README.md
@@ -56,6 +57,10 @@ pnpm run test:coverage
 
 # 监听模式
 pnpm test --watch
+
+# 自定义 reporter（如 dot / json / junit；注意：新版 vitest 已无 `basic` reporter，
+# `--reporter=basic` 会报 "Reporter [basic] doesn't exist"，可用 dot 替代）
+pnpm test -- --reporter=dot
 
 # 安装并运行 Chromium E2E 与 axe 无障碍检查
 pnpm exec playwright install chromium
@@ -83,13 +88,14 @@ pnpm run verify
 
 ### Worker 与安全边界
 
-- 滑块验证码：挑战 HMAC 签名、TTL/单次使用、轨迹校验与登录门控顺序
+- 图片验证码：挑战 HMAC 签名、答案摘要恒时比对、TTL/单次使用与登录门控顺序
 - Origin 检查、端口范围、连接令牌和错误信息边界
 - IPv4/IPv6 保留地址、DoH 解析与 DNS rebinding 防护
 - Agent 危险命令拦截、确认规则和 SSRF URL 校验
 - 主机密钥信任：首见指纹确认、更换指纹阻断与路由作用域隔离
 - 键盘交互认证、OS 检测、跳板链、SFTP 上传冲突、分享会话策略
 - UserDB 服务器标签/片段迁移、规范化、序列化、更新与隔离
+- 可复用凭据库：密钥正文不回显、AES-GCM 静态加密、按引用建立 SSH 链、类型不符/引用悬空一律 409（不静默回退）、被引用时删除保护、更新时留空保留原密文、输入校验与迁移幂等，以及存量内嵌凭据的向后兼容
 - AI 模型代理安全：同 Base URL 强绑定免密拉取、跨地址凭据外带拦截（Credential Exfiltration）、CSRF Origin 防护与敏感 Token 脱敏
 - Responses 原生无状态 Agent：HTTP/SSE 跨 chunk 与 CRLF、强制无状态（store: false）、原生输出项与通用 reasoning 节点回传、call_id 配对、执行事实日志（ExecutionJournal）、严格本地参数校验、停止/抢占/重置/编辑分支、原子预算检查点、任务相关性服务器记忆与 usage
 - 流中断/incomplete 不执行残缺工具、不泄露 reasoning；新任务先等旧 exec 清理，不自动重放已执行命令
@@ -100,6 +106,7 @@ pnpm run verify
 - 终端多标签：双击内联重命名（空值还原）、右键上下文菜单（重命名/克隆会话/关闭其他/关闭）与 document click 防泄漏
 - 终端快捷键适配：macOS `Cmd+F` 搜索、`Cmd+K` / `Ctrl+Shift+K` 清屏且不干扰 Shell 原生 `Ctrl+K`
 - 命令片段库：实时模糊搜索、一键复制到剪贴板与 `{{var}}` 动态参数占位符弹窗录入
+- 凭据库：按认证方式过滤凭据、新建/编辑时密钥不回显（需点「显示」才按需取回）、明文回显的留痕与解密失败分支、被引用凭据的 409 文案透传，以及服务器表单「直接填写 / 从凭据库选择」两种来源切换与 `credential_id` 提交
 - SFTP 生产力：路径面包屑分级导航、表头多维排序（文件名/大小/时间）、新建 0 字节文件与 CodeMirror 在线编辑联动
 - SFTP 单选、Cmd/Ctrl 多选、Shift 连选和全选
 - Agent 终端选区附件、问题组合、快捷诊断 Prompt 气泡（Chips）和非授权安全边界
@@ -117,7 +124,7 @@ pnpm run verify
 - 多标签操作：双击内联重命名、空值与失焦恢复、右键菜单项与外部点击关闭
 - Agent 终端选区附件与快捷诊断 Prompt 气泡点击填入
 - Responses 前端任务生命周期：正文结束继续运行、run_end 才结束、requestId 隔离过期帧、中文/繁中/英文错误与留存提示
-- 终端选区复制与焦点恢复
+- 终端选区复制与焦点恢复（`terminal-clipboard.spec.ts`，Chromium + WebKit）：鼠标选区松手自动复制、bracketed paste、旧版 execCommand 回退与焦点恢复；移动端长按 350ms 进入选区 + 触觉反馈、浮动操作条「复制/全选/取消」单击即复制、长按判定期间滑动仍归滚动、触屏压制原生长按菜单。右键粘贴为桌面专有语义，在移动端项目下 skip
 - 认证挑战对话框、iOS 输入法、移动端后台连接恢复与分享会话领取
 - SFTP 覆盖确认、路径面包屑、表头排序、新建文件、主题样式与 UI 回归
 - 终端抽屉分段切换器：桌面端胶囊轮廓与可辨识边缘、双边异步物理弹簧滑块位移、PC 隐藏移动端更多操作按钮、三大抽屉宽度统一、匿名模式隐藏 AI Agent（display: none）与登录同步解锁
@@ -126,10 +133,11 @@ pnpm run verify
 - 终端焦点报告（`terminal-focus-report.spec.ts`，Chromium + WebKit）：真实 Ctrl/Alt 按钮与焦点切换、DECSET 1004、Ctrl+B/方向键、bracketed paste、Shell/连接门控及 iOS IME 回退/去重
 - UI 与样式回归：Liquid Glass 下 AI 模型下拉面板与设置面板滚动能力（overflow 简写防回归）、窄视口弹窗横向溢出消除、主题化滚动条兜底与 .no-scrollbar 样式
 - AI 模型下拉选择（Combobox 展开、选项切换、清空、免密拉取与浅色/暗色主题自适应切换）
+- 凭据管理（`credentials.spec.ts`）：侧边栏入口把凭据页作为主内容区独立视图打开（导航高亮 / 返回复位）、默认只展示列表、点「显示」才走 `POST /reveal` 取回明文并可复制、收起表单清除明文、取回失败提示、新建/编辑/删除请求形状、删除被引用凭据的 409 冲突文案，以及服务器表单凭据选择器的认证方式过滤
 
 ## 当前限制
 
-- Playwright 的完整界面与无障碍回归主要运行 Chromium；认证挑战、iOS 输入法、移动端后台连接恢复、SFTP 面板操作、终端触摸滚轮和焦点报告另在 WebKit 设备项目中执行。Firefox 尚未纳入当前质量门禁。
+- Playwright 的完整界面与无障碍回归主要运行 Chromium；认证挑战、iOS 输入法、移动端后台连接恢复、SFTP 面板操作、终端触摸滚轮、终端选区复制和焦点报告另在 WebKit 设备项目中执行。Firefox 尚未纳入当前质量门禁。
 - 浏览器 E2E 主要通过 mock API 验证前端行为，尚未连接真实 OpenSSH/Dropbear 和 SFTP 服务。
 - SSHSessionDO、SSH 会话状态机、SFTP 数据流和 AgentCore 等运行态模块的覆盖率仍偏低。
 - 新增协议状态、WebSocket 消息或安全边界时，应优先补充运行时错误、取消、超时和畸形输入测试，而不仅验证成功路径。

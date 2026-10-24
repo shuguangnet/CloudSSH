@@ -6,7 +6,8 @@ import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { hostFilesAvailable, openHostFileBrowser } from './host-file-browser';
 import { loadKnownFingerprint } from './known-hosts';
 import { parsePort } from './port';
-import { createSliderCaptcha, type SliderCaptchaWidget } from './slider-captcha';
+import { createImageCaptcha, type ImageCaptchaWidget } from './image-captcha';
+import { createTurnstileWidget, type TurnstileWidget } from './turnstile';
 import { stretchAdminPassword } from './password-stretch';
 import { populateRegionSelect } from './regions';
 import type { TabManager } from './tab-manager';
@@ -72,13 +73,15 @@ export interface ConnectionFormOptions {
 
 export class ConnectionForm {
   private options: ConnectionFormOptions;
-  /** 滑块验证码是否参与管理员密码登录（/api/config 下发） */
+  /** 图片验证码是否参与管理员密码登录（/api/config 下发） */
   private captchaEnabled = false;
+  private turnstileSiteKey: string | null = null;
+  private adminDialogTurnstile: TurnstileWidget | null = null;
   /** 密码模式下的浏览器预拉伸参数（/api/config 公开下发）；null = 非密码模式 */
   private adminUsernameRequired = false;
   private passwordAuthParams: { iterations: number; salt: string } | null = null;
-  /** 管理员登录对话框内的滑块组件实例（随对话框销毁） */
-  private adminDialogCaptcha: SliderCaptchaWidget | null = null;
+  /** 管理员登录对话框内的验证码组件实例（随对话框销毁） */
+  private adminDialogCaptcha: ImageCaptchaWidget | null = null;
 
   constructor(options: ConnectionFormOptions) {
     this.options = options;
@@ -97,6 +100,7 @@ export class ConnectionForm {
       const response = await fetch('/api/config');
       const config = (await response.json()) as {
         captchaEnabled?: boolean;
+        turnstileSiteKey?: string;
         githubAuthEnabled: boolean;
         githubAuthRequired: boolean;
         authMode?: 'password' | 'github' | 'anonymous';
@@ -106,6 +110,7 @@ export class ConnectionForm {
       };
       this.adminUsernameRequired = config.adminUsernameRequired === true;
       this.captchaEnabled = config.captchaEnabled === true;
+      this.turnstileSiteKey = typeof config.turnstileSiteKey === 'string' && config.turnstileSiteKey ? config.turnstileSiteKey : null;
 
       // 单管理员密码模式：登录入口整体替换（与 GitHub 入口互斥，不并列展示）。
       // 哈希损坏 → fail closed 错误面板（与后端坏哈希拒绝登录的语义对齐）
@@ -271,7 +276,7 @@ export class ConnectionForm {
     row.appendChild(entry);
   }
 
-  /** 管理员登录对话框：密码输入 + 滑块验证码，本地 PBKDF2 预拉伸后提交 */
+  /** 管理员登录对话框：密码输入 + 图片验证码，本地 PBKDF2 预拉伸后提交 */
   private async openAdminLoginDialog(): Promise<void> {
     if (!this.passwordAuthParams) return;
 
@@ -327,11 +332,12 @@ export class ConnectionForm {
     passwordInput.setAttribute('data-i18n-aria-label', 'auth.adminPasswordLabel');
     passwordInput.setAttribute('aria-label', t('auth.adminPasswordLabel'));
 
-    // 滑块验证码（captchaEnabled 时必验；目标 X 不回显，对齐由服务端登录时裁决）
+    // 人机验证：Turnstile（配置时优先，更强且免读图）或图片字符验证码。
+    // Turnstile 的 widget 必须渲染到已挂载节点，放到 showModal() 之后创建。
     const captchaContainer = document.createElement('div');
     captchaContainer.className = 'flex justify-center';
-    if (this.captchaEnabled) {
-      const widget = await createSliderCaptcha();
+    if (this.captchaEnabled && !this.turnstileSiteKey) {
+      const widget = await createImageCaptcha();
       this.adminDialogCaptcha = widget;
       captchaContainer.appendChild(widget.element);
     }
@@ -380,9 +386,16 @@ export class ConnectionForm {
         passwordInput.focus();
         return;
       }
-      // 密码模式下登录必验滑块（与后端 handlePasswordLogin 的必验分支对齐）
-      const captchaProof = this.captchaEnabled ? this.adminDialogCaptcha?.getProof() ?? null : null;
-      if (this.captchaEnabled && !captchaProof) {
+      // 人机验证凭据：Turnstile（配置时必验，取代图片验证码）或图片验证码
+      const turnstileToken = this.turnstileSiteKey ? this.adminDialogTurnstile?.getToken() ?? null : null;
+      if (this.turnstileSiteKey && !turnstileToken) {
+        // widget 加载失败（null）与未完成验证（有 widget 无 token）区分提示
+        showError(t(this.adminDialogTurnstile ? 'auth.turnstileRequired' : 'auth.turnstileLoadFailed'));
+        this.adminDialogTurnstile?.focus();
+        return;
+      }
+      const captchaProof = !this.turnstileSiteKey && this.captchaEnabled ? this.adminDialogCaptcha?.getProof() ?? null : null;
+      if (!this.turnstileSiteKey && this.captchaEnabled && !captchaProof) {
         showError(t('auth.captchaRequired'));
         return;
       }
@@ -405,6 +418,7 @@ export class ConnectionForm {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             key,
+            ...(turnstileToken ? { turnstileToken } : {}),
             ...(captchaProof ? { captcha: captchaProof } : {}),
             ...(this.adminUsernameRequired ? { username: usernameInput.value.trim() } : {}),
           }),
@@ -417,9 +431,12 @@ export class ConnectionForm {
           return;
         }
 
-        // 失败时重置滑块（挑战单次使用，旧挑战二次提交必被拒）
+        // 失败时重置换新图 / 重置 Turnstile（token 均单次使用，旧凭据二次提交必被拒）
         if (this.adminDialogCaptcha) {
           void this.adminDialogCaptcha.reset();
+        }
+        if (this.adminDialogTurnstile) {
+          this.adminDialogTurnstile.reset();
         }
 
         // 错误按状态码映射 i18n，不回显后端原文
@@ -430,7 +447,17 @@ export class ConnectionForm {
           const data = (await response.json().catch(() => ({}))) as { retryAfterSec?: number };
           showError(t('auth.adminLoginLocked', { seconds: data.retryAfterSec ?? 60 }));
         } else if (response.status === 403) {
-          showError(t('auth.adminLoginCaptchaFailed'));
+          const data = (await response.json().catch(() => ({}))) as { error?: string };
+          if (data.error === 'Forbidden origin') {
+            // 同源校验失败（非验证码问题）：与“验证码错误”区分，避免误导排查
+            showError(t('auth.adminLoginOriginForbidden'));
+          } else if (data.error === 'Turnstile verification failed') {
+            showError(t('auth.turnstileRequired'));
+            this.adminDialogTurnstile?.focus();
+          } else {
+            showError(t('auth.adminLoginCaptchaFailed'));
+            this.adminDialogCaptcha?.focus();
+          }
         } else if (response.status === 500) {
           showError(t('auth.adminHashInvalid'));
         } else if (response.status === 501) {
@@ -466,12 +493,24 @@ export class ConnectionForm {
 
     dialog.showModal();
     passwordInput.focus();
+
+    // Turnstile widget 在对话框挂载并打开后渲染（渲染到游离节点不会加载）；
+    // 加载失败时容器留空，提交阶段给出可读错误（服务端 fail closed）
+    if (this.turnstileSiteKey) {
+      try {
+        this.adminDialogTurnstile = await createTurnstileWidget(this.turnstileSiteKey, captchaContainer);
+      } catch {
+        /* 网络受限/脚本被拦：留空并在提交时提示 */
+      }
+    }
   }
 
-  /** 关闭并销毁管理员登录对话框（含滑块组件与密码字段残留清理） */
+  /** 关闭并销毁管理员登录对话框（含验证码组件与密码字段残留清理） */
   private closeAdminLoginDialog(): void {
     this.adminDialogCaptcha?.destroy();
     this.adminDialogCaptcha = null;
+    this.adminDialogTurnstile?.remove();
+    this.adminDialogTurnstile = null;
     document.getElementById('admin-login-dialog')?.remove();
   }
 
@@ -484,10 +523,7 @@ export class ConnectionForm {
         <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <div class="sm:col-span-3">
             <label for="host" class="block text-xs font-bold tracking-[0.1em] text-muted mb-2" data-i18n="auth.host">主机地址</label>
-            <div class="flex items-center">
-              <span class="text-muted mr-2">&gt;</span>
-               <input id="host" class="terminal-input text-[13px]" placeholder="192.168.1.1 or 2001:db8::1" type="text" required>
-            </div>
+            <input id="host" class="terminal-input text-[13px]" placeholder="192.168.1.1 or 2001:db8::1" type="text" required>
           </div>
           <div class="sm:col-span-1">
             <label for="port" class="block text-xs font-bold tracking-[0.1em] text-muted mb-2" data-i18n="auth.port">端口</label>

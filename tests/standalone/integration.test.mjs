@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { request } from 'node:http';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
@@ -52,7 +53,31 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal(config.mcpEnabled, true); assert.equal(config.githubAuthRequired, true);
     assert.equal(config.captchaEnabled, true);
     const key = pbkdf2Sync(password, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
-    // 滑块负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
+    // 反代域名部署（如 https://panel.example.com → Caddy → 本服务）：Origin 与请求
+    // 实际 Host 同宿主必须放行；跨站（Origin 与 Host 均不匹配）仍拒。
+    // 注意 fetch 的 Host 头由 Node 按 URL 生成，故经由显式 Host 头直接向 base 发请求。
+    // fetch 规范将 Host 列为 forbidden header（undici 会丢弃自定义 Host），
+    // 故用 node:http 原生请求精确模拟反代转发（Caddy/Nginx 转发时保留上游 Host）。
+    const rawPost = (hostHeader, origin, xfh) => new Promise((resolve, reject) => {
+      const payload = JSON.stringify({ key, username: 'admin', captcha: proofForRaw });
+      const target = new URL(base);
+      const req = request({ hostname: target.hostname, port: Number(target.port), path: '/api/auth/password/login', method: 'POST', headers: { Host: hostHeader, Origin: origin, 'X-Forwarded-Host': xfh || '', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject); req.end(payload);
+    });
+    const proofForRaw = await solveCaptcha(base);
+    assert.equal(await rawPost('panel-proxy.example', 'https://panel-proxy.example'), 200, '反代同宿主：同源判定放行，正确凭据可完整登录（设置会话）');
+    assert.equal(await rawPost('panel-proxy.example', 'https://evil.example'), 403, '跨站 Origin：Host 是面板地址但 Origin 是攻击者域 → 拒');
+    // CDN 中转反代把 Host 改写为上游地址，但保留 X-Forwarded-Host：
+    const proofXfh = await solveCaptcha(base);
+    const rawPostXfh = (hostHeader, origin, xfh) => new Promise((resolve, reject) => {
+      const payload = JSON.stringify({ key, username: 'admin', captcha: proofXfh });
+      const target = new URL(base);
+      const req = request({ hostname: target.hostname, port: Number(target.port), path: '/api/auth/password/login', method: 'POST', headers: { Host: hostHeader, Origin: origin, 'X-Forwarded-Host': xfh, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject); req.end(payload);
+    });
+    assert.equal(await rawPostXfh(new URL(base).host, 'https://ssh-cdn.example', 'ssh-cdn.example'), 200, 'CDN 中转：Host 被改写为上游但 X-Forwarded-Host 匹配 → 完整登录');
+    assert.equal(await rawPostXfh(new URL(base).host, 'https://evil.example', 'ssh-cdn.example'), 403, 'CDN 中转：Origin 与 X-Forwarded-Host 均不匹配 → 拒');
+    // 验证码负路径：缺失证明 → 403（先于节流与密码比对，不泄露更多信息）
     const noCaptcha = await fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ key, username: 'admin' }) });
     assert.equal(noCaptcha.status, 403);
     // 挑战单次使用：同一证明重放 → 403
@@ -74,33 +99,96 @@ test('native panel and real MCP client enforce authentication, persistence and r
     assert.equal((await api('/api/mcp/tokens', 'POST', { ...settings, server_ids: [99999] })).status, 400);
     const created = await api('/api/mcp/tokens', 'POST', settings); assert.equal(created.status, 201);
     const token = await created.json();
-    if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') await t.test('browser settings create and revoke tokens under CSP in three languages', async () => {
+    // 独立功能页：data-page 驱动左侧栏注入 + CSP 允许同源 iframe 嵌入（主面板保活 SSH）
+    for (const [path, page_] of [['/automation', 'automation'], ['/mcp/settings', 'mcp'], ['/account/settings', 'account']]) {
+      const html = await api(path);
+      assert.equal(html.status, 200, `${path} 登录态可访问`);
+      assert.match(html.headers.get('content-security-policy') || '', /frame-ancestors 'self'/, `${path} CSP 允许同源嵌入`);
+      assert.match(await html.text(), new RegExp(`data-page="${page_}"`), `${path} 标注 data-page`);
+    }
+    if (process.env.SELF_HOSTED_BROWSER_TESTS === '1') await t.test('browser settings create, edit, disable, batch delete and purge tokens under CSP', async () => {
       const browser = await chromium.launch();
       try {
         const context = await browser.newContext();
         const [name, ...value] = cookie.split('=');
         await context.addCookies([{ name, value: value.join('='), url: base }]);
         const page = await context.newPage();
+        page.on('dialog', (dialog) => dialog.accept()); // 撤销/删除确认框自动接受
         const errors = []; page.on('pageerror', (error) => errors.push(error.message));
         await page.goto(`${base}/mcp/settings`);
+        // 全选/取消联动服务器复选框与计数
+        await page.locator('#select-all').check();
+        assert.equal(await page.locator('input[name=server]').first().isChecked(), true);
+        await page.locator('#select-all').uncheck();
+        assert.equal(await page.locator('input[name=server]').first().isChecked(), false);
         await page.locator('input[name=server]').first().check();
         await page.locator('#name').fill('browser agent');
         await page.locator('#create-token button').click();
         await page.locator('#created').waitFor({ state: 'visible' });
-        assert.match(await page.locator('#token').inputValue(), /^cssh_/);
+        const browserToken = await page.locator('#token').inputValue();
+        assert.match(browserToken, /^cssh_/);
         for (const locale of ['zh-CN', 'zh-TW', 'en-US']) {
           await page.locator('#language').selectOption(locale);
           assert.equal(await page.locator('html').getAttribute('lang'), locale);
         }
         const row = page.locator('#tokens tr').filter({ hasText: 'browser agent' });
-        await row.getByRole('button', { name: 'Revoke' }).click();
-        await row.getByText('Revoked', { exact: true }).waitFor();
+        // 修改：弹窗预填当前主机与权限，保存后列表同步（英文界面下的按钮名）
+        await row.getByRole('button', { name: 'Edit' }).click();
+        await page.locator('#token-edit[open]').waitFor();
+        assert.equal(await page.locator('#edit-name').inputValue(), 'browser agent');
+        assert.equal(await page.locator('#edit-servers input:checked').count(), 1);
+        assert.equal(await page.locator('input[name=edit-scope][value=read]').isChecked(), true);
+        await page.locator('#edit-name').fill('edited agent');
+        await page.locator('input[name=edit-scope][value=write]').check();
+        await page.locator('#edit-token button[type=submit]').click();
+        await page.locator('#token-edit[open]').waitFor({ state: 'detached' });
+        const edited = page.locator('#tokens tr').filter({ hasText: 'edited agent' });
+        await edited.waitFor();
+        assert.equal(await edited.locator('td').nth(3).textContent(), 'read, write');
+        // 表单校验：缺少权限时留在弹窗内提示
+        await edited.getByRole('button', { name: 'Edit' }).click();
+        await page.locator('input[name=edit-scope]:checked').first().uncheck();
+        await page.locator('input[name=edit-scope]:checked').first().uncheck();
+        await page.locator('#edit-token button[type=submit]').click();
+        await page.locator('#edit-message').getByText('Select servers and permissions').waitFor();
+        await page.locator('#edit-cancel').click();
+        await page.locator('#token-edit[open]').waitFor({ state: 'detached' });
+        // 临时禁用：徽章切换、令牌立即失效，重新启用后恢复
+        await edited.getByRole('button', { name: 'Disable' }).click();
+        await edited.locator('.badge', { hasText: 'Disabled' }).waitFor();
+        assert.equal((await fetch(`${base}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${browserToken}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_servers', arguments: {} } }) })).status, 401, '禁用令牌立即失效');
+        await edited.getByRole('button', { name: 'Enable' }).click();
+        await edited.locator('.badge', { hasText: 'Active' }).waitFor();
+        // 调用审计：真实调用一次后可在页面上清理
+        await fetch(`${base}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${browserToken}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_servers', arguments: {} } }) });
+        await page.reload();
+        await page.locator('#audit tr td').first().waitFor();
+        await page.locator('#audit-purge').click();
+        await page.locator('#audit tr .empty').waitFor();
+        // 批量删除：活跃令牌被跳过且按钮禁用，撤销后可一键清理
+        await page.locator('#token-select-all').check();
+        assert.equal(await page.locator('#token-batch-delete').isEnabled(), true);
+        await page.locator('#token-batch-delete').click();
+        await page.locator('#message').getByText('Deleted 0, skipped 2').waitFor(); // 仍有效的记录不会被误删
+        await edited.getByRole('button', { name: 'Revoke' }).click();
+        await edited.locator('.badge', { hasText: 'Revoked' }).waitFor();
+        await page.locator('#token-select-all').check();
+        await page.locator('#token-batch-delete').click();
+        await edited.waitFor({ state: 'detached' });
         assert.deepEqual(errors, []);
       } finally { await browser.close(); }
     });
     client = new Client({ name: 'integration', version: '1' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token.token}` } } }));
-    const tools = await client.listTools(); assert.deepEqual(tools.tools.map((item) => item.name).sort(), ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']);
+    const tools = await client.listTools(); // 数据库工具只在配置了 databaseStore 时才注册；本集成测试走完整
+  // server.mjs，因此它们会出现。基础 SSH 工具必须一个不少。
+  const toolNames = tools.tools.map((item) => item.name).sort();
+  for (const required of ['download_file', 'get_server_info', 'list_files', 'list_servers', 'list_snippets', 'read_file']) {
+    assert.ok(toolNames.includes(required), `缺少工具 ${required}`);
+  }
+  // read scope 的令牌只能看到读类数据库工具，看不到 db_exec。
+  assert.ok(toolNames.includes('db_query'));
+  assert.ok(!toolNames.includes('db_exec'));
     const listed = JSON.parse((await client.callTool({ name: 'list_servers', arguments: {} })).content[0].text);
     assert.equal(listed.servers[0].id, id);
     assert.equal(JSON.stringify(listed).includes('fixture-only'), false);
@@ -111,9 +199,22 @@ test('native panel and real MCP client enforce authentication, persistence and r
     await stop(child); child = await startPanel(directory, port);
     assert.equal((await api('/api/mcp/tokens')).status, 200);
     assert.equal((await (await api('/api/servers')).json())[0].id, id);
-    assert.ok((await (await api('/api/mcp/audit')).json()).some((item) => item.status === 'denied'));
+    const allAudit = await (await api('/api/mcp/audit')).json();
+    assert.ok(allAudit.some((item) => item.status === 'denied'));
+    // 审计筛选参数：非法值 400，合法组合生效
+    assert.equal((await api('/api/mcp/audit?tool=rm -rf')).status, 400);
+    assert.equal((await api('/api/mcp/audit?status=weird')).status, 400);
+    assert.equal((await api(`/api/mcp/audit?token_id=${token.id}&status=denied`)).status, 200);
+    const filteredAudit = await (await api(`/api/mcp/audit?token_id=${token.id}&status=denied`)).json();
+    assert.ok(filteredAudit.length > 0 && filteredAudit.every((item) => item.token_id === token.id && item.status === 'denied'));
+    // 撤销（幂等保留记录）与删除记录（purge）：活跃令牌 purge → 409
+    assert.equal((await api(`/api/mcp/tokens/${token.id}?purge=1`, 'DELETE')).status, 409);
     assert.equal((await api(`/api/mcp/tokens/${token.id}`, 'DELETE')).status, 200);
     assert.equal((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token.token}` } })).status, 401);
+    const purged = await api(`/api/mcp/tokens/${token.id}?purge=1`, 'DELETE');
+    assert.equal(purged.status, 200); assert.equal((await purged.json()).deleted, true);
+    assert.equal((await (await api('/api/mcp/tokens')).json()).some((row) => row.id === token.id), false);
+    assert.ok((await (await api(`/api/mcp/audit?token_id=${token.id}`)).json()).length > 0, '审计记录在令牌删除后保留');
     assert.equal((await fetch(`${base}/mcp`, { headers: { Origin: 'https://attacker.example' } })).status, 403);
     assert.equal((await api('/mcp/settings')).status, 200);
   } finally { await client?.close(); await stop(child); rmSync(directory, { recursive: true, force: true }); }
@@ -273,20 +374,10 @@ test('administrator account migration, account/password changes, invalidation an
     const config = await (await fetch(`${base}/api/config`)).json();
     return pbkdf2Sync(value, Buffer.from(config.passwordAuth.salt, 'base64url'), config.passwordAuth.iterations, 32, 'sha256').toString('base64url');
   };
-  /** 真实拖拽管理员登录对话框内的滑块，对齐 CAPTCHA_MODE=test 固定目标（120,48） */
-  const dragCaptchaToTestTarget = async (page, dialog) => {
-    await dialog.locator('.slider-captcha__piece').waitFor();
-    const scale = await dialog.locator('.slider-captcha__canvas').evaluate((el) => el.clientWidth / 300);
-    const thumb = dialog.locator('.slider-captcha__thumb');
-    const box = await thumb.boundingBox();
-    const dx = (120 - 10) * scale;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    for (let i = 1; i <= 8; i++) {
-      await page.mouse.move(box.x + box.width / 2 + (dx * i) / 8, box.y + box.height / 2, { steps: 2 });
-      await page.waitForTimeout(35);
-    }
-    await page.mouse.up();
+  /** 在管理员登录对话框内填写 CAPTCHA_MODE=test 固定答案（TESTS） */
+  const fillCaptchaTestAnswer = async (page, dialog) => {
+    await dialog.locator('.image-captcha__figure svg').waitFor();
+    await dialog.locator('.image-captcha__input').fill('TESTS');
   };
   const login = async (username, key) => fetch(`${base}/api/auth/password/login`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ username, key, captcha: await solveCaptcha(base) }) });
   const cookieOf = (response) => response.headers.getSetCookie().find(value => value.startsWith('session=')).split(';')[0];
@@ -348,8 +439,8 @@ test('administrator account migration, account/password changes, invalidation an
         const dialog = page.locator('#admin-login-dialog');
         await dialog.locator('input[name=username]').fill('operator2');
         await dialog.locator('input[type=password]').fill(newPassword);
-        // 密码模式登录对话框内嵌滑块验证码：真实拖拽对齐固定目标后才能提交
-        await dragCaptchaToTestTarget(page, dialog);
+        // 密码模式登录对话框内嵌图片验证码：填固定答案后才能提交
+        await fillCaptchaTestAnswer(page, dialog);
         await dialog.locator('.auth-challenge-dialog__button--submit').click();
         // 登录成功 → reload 进入用户空间；账号设置入口在左侧导航栏常驻展示
         await page.locator('#user-space-section').waitFor({ state: 'visible' });

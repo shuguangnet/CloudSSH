@@ -14,7 +14,7 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 
-import { buildStatusScript, parseStatusOutput } from '../../standalone/status.mjs';
+import { buildStatusScript, buildLiveTickScript, buildLiveFirstFrameScript, parseStatusOutput } from '../../standalone/status-script.mjs';
 
 const FIXTURE = [
   'HOSTNAME:dm.us.933999.xyz',
@@ -49,6 +49,17 @@ test('status script is POSIX-safe and free of JS interpolation', () => {
   assert.ok(script.includes('$(hostname'));
   assert.ok(script.includes('$PRETTY_NAME'));
   assert.ok(script.includes('sleep 1'));
+
+  // The always-on live tick must not spawn processes per tick and must not
+  // sleep: it is the difference between a chatty probe and a cheap one.
+  const tick = buildLiveTickScript();
+  assert.ok(!/\$\{/.test(tick), 'no JS template interpolation');
+  assert.ok(tick.includes('/proc/stat') && tick.includes('/proc/net/dev') && tick.includes('/proc/meminfo'));
+  assert.ok(!tick.includes('sleep'), 'live ticks must not sleep');
+  assert.ok(!tick.includes('df ') && !tick.includes('hostname'), 'live ticks must avoid process spawns');
+  // The first live frame still needs the two-sample window to report a rate.
+  const first = buildLiveFirstFrameScript();
+  assert.ok(first.includes('sleep 1') && first.includes('STAT2') && first.includes('df -B1'));
 });
 
 test('parseStatusOutput derives metrics from delta samples', () => {
@@ -249,6 +260,20 @@ test('status API collects live metrics over a real SSH connection', {
     assert.equal(second.status, 200);
     assert.ok((await second.json()).collected_at >= status.collected_at);
 
+    // Regression (db069fc): a client that aborts mid-collection (the exact
+    // behaviour of the 5s poller replacing an in-flight request) must not
+    // poison the cooldown — the immediate replacement request succeeds
+    // instead of tripping "Too many status requests".
+    await delay(1600);
+    const aborter = new AbortController();
+    const inflight = fetch(`${base}/api/automation/status/${id}`, { signal: aborter.signal, headers: { Cookie: cookie, Origin: base } });
+    await delay(400); // SSH collection is underway (handshake + sleep-1 sampling)
+    aborter.abort();
+    await inflight.catch(() => {}); // client disconnected mid-flight
+    const replacement = await api(`/api/automation/status/${id}`);
+    if (replacement.status !== 200) throw new Error(`replacement after abort got ${replacement.status}: ${JSON.stringify(await replacement.json().catch(() => ({})))}`);
+    assert.equal(replacement.status, 200);
+
     // Regression (real SSH): cron exec timeout must convert seconds → ms.
     const task = await api('/api/automation/cron', 'POST', { name: 'st', server_id: id, command: 'printf status-cron-ok', cron_expr: '0 4 * * *', timeout_seconds: 30, notify_on_failure: false, enabled: false });
     assert.equal(task.status, 201);
@@ -265,6 +290,48 @@ test('status API collects live metrics over a real SSH connection', {
     assert.equal(deploy.status, 200);
     const deployResult = await deploy.json();
     assert.equal(deployResult.ok, true, JSON.stringify(deployResult));
+
+    // ---------- live status stream (terminal status bar) ----------
+    // The live sampler is what makes the status bar update on its own, so this
+    // covers it against a real sshd: ownership guard, frames that advance
+    // without a second SSH authentication, and teardown when the viewer leaves.
+    assert.equal((await api(`/api/automation/status/live/${id}`)).status, 200);
+    const live = await (await api(`/api/automation/status/live/${id}?interval=2000`)).json();
+    assert.ok(['status', 'pending'].includes(live.type), JSON.stringify(live));
+    const controller = new AbortController();
+    const stream = await fetch(`${base}/api/automation/status/live/${id}/stream?interval=2000`, { headers: { Cookie: cookie, Origin: base }, signal: controller.signal });
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get('content-type'), /text\/event-stream/);
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let liveFrame = null;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const frame = JSON.parse(line.slice(6));
+        if (frame.type === 'status' && frame.hostname) { liveFrame = frame; break; }
+      }
+      if (liveFrame) break;
+    }
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    if (!liveFrame) throw new Error('live status stream produced no frame');
+    assert.equal(liveFrame.server_id, id);
+    assert.ok(liveFrame.uptime_seconds > 0);
+    assert.ok(liveFrame.memory.total_bytes > 1024 * 1024);
+    assert.ok(liveFrame.disk.total_bytes > 1024 * 1024);
+    assert.ok(liveFrame.cpu.cores >= 1);
+    // Live ticks are light: only the first frame pays the in-shell `sleep 1`.
+    assert.ok(liveFrame.latency_ms < 5000, `live frame should not pay the one-shot probe (${liveFrame.latency_ms}ms)`);
+    // A second server must not be readable through this route (ownership guard).
+    assert.equal((await api('/api/automation/status/live/999999')).status, 404);
   } finally {
     socket?.close(); await stop(panel); await stop(sshd); rmSync(directory, { recursive: true, force: true });
   }

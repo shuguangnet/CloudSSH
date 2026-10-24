@@ -6,6 +6,7 @@ import {
   KEX_ALGORITHM_ECDH_NISTP256,
 } from '../ssh/algorithms';
 import { SSHAuth } from '../ssh/auth';
+import { bytesToBase64, base64ToBytes, isValidSnapshotPath } from '../snapshot-policy';
 import {
   type ChannelDataChunk,
   SSH_CHANNEL_DEFAULT_MAX_PACKET_SIZE,
@@ -34,6 +35,7 @@ import { SSHTransport } from '../ssh/transport';
 import type { Env } from '../types';
 import type { AgentTaskCheckpoint } from '../agent-task-schema';
 import { DetachedSessionBuffer } from './ssh-detached-buffer';
+import { TerminalOutputCoalescer } from './terminal-output-coalescer';
 import { KeyboardInteractiveAuthHandler, type PendingAuthChallenge } from './ssh-interactive-auth';
 import { parseIdleTimeout } from './idle-timeout';
 import { ShareAuditWriter } from './share-audit-writer';
@@ -78,6 +80,10 @@ import type { AgentMemoryProvider, UnifiedServerMemory } from './agent/types';
 import { DirectTcpipStream } from './direct-tcpip-stream';
 import { detectAndPersistRemoteOS } from './os-detect';
 import { SFTPHandler } from './sftp-handler';
+import { StreamingExecChannel, type StreamExecResult } from './streaming-exec-channel';
+
+/** Dispatch surface shared by captured (agent) and streaming (tar/search) exec channels. */
+type ExecChannelLike = AgentExecChannel | StreamingExecChannel;
 
 const LOCAL_WINDOW_ADJUST_THRESHOLD = 512 * 1024;
 const KEEPALIVE_REQUEST_NAME = new TextEncoder().encode('keepalive@openssh.com');
@@ -218,8 +224,14 @@ export class SSHSession {
 
   // Agent integration
   private terminalContext: TerminalContext = new TerminalContext();
+  /** 终端输出合并器：空闲首包立即转发，突发 8ms 窗口合并，降低浏览器端每消息开销 */
+  private readonly terminalOutputCoalescer = new TerminalOutputCoalescer((data) =>
+    this.deliverTerminalOutput(data)
+  );
+  /** 终端上下文专用流式解码器：{stream:true} 跨包保存 UTF-8 状态，禁止与其他解码点共用 */
+  private readonly terminalTextDecoder = new TextDecoder();
   private agentCore: AgentCore | null = null;
-  private activeExecChannels: Map<number, AgentExecChannel> = new Map();
+  private activeExecChannels: Map<number, ExecChannelLike> = new Map();
   private directTcpipStreams: Map<number, DirectTcpipStream> = new Map();
   private pendingDirectTcpip: Map<
     number,
@@ -2021,25 +2033,7 @@ export class SSHSession {
             await this.onShellReady();
           }
           const outputData = channel.handleChannelData(payload);
-          if (this.isDetached()) {
-            this.handleDetachedTerminalOutput(outputData, channel);
-          } else {
-            try {
-              this.ws.send(outputData);
-            } catch (e) {
-              this.sendDebug(
-                () => `Send shell output failed: ${e instanceof Error ? e.message : e}`
-              );
-            }
-            this.recordShareTerminalOutput(outputData);
-            this.queueLocalWindowAdjust(outputData.length, channel);
-          }
-          // Feed terminal context for Agent
-          try {
-            this.terminalContext.appendOutput(this.textDecoder.decode(outputData));
-          } catch {
-            /* 解码/追加失败不影响主会话，静默忽略 */
-          }
+          this.enqueueTerminalOutput(outputData);
         } else if (this.sftpHandler && channelID === this.sftpHandler.getChannelID()) {
           // SFTP channel data - forward to SFTP handler
           const sftpData = channel.handleChannelData(payload);
@@ -2081,19 +2075,7 @@ export class SSHSession {
             payload[offset + 3];
           offset += 4;
           const stderrData = payload.subarray(offset, offset + dataLen);
-          if (this.isDetached()) {
-            this.handleDetachedTerminalOutput(stderrData, channel);
-          } else {
-            try {
-              this.ws.send(stderrData);
-            } catch (e) {
-              this.sendDebug(
-                () => `Send stderr output failed: ${e instanceof Error ? e.message : e}`
-              );
-            }
-            this.recordShareTerminalOutput(stderrData);
-            this.queueLocalWindowAdjust(stderrData.length, channel);
-          }
+          this.enqueueTerminalOutput(stderrData);
         } else {
           // Exec channel extended data (stderr for Agent)
           const execCh = this.activeExecChannels.get(channelID);
@@ -2413,6 +2395,16 @@ export class SSHSession {
       case 'sftp_download':
         await this.sftpHandler.downloadFile(msg.path);
         break;
+      case 'sftp_download_dir':
+        await this.sftpHandler.downloadDirectory(msg.path || '.');
+        break;
+      case 'sftp_search':
+        await this.sftpHandler.searchFiles(
+          typeof msg.path === 'string' ? msg.path : '.',
+          typeof msg.pattern === 'string' ? msg.pattern : '',
+          typeof msg.maxDepth === 'number' ? msg.maxDepth : undefined
+        );
+        break;
       case 'sftp_edit_read':
         await this.sftpHandler.editReadFile(msg.path);
         break;
@@ -2446,6 +2438,9 @@ export class SSHSession {
         break;
       case 'sftp_rmdir':
         await this.sftpHandler.removeDirectory(msg.path);
+        break;
+      case 'sftp_snapshot_restore':
+        await this.handleSnapshotRestore(msg);
         break;
       case 'sftp_close':
         this.closeSFTPChannel();
@@ -2487,7 +2482,15 @@ export class SSHSession {
       },
       this.debugMode,
       (remotePath: string) => this.computeRemoteChecksum(remotePath),
-      this.config.transportType === 'cf_tunnel'
+      this.config.transportType === 'cf_tunnel',
+      (command, options) =>
+        this.streamExecCommand(command, {
+          onChunk: options.onChunk,
+          timeout: options.timeout,
+          signal: options.signal,
+          maxBytes: options.maxBytes,
+        }),
+      (path, content, kind, mtime) => this.saveSnapshot(path, content, kind, mtime)
     );
 
     const openMsg = sftpChannel.buildOpenSession(channelID);
@@ -2530,7 +2533,10 @@ export class SSHSession {
         return 'stat';
       case 'sftp_download':
       case 'sftp_download_cancel':
+      case 'sftp_download_dir':
         return 'download';
+      case 'sftp_search':
+        return 'search';
       case 'sftp_edit_read':
         return 'edit';
       case 'sftp_upload_start':
@@ -2545,6 +2551,8 @@ export class SSHSession {
         return 'mkdir';
       case 'sftp_rmdir':
         return 'rmdir';
+      case 'sftp_snapshot_restore':
+        return 'restore';
       default:
         return 'protocol';
     }
@@ -2553,7 +2561,7 @@ export class SSHSession {
   private async auditSFTPRequest(msg: Record<string, unknown>): Promise<boolean> {
     if (this.config.sessionPolicy?.source !== 'share') return true;
     const operation = this.getSFTPOperation(typeof msg.type === 'string' ? msg.type : undefined);
-    const auditable = new Set(['download', 'edit', 'upload', 'delete', 'rename', 'mkdir', 'rmdir']);
+    const auditable = new Set(['download', 'edit', 'upload', 'delete', 'rename', 'mkdir', 'rmdir', 'restore']);
     if (!auditable.has(operation)) return true;
     if (msg.type === 'sftp_upload_end') return true;
 
@@ -3237,7 +3245,7 @@ export class SSHSession {
   private async terminateExecChannelOnCaptureLimit(
     channelID: number,
     channel: SSHChannel,
-    execCh: AgentExecChannel
+    execCh: ExecChannelLike
   ): Promise<void> {
     this.sendDebug(`Exec channel ${channelID} capture limit exceeded — closing channel`);
     this.activeExecChannels.delete(channelID);
@@ -3258,6 +3266,94 @@ export class SSHSession {
       throw new Error('Headless SSH session is not authenticated');
     }
     return this.executeAgentCommand(command, timeout, signal);
+  }
+
+  /**
+   * 执行命令并以二进制块流式转发 stdout（不经过字符串解码，适用于 tar 等二进制流）。
+   * 调用方通过 onChunk 返回 false 或 maxBytes 触发中止：通道会被强制关闭，
+   * sshd 随之终止远端命令。stderr 以文本返回供错误提示。
+   */
+  async streamExecCommand(
+    command: string,
+    options: {
+      onChunk: (data: Uint8Array) => void;
+      timeout: number;
+      signal?: AbortSignal;
+      maxBytes?: number;
+    }
+  ): Promise<StreamExecResult> {
+    if (this.closed) throw new Error('SSH session is closed');
+    this.recordUserActivity();
+
+    const maxBytes = options.maxBytes ?? Infinity;
+    let received = 0;
+    let capped = false;
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel(this.channelMaxPacketSize);
+    this.channels.set(channelID, channel);
+
+    const execCh = new StreamingExecChannel(channelID, {
+      signal: options.signal,
+      onChunk: (data) => {
+        received += data.length;
+        if (!capped && received <= maxBytes) {
+          options.onChunk(data);
+          return true;
+        }
+        capped = true;
+        return false; // dispatcher 会关闭通道，远端命令被终止
+      },
+    });
+    this.activeExecChannels.set(channelID, execCh);
+
+    let execTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | undefined;
+    const openMsg = channel.buildOpenSession(channelID);
+    await this.sendEncrypted(openMsg);
+
+    try {
+      const opened = await this.waitForExecChannelOpen(execCh, channel, command);
+      if (!opened) return (await execCh.getClosedPromise()) as StreamExecResult;
+
+      await this.sendEncrypted(channel.buildExecRequest(command));
+
+      let aborted = false;
+      const result = await Promise.race([
+        execCh.getClosedPromise(),
+        new Promise<StreamExecResult>((_, reject) => {
+          execTimer = setTimeout(
+            () => reject(new Error(`Exec timeout after ${options.timeout}ms`)),
+            options.timeout
+          );
+          abortHandler = () => {
+            aborted = true;
+            if (execTimer !== null) clearTimeout(execTimer);
+            reject(new Error('Exec aborted'));
+          };
+          options.signal?.addEventListener('abort', abortHandler, { once: true });
+          if (options.signal?.aborted) abortHandler();
+        }),
+      ]);
+
+      if (!channel.isClosed()) {
+        try {
+          await this.sendEncrypted(channel.buildEof());
+          await this.sendEncrypted(channel.buildClose());
+        } catch {
+          // Channel may already be closed by server, ignore
+        }
+      }
+      if (aborted) execCh.resolveAborted();
+      return result;
+    } finally {
+      if (execTimer !== null) clearTimeout(execTimer);
+      if (abortHandler && options.signal) options.signal.removeEventListener('abort', abortHandler);
+      if (!channel.isClosed()) {
+        try { await this.sendEncrypted(channel.buildClose()); } catch { /* Session closing. */ }
+      }
+      this.activeExecChannels.delete(channelID);
+      this.channels.delete(channelID);
+    }
   }
 
   private async executeAgentCommand(
@@ -3342,7 +3438,7 @@ export class SSHSession {
   }
 
   private waitForExecChannelOpen(
-    execCh: AgentExecChannel,
+    execCh: Pick<ExecChannelLike, 'isOpenFailed' | 'isOpenConfirmed'>,
     channel: SSHChannel,
     command: string
   ): Promise<boolean> {
@@ -3415,6 +3511,104 @@ export class SSHSession {
     return null;
   }
 
+  /**
+   * 把远端旧内容交给 UserDBDO 留档（配置回滚）。
+   *
+   * 仅登录用户且为已保存服务器（有 serverId）时生效：
+   * 匿名会话与一次性分享会话不写快照——前者无归属，后者按安全策略
+   * 禁止任何持久化写入（对齐 allowSftp 之外的额外约束）。
+   */
+  private async saveSnapshot(
+    path: string,
+    content: Uint8Array,
+    kind: 'upload' | 'edit' | 'restore' | 'delete',
+    mtime: number
+  ): Promise<void> {
+    const env = this.env;
+    const uid = this.userId;
+    const gid = this.githubId;
+    const serverId = this.config.serverId;
+    if (!env || !uid || !gid || !serverId) return;
+    // 分享会话不落快照（分享的所有者审批不覆盖接收者的写入行为）。
+    if (this.config.sessionPolicy?.source === 'share') return;
+    try {
+      const stub = env.USER_DB.get(env.USER_DB.idFromName(gid));
+      await stub.fetch(
+        new Request('http://internal/internal/snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: Number(uid),
+            server_id: serverId,
+            path,
+            kind,
+            mtime,
+            content_base64: bytesToBase64(content),
+          }),
+        })
+      );
+    } catch {
+      /* 留档是可降级能力，失败不影响写入主流程 */
+    }
+  }
+
+  /**
+   * 执行回滚：从 UserDBDO 取出快照内容，写回远端目标路径。
+   *
+   * 安全边界：
+   * - 必须登录且为已保存服务器（与留档对称，匿名/分享会话不可用）；
+   * - 快照归属由 UserDBDO 二次校验（user_id + server_id 双向匹配），
+   *   前端传入的 snapshotId 无法越权读取他人快照；
+   * - 目标路径以快照中记录的 path 为准，不信任前端单独指定的路径；
+   * - 分享会话整体禁用（与 MCP/Agent 的 sessionPolicy 约束一致）。
+   */
+  private async handleSnapshotRestore(msg: any): Promise<void> {
+    if (!this.sftpHandler) {
+      this.sendSFTPError('restore', 'SFTP 未就绪');
+      return;
+    }
+    const env = this.env;
+    const uid = this.userId;
+    const gid = this.githubId;
+    const serverId = this.config.serverId;
+    if (!env || !uid || !gid || !serverId) {
+      this.sendSFTPError('restore', '回滚仅对已保存服务器且已登录的会话可用');
+      return;
+    }
+    if (this.config.sessionPolicy?.source === 'share') {
+      this.sendSFTPError('restore', '分享会话中不支持回滚');
+      return;
+    }
+    const snapshotId = Number(msg.snapshotId);
+    if (!Number.isSafeInteger(snapshotId) || snapshotId < 1) {
+      this.sendSFTPError('restore', '无效的快照编号');
+      return;
+    }
+
+    try {
+      const stub = env.USER_DB.get(env.USER_DB.idFromName(gid));
+      const res = await stub.fetch(
+        new Request(
+          `http://internal/internal/snapshots/content?user_id=${Number(uid)}` +
+          `&server_id=${serverId}&id=${snapshotId}`
+        )
+      );
+      if (!res.ok) {
+        this.sendSFTPError('restore', '快照不存在或无权访问');
+        return;
+      }
+      const body = (await res.json()) as { path?: string; content_base64?: string };
+      const content = base64ToBytes(body.content_base64);
+      if (!isValidSnapshotPath(body.path) || content === null) {
+        this.sendSFTPError('restore', '快照内容损坏');
+        return;
+      }
+      await this.sftpHandler.restoreSnapshot(body.path, content);
+    } catch (e) {
+      this.sendSFTPError('restore', '回滚失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   private sendAgentFrame(msg: any): void {
     try {
       if (this.ws.readyState === WebSocket.OPEN) {
@@ -3422,6 +3616,42 @@ export class SSHSession {
       }
     } catch {
       /* WebSocket 已关闭，无法送达 */
+    }
+  }
+
+  /**
+   * 终端输出入口（shell CHANNEL_DATA 与 stderr EXTENDED_DATA 共用）：
+   * 经合并器转发。分离态、分享审计、窗口归还、Agent 上下文都在
+   * deliverTerminalOutput 冲刷时统一处理，语义与逐包转发一致。
+   */
+  private enqueueTerminalOutput(data: Uint8Array): void {
+    if (this.isDetached()) {
+      // 分离态直接投递分离缓冲（有界内存队列），不进合并窗口：
+      // 重连补发路径保持逐包语义，也避免补发数据叠加合并延迟。
+      this.deliverTerminalOutput(data);
+      return;
+    }
+    this.terminalOutputCoalescer.push(data);
+  }
+
+  private deliverTerminalOutput(data: Uint8Array): void {
+    const channel = this.shellChannel;
+    if (this.isDetached()) {
+      if (channel) this.handleDetachedTerminalOutput(data, channel);
+      return;
+    }
+    try {
+      this.ws.send(data);
+    } catch (e) {
+      this.sendDebug(() => `Send shell output failed: ${e instanceof Error ? e.message : e}`);
+    }
+    this.recordShareTerminalOutput(data);
+    if (channel) this.queueLocalWindowAdjust(data.length, channel);
+    // Feed terminal context for Agent（流式解码：多字节字符跨包不裂）
+    try {
+      this.terminalContext.appendOutput(this.terminalTextDecoder.decode(data, { stream: true }));
+    } catch {
+      /* 解码/追加失败不影响主会话，静默忽略 */
     }
   }
 
@@ -3557,6 +3787,9 @@ export class SSHSession {
 
   close(normal: boolean = false): void {
     if (this.closed) return;
+    // 先冲刷合并中的终端输出：优雅收尾时不丢最后一段数据
+    // （ws 已不可发时 deliver 内部逐段吞错；分离态会落入分离缓冲随后一并清理）
+    this.terminalOutputCoalescer.flush();
     this.closed = true;
     this.detachedBuffer.clear();
     this.notifyShareSessionClosed(normal);
@@ -3627,6 +3860,7 @@ export class SSHSession {
     this.channelDataQueueHead = 0;
     this.channelDataQueueOffset = 0;
     this.channelDataQueueBytes = 0;
+    this.terminalOutputCoalescer.reset();
     this.isRekeying = false;
     this.rekeyWaiters = [];
     this.sendMutex = Promise.resolve();

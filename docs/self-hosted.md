@@ -15,7 +15,20 @@ bash scripts/deploy.sh --docker
 
 脚本构建镜像、初始化管理员密码并启动服务。**首次运行会显示一次随机管理员密码，请保存。** 再次运行保留账号和数据。打开 `http://localhost:8787`，使用管理员密码登录。
 
-默认绑定 `127.0.0.1:8787`。远程访问时使用 HTTPS 反向代理，将 `.env` 的 `BASE_URL` 改为浏览器实际访问的地址，例如 `https://ssh.example.com`，再运行脚本。反向代理需支持 WebSocket，并将 `/mcp` 请求超时设为至少 210 秒。`BASE_URL` 必须是完整源地址，不带路径；浏览器登录、WebSocket Origin 校验和 MCP 使用同一地址。
+默认绑定 `127.0.0.1:8787`。远程访问时使用 HTTPS 反向代理，将 `.env` 的 `BASE_URL` 改为浏览器实际访问的地址，例如 `https://ssh.example.com`，再运行脚本。反向代理需支持 WebSocket，并将 `/mcp` 请求超时设为至少 210 秒。`BASE_URL` 必须是完整源地址，不带路径。同源校验同时支持反代/自定义域名/CDN 中转部署（任意域名、无需预配置）：登录/写操作请求的 `Origin` 与该请求实际的 `Host` 一致，或与 `X-Forwarded-Host` 链首一致，即可通过校验——`BASE_URL` 与访问域名不同也不会被拒；跨站 `Origin`（与面板地址不同宿主）依旧被拒绝。反代满足任一条件即可：透传原始 Host（Caddy `header_up Host {host}`）、依赖 Caddy v2 `reverse_proxy` 默认追加的 `X-Forwarded-Host`、Cloudflare 代理（回源保留原 Host）。Nginx 默认改写 Host 且不发送 `X-Forwarded-Host`，需要显式配置：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8788;
+    proxy_set_header Host $host;              # 或: proxy_set_header X-Forwarded-Host $host;
+    proxy_http_version 1.1;                   # WebSocket（SSH 终端必需）
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 210s;                  # MCP 长请求
+}
+```
+
+若同源校验仍拒绝登录（403 Forbidden origin），服务端日志会打印 `origin/url/host/xfh` 四元组，据此核对反代头部即可定位。
 
 仅在受信任内网需要 HTTP 时，可以明确设置 `ALLOW_INSECURE_HTTP=true`、`BIND_ADDRESS=0.0.0.0` 和实际 `BASE_URL`。HTTP 会关闭 Cookie 的 Secure 属性。
 
@@ -32,6 +45,16 @@ docker compose logs --tail=100 cloudssh
 
 停止使用 `docker compose down`。保留数据卷；不要使用 `down -v`，该选项会删除服务器配置、凭据和审计数据。备份前停止服务，再备份整个数据卷，包含 SQLite 数据库及其 WAL 文件。SSH 凭据使用原项目 AES-GCM 行级加密，派生密钥材料也在数据卷内，因此需要保护整个备份。
 
+### 面板内备份导出与恢复
+
+账号设置页（`/account/settings`）提供「备份与恢复」区块：
+
+- **导出备份**：下载 `cloudssh-backup-<时间戳>.tar.gz`。包内含全部面板数据库的一致性快照（SQLite 经 `VACUUM INTO` 生成，无需停机，WAL 未 checkpoint 的数据也在内）与密钥/账号文件（`*.sqlite.secret`、`admin-account.json`）。每个文件在 `manifest.json` 里带 SHA-256 摘要。备份包含凭据密文，务必妥善保管。
+- **恢复备份**：选择备份包后服务端完整校验（gzip → tar → manifest 摘要逐一比对、文件名白名单防穿越），校验通过才落盘暂存，**重启服务后生效**。重启时现役文件自动移入数据目录下的 `pre-restore-<时间戳>/` 归档（确认恢复成功后可手动删除），暂存文件就位。恢复会断开当时活跃的 SSH 会话（重启即断，与常规重启一致）。
+- 恢复包体积上限 512 MiB；接口仅限管理员会话 + 同源调用。
+
+CLI 迁移到另一台机器：旧实例导出 → 新实例（同版本）登录后在同一页面上传 → 重启新实例。
+
 如需自选管理员密码，先构建镜像，再初始化：
 
 ```bash
@@ -44,9 +67,31 @@ docker compose up -d
 
 默认管理员账号为 `admin`（首次初始化可用 `ADMIN_USERNAME` 设置），原有部署升级后密码保持不变。登录后点击用户信息旁的「账号设置」，或访问 `/account/settings`，输入当前密码后即可修改账号或密码。新密码为 12–256 个字符；更改密码会立即使旧登录会话和 MCP 令牌失效，并关闭现有浏览器 SSH 连接，服务器与主机指纹数据保留。只修改账号会保留当前会话和 MCP 令牌。
 
-管理员登录默认启用自研滑块拼图验证码：登录对话框先拖动拼图对齐缺口，验证通过后才能提交密码（服务端校验拖拽轨迹与对齐精度，挑战单次使用）。如需关闭，在 compose.yaml 同目录 `.env` 写入 `CAPTCHA_MODE=off`（或导出环境变量后执行 `docker compose up -d`，compose 已透传该变量，默认 `on`）；`test` 值仅供自动化测试固定目标位，生产环境请勿使用。
+管理员登录默认启用自研图片字符验证码：登录对话框输入图中字符（不区分大小写）即可提交密码，看不清可点击图片换一张（服务端校验答案摘要与签名，答错即换图、挑战单次使用）。如需关闭，在 compose.yaml 同目录 `.env` 写入 `CAPTCHA_MODE=off`（或导出环境变量后执行 `docker compose up -d`，compose 已透传该变量，默认 `on`）；`test` 值仅供自动化测试固定答案，生产环境请勿使用。
+
+公网部署可选启用 Cloudflare Turnstile 人机验证（更强真人判定、免读图输入）：在 [Cloudflare Dashboard → Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile) 免费注册站点获取密钥对，在 `.env` 同时写入 `TURNSTILE_SITE_KEY` 与 `TURNSTILE_SECRET_KEY`（compose 已透传；两者缺一不启用）。启用后登录对话框以 Turnstile 组件取代图片验证码，服务端向 `challenges.cloudflare.com` 校验 token（单次使用、10 秒超时、网络异常 fail-closed）；仅需出站访问 Cloudflare，无需公网入站。注意：Turnstile 验证依赖浏览器可达 `challenges.cloudflare.com`，纯内网无外网环境请保持默认图片验证码。
 
 账号配置持久化到数据卷中的 `admin-account.json`（权限 600），只保存密码校验值。首次启动自动迁移旧 `admin-password-hash`；迁移后以 `admin-account.json` 为准，环境变量和旧文件不会覆盖页面修改的账号密码。原先保存的初始密码文本不会随页面修改更新。
+
+## 监控指标（/metrics）
+
+自托管运行时提供 Prometheus 抓取端点 `GET /metrics`：
+
+- **鉴权**：需在环境变量配置 `METRICS_BEARER_TOKEN`（任意高熵字符串）；未配置或令牌不匹配一律返回 `404`（不暴露端点存在性）。抓取请求不受 IP 限流约束（固定小响应）。
+- **指标**（全部为进程内即时 gauge）：`cloudssh_up`、`cloudssh_uptime_seconds`、`cloudssh_start_time_seconds`、`cloudssh_process_resident_memory_bytes`、`cloudssh_process_heap_used_bytes`、`cloudssh_ws_connections_active`（终端/SFTP/CLI WebSocket）、`cloudssh_ssh_pool_idle_chains`、`cloudssh_live_status_sessions` / `cloudssh_live_status_subscribers`、`cloudssh_cron_tasks`、`cloudssh_monitors`、`cloudssh_mcp_tokens_active`。
+- **Prometheus scrape 示例**：
+
+```yaml
+scrape_configs:
+  - job_name: cloudssh
+    scheme: http
+    authorization:
+      credentials: <METRICS_BEARER_TOKEN>
+    static_configs:
+      - targets: ['panel.example.com:8787']
+```
+
+该令牌仅供监控读取指标，与面板会话、MCP 令牌体系完全独立。
 
 ## 服务器文件密钥选择（文件浏览器）
 
@@ -112,7 +157,7 @@ WantedBy=multi-user.target
 
 1. 登录面板，添加服务器，在网页终端连接一次，确认并保存主机指纹。跳板链每一跳都需要已验证指纹。
 2. 点击服务器列表用户信息旁的 **MCP**，或访问 `/mcp/settings`。
-3. 创建令牌，选择服务器、权限和有效期（最多 365 天）。令牌仅显示一次。
+3. 创建令牌，选择服务器、权限和有效期（最多 365 天）。创建时显示一次，之后可在令牌列表随时点「查看」再次获取明文（加密副本存于 `mcp.sqlite` 同目录的密钥文件保护下，每次查看都会写入审计；旧版本创建的令牌没有可查看副本）。
 4. 在支持 Streamable HTTP 和 Bearer 请求头的 MCP 客户端中配置：
 
 ```json
@@ -155,8 +200,8 @@ WantedBy=multi-user.target
 - 令牌保存 SHA-256 摘要，可撤销、到期、按服务器和操作权限隔离；每次调用及命令执行前重新检查撤销状态。
 - 没有授权的工具不会出现在 `tools/list`。外部 Agent 无法指定新的服务器地址或获取面板凭据。
 - 首次／变更主机指纹需要用户在面板确认；MCP 自身不接受新指纹。
-- 管理接口要求浏览器会话；写操作校验 Origin。MCP 使用 Bearer 认证，有 Origin 时必须与 `BASE_URL` 一致。
-- 审计记录开始、成功、失败、拒绝或不确定结果；记录命令 SHA-256 和文件路径，不保存命令正文、输出或凭据。可在管理页查看、按游标加载较早记录。
+- 管理接口要求浏览器会话；写操作校验 Origin（同源或与请求实际 Host 同宿主的反代域名）。MCP 使用 Bearer 认证，有 Origin 时须同源或同宿主。
+- 审计记录开始、成功、失败、拒绝或不确定结果，以及每次调用的动作明细与来源 IP：命令 / SQL / 片段名 / 文件路径会保存正文（自动脱敏密码与 token 模式并限长，同时保留 SHA-256 供取证比对），但**不保存命令输出、令牌明文或服务器凭据**。查看令牌明文（`token_reveal`）同样入审计。可在管理页查看、按工具/状态/服务器/令牌筛选、按游标加载较早记录。
 - 最多 100 个有效令牌／用户、4 个并发 MCP HTTP 请求／令牌、64 个全局并发请求、256 个面板 SSH 对象；请求体最多 1 MiB。取消调用或客户端断开时关闭该调用的 SSH 链，已经产生的远端副作用不会回滚。遇到超时或不确定状态，先检查远端再决定是否重试。
 
 ## 自动化（定时任务、可用性监控、推送通知、密钥对生成、PWA）

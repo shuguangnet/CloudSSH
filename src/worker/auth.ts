@@ -1,5 +1,6 @@
 import type { Env, PasswordAuthParams, UserInfo } from '../types';
 import { captchaActiveFor, verifyCaptcha } from './captcha';
+import { turnstileActive, verifyTurnstileToken } from './turnstile';
 
 /**
  * GitHub OAuth 流程处理 + Session 中间件 + 单管理员密码认证
@@ -26,6 +27,42 @@ function getBaseUrl(env: Env, request: Request): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * 同源判定（CSRF 防护，支持反代/自定义域名部署）：
+ *  1) Origin 与请求自身 origin 严格一致 —— 标准同源（Workers 部署下的常态）；
+ *  2) 反代部署（如 https://panel.example.com → Caddy/Nginx → 容器）时
+ *     TLS 在代理终止，worker 侧看到的协议不可靠，退化为宿主比较：
+ *     Origin 的 host[:port] === 请求实际的 Host 头；
+ *  3) 中转/CDN 反代会把 Host 改写为上游地址，此时信任标准转发头
+ *     X-Forwarded-Host（取链首）。浏览器无法设置非 CORS-safelisted 头，
+ *     跨站请求的 X-Forwarded-Host 由面板自身反代链写入真实外部主机。
+ * 浏览器 CSRF 场景下，跨站请求的 Origin 是攻击者站点而 Host 头是面板地址，
+ * 仍被拒绝；非浏览器攻击者本就能伪造任意头，Origin 边界对其从无约束力。
+ */
+export function sameOriginOrHost(request: Request, url: URL): boolean {
+  const origin = request.headers.get('Origin');
+  if (!origin) return false;
+  if (origin === url.origin) return true;
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return false;
+  }
+  const originHost = originUrl.host.toLowerCase();
+  if (originHost === (request.headers.get('Host') ?? '').toLowerCase()) return true;
+  // 中转/CDN 反代（Caddy reverse_proxy 默认）会把 Host 改写为上游地址，
+  // 但按约定写入 X-Forwarded-Host 保留外部主机。浏览器无法设置非
+  // CORS-safelisted 头，跨站请求的 X-Forwarded-Host 由面板自身反代链写入
+  // 真实外部主机，攻击者站点无法伪造成自己 —— 判定安全性与 Host 头一致。
+  const forwarded = request.headers.get('X-Forwarded-Host');
+  if (forwarded) {
+    const first = forwarded.split(',')[0].trim().toLowerCase();
+    if (first && originHost === first) return true;
+  }
+  return false;
 }
 
 // ==================== 获取 UserDBDO stub ====================
@@ -481,7 +518,6 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Admin password hash is invalid' }, { status: 500 });
   }
 
-  // 同源 Origin 校验（登录会种会话 cookie，防跨站登录 CSRF；与 WS origin 边界同哲学）
   let url: URL;
   try {
     url = new URL(request.url);
@@ -489,11 +525,14 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
     return Response.json({ error: 'Invalid request URL' }, { status: 400 });
   }
   const origin = request.headers.get('Origin');
-  if (!origin || origin !== `${url.protocol}//${url.host}`) {
+  // 同源 Origin 校验（登录会种会话 cookie，防跨站登录 CSRF；反代域名部署下
+  // 按实际 Host 判定，见 sameOriginOrHost）
+  if (!origin || !sameOriginOrHost(request, url)) {
+    console.warn(`[Auth] forbidden origin: ${origin} url=${url.origin} host=${request.headers.get('Host')} xfh=${request.headers.get('X-Forwarded-Host')}`);
     return Response.json({ error: 'Forbidden origin' }, { status: 403 });
   }
 
-  let body: { key?: unknown; username?: unknown; captcha?: unknown };
+  let body: { key?: unknown; username?: unknown; captcha?: unknown; turnstileToken?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -508,10 +547,18 @@ export async function handlePasswordLogin(request: Request, env: Env): Promise<R
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const stub = getUserDBStub(env, LOCAL_ADMIN_GITHUB_ID);
 
-  // 滑块验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
-  // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
-  if (captchaActiveFor(env)) {
-    const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; x?: unknown; samples?: unknown });
+  // Cloudflare Turnstile 人机验证（可选）：公网部署防爆破推荐。配置后必验，
+  // 并取代图片字符验证码（更强人机判定，免去用户读图输入）。
+  if (turnstileActive(env)) {
+    const turnstile = await verifyTurnstileToken(env, body.turnstileToken, clientIP);
+    if (!turnstile.ok) {
+      console.warn(`[Auth] password_login result=denied reason=turnstile:${turnstile.reason} ip=${clientIP}`);
+      return Response.json({ error: 'Turnstile verification failed' }, { status: 403 });
+    }
+  } else if (captchaActiveFor(env)) {
+    // 图片字符验证码（默认启用；详见 src/worker/captcha.ts —— 轻量机器人摩擦，
+    // 真实防线仍是下方哨兵 DO 节流 + PBKDF2 恒时比对）
+    const captcha = await verifyCaptcha(env, (body.captcha ?? {}) as { challenge?: unknown; answer?: unknown });
     if (!captcha.ok) {
       console.warn(`[Auth] password_login result=denied reason=captcha:${captcha.reason} ip=${clientIP}`);
       return Response.json({ error: 'Captcha verification failed' }, { status: 403 });

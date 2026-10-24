@@ -5,6 +5,7 @@ import test from 'node:test';
 import { solveCaptcha } from './captcha-helper.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
+import { request } from 'node:http';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,10 +15,12 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 
-import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand } from '../../standalone/docker.mjs';
+import { listContainersScript, parseContainerLines, buildDockerAction, buildDockerLogsCommand, statsScript, parseStatsLines, imagesScript, parseImageLines, buildImageAction } from '../../standalone/docker.mjs';
 
 test('docker command builders validate names, actions and tails', () => {
   assert.equal(listContainersScript(), "docker ps -a --no-trunc --format '{{json .}}'");
+  assert.equal(statsScript(), "docker stats --no-stream --format '{{json .}}'");
+  assert.equal(imagesScript(), "docker images --no-trunc --format '{{json .}}'");
 
   assert.equal(buildDockerAction('caddy', 'restart').command, "docker restart 'caddy'");
   assert.equal(buildDockerAction('filebrowser', 'remove').command, "docker rm -f 'filebrowser'");
@@ -38,6 +41,56 @@ test('docker command builders validate names, actions and tails', () => {
   // undefined falls back to the 200-line default.
   assert.equal(buildDockerLogsCommand('caddy').command, "docker logs --timestamps --tail 200 'caddy' 2>&1");
   assert.equal(buildDockerLogsCommand('caddy', '500').command, "docker logs --timestamps --tail 500 'caddy' 2>&1");
+});
+
+test('parseImageLines maps docker images JSON and flags dangling/unreferenced images', () => {
+  const stdout = [
+    '{"Containers":"1","CreatedAt":"2026-10-11 08:05:08 +0200 CEST","CreatedSince":"13 hours ago","Digest":"\u003cnone\u003e","ID":"sha256:26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"caddy","SharedSize":"0B","Size":"52.4MB","UniqueSize":"52.4MB","VirtualSize":"52.4MB"}',
+    '{"Containers":"0","CreatedAt":"2026-10-11 07:00:00 +0000 UTC","CreatedSince":"2 days ago","ID":"sha256:e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789","Repository":"\u003cnone\u003e","Tag":"\u003cnone\u003e","Size":"12MB"}',
+    'junk line',
+    '{"ID":""}',
+  ].join('\n');
+  const images = parseImageLines(stdout);
+  assert.equal(images.length, 2, 'junk and empty-ID lines dropped');
+  assert.equal(images[0].repository, 'caddy');
+  assert.equal(images[0].tag, ''); // absent Tag → empty string
+  assert.equal(images[0].short_id, '26c57eb76210');
+  assert.equal(images[0].containers, 1);
+  assert.equal(images[0].size, '52.4MB');
+  assert.equal(images[0].created_since, '13 hours', 'trailing " ago" stripped');
+  assert.equal(images[1].dangling, true);
+  assert.equal(images[1].containers, 0);
+});
+
+test('buildImageAction validates refs and maps prune variants', () => {
+  assert.deepEqual(buildImageAction('nginx:alpine', 'pull'), { command: "docker pull 'nginx:alpine'", timeout: 300000 });
+  assert.deepEqual(buildImageAction('ghcr.io/a/b:v1.2', 'remove'), { command: "docker rmi -f 'ghcr.io/a/b:v1.2'", timeout: 60000 });
+  assert.equal(buildImageAction(null, 'prune-dangling').command, 'docker image prune -f');
+  assert.equal(buildImageAction(null, 'prune-all').command, 'docker image prune -a -f');
+  for (const bad of ['nginx:alpine; rm -rf /', '', 'a b', '$(x)', '-leadingdash', 'a..b', 'with$var']) {
+    assert.throws(() => buildImageAction(bad, 'pull'), /Invalid image reference/);
+    assert.throws(() => buildImageAction(bad, 'remove'), /Invalid image reference/);
+  }
+  assert.throws(() => buildImageAction('nginx', 'explode'), /Unsupported action/);
+});
+
+test('parseStatsLines maps docker stats JSON, strips name prefixes and tolerates junk lines', () => {
+  const stdout = [
+    '{"BlockIO":"1.2kB / 3.4MB","CPUPerc":"0.12%","MemUsage":"1.5GiB / 3.8GiB","MemPerc":"39.4%","NetIO":"5MB / 2MB","PIDs":"7","ID":"26c57eb76210","Name":"/caddy"}',
+    'WARNING: some notice line',
+    '{"BlockIO":"0B / 0B","CPUPerc":"0.00%","MemUsage":"0B / 0B","MemPerc":"0.00%","NetIO":"0B / 0B","ID":"e16e50103cf4","Name":"second,alias"}',
+    'not json at all',
+    '',
+  ].join('\n');
+  const stats = parseStatsLines(stdout);
+  assert.equal(stats.size, 2);
+  assert.deepEqual(stats.get('caddy'), {
+    cpu_percent: '0.12%', mem_usage: '1.5GiB / 3.8GiB', mem_percent: '39.4%',
+    net_io: '5MB / 2MB', block_io: '1.2kB / 3.4MB',
+  });
+  assert.equal(stats.get('second').mem_usage, '0B / 0B');
+  assert.equal(parseStatsLines('').size, 0);
+  assert.equal(parseStatsLines(null).size, 0);
 });
 
 test('parseContainerLines maps docker ps JSON and tolerates junk lines', () => {
@@ -123,6 +176,38 @@ test('docker API enforces auth and ownership', { timeout: 60000 }, async () => {
     // Cross-origin POST is rejected.
     assert.equal((await fetch(`${base}/api/docker/${id}/action`, { method: 'POST', headers: { Cookie: cookie, Origin: 'http://evil.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ container: 'caddy', action: 'start' }) })).status, 403);
 
+    // SSH-tunnel / reverse-proxy access: Origin differs from BASE_URL but matches
+    // the request Host (or X-Forwarded-Host). Must stay allowed like the main
+    // routes, or docker logs POSTs fail with "Invalid origin" over the tunnel.
+    // fetch() cannot override Host, so issue a raw request instead.
+    const tunneled = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'localhost:8788', Origin: 'http://localhost:8788', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: raw }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    // 400: input validation reached (container name passes regex, but the server
+    // entry's port is unreachable — validation precedes SSH). The point: NOT 403.
+    assert.notEqual(tunneled.status, 403, `tunnel POST must not be rejected as CSRF: ${tunneled.body}`);
+    const forwarded = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'proxy.internal', 'X-Forwarded-Host': 'panel.example.com', Origin: 'https://panel.example.com', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: raw }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    assert.notEqual(forwarded.status, 403, `X-Forwarded-Host POST must not be rejected as CSRF: ${forwarded.body}`);
+    // But an Origin that matches neither BASE_URL nor Host nor XFH stays forbidden.
+    const spoofed = await new Promise((resolve) => {
+      const req = request(`http://127.0.0.1:${port}/api/docker/${id}/logs`, { method: 'POST', headers: { Host: 'localhost:8788', Origin: 'http://evil.example', Cookie: cookie, 'Content-Type': 'application/json' } }, (res) => {
+        let raw = ''; res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      req.end(JSON.stringify({ container: 'caddy', tail: 100 }));
+    });
+    assert.equal(spoofed.status, 403);
+
     // A saved server without a trusted fingerprint fails politely (502, not a crash).
     const blocked = await api(`/api/docker/${id}/containers`);
     assert.equal(blocked.status, 502);
@@ -152,9 +237,34 @@ test('docker API manages containers over a real SSH connection with a stub docke
     `  printf '%s\\n' '{"Names":"filebrowser","ID":"e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789","Image":"filebrowser/filebrowser:latest","State":"exited","Status":"Exited (0) 2 minutes ago","RunningFor":"2 minutes ago","Ports":"0.0.0.0:8060->80/tcp, [::]:8060->80/tcp","CreatedAt":"2026-10-11 07:00:00 +0000 UTC"}'`,
     '  exit 0',
     'fi',
+    'if [ "$1" = "stats" ]; then',
+    `  printf '%s\n' '{"BlockIO":"1.2kB / 3.4MB","CPUPerc":"0.12%","MemUsage":"1.5GiB / 3.8GiB","MemPerc":"39.4%","NetIO":"5MB / 2MB","PIDs":"7","ID":"26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Name":"caddy"}'`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "images" ]; then',
+    `  printf '%s\n' '{"Containers":"1","CreatedAt":"2026-10-11 08:05:08 +0200 CEST","CreatedSince":"13 hours ago","Digest":"\u003cnone\u003e","ID":"sha256:26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"caddy","SharedSize":"0B","Size":"52.4MB","UniqueSize":"52.4MB"}'`,
+    `  printf '%s\n' '{"Containers":"0","CreatedAt":"2026-10-11 07:00:00 +0000 UTC","CreatedSince":"2 days ago","ID":"sha256:e16e50103cf4abcde0123456789abcdef0123456789abcdef0123456789abcdef0123456789","Repository":"\u003cnone\u003e","Tag":"\u003cnone\u003e","Size":"12MB"}'`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "pull" ]; then',
+    '  echo "IMAGE:$*"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "rmi" ] || [ "$1" = "image" ]; then',
+    '  echo "IMAGE:$*"',
+    '  exit 0',
+    'fi',
     'if [ "$1" = "logs" ]; then',
     '  echo "2026-10-11T08:00:01.000000000Z stub log line 1"',
     '  echo "2026-10-11T08:00:02.000000000Z stub log line 2"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "inspect" ] && [ "$2" = "caddy" ]; then',
+    `  printf '%s\n' '[{"Name":"/caddy","Id":"26c57eb7621099abcdef0123456789abcdef0123456789abcdef0123456789","Config":{"Image":"caddy:latest","Hostname":"","User":"","WorkingDir":"","Env":["X=1"],"Labels":{"a":"b"},"Entrypoint":null,"Cmd":["caddy","run","--config","/etc/caddy/Caddyfile"],"Privileged":false},"HostConfig":{"Privileged":false,"PortBindings":{"80/tcp":[{"HostIp":"","HostPort":"8081"}]},"Binds":["/srv/caddy:/etc/caddy:ro"],"Devices":null,"ExtraHosts":null,"RestartPolicy":{"Name":"unless-stopped","MaximumRetryCount":0},"NetworkMode":"bridge"},"NetworkSettings":{"Networks":{"bridge":{}}},"State":{"Running":true}}]'`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then',
+    '  echo true',
     '  exit 0',
     'fi',
     'if [ "$1" = "stop" ] && [ "$2" = "failcase" ]; then',
@@ -213,6 +323,27 @@ test('docker API manages containers over a real SSH connection with a stub docke
     assert.equal(containers[0].name, 'caddy');
     assert.equal(containers[0].state, 'running');
     assert.equal(containers[0].running_for, '13 hours');
+    // Stats from the stub merge into running containers only.
+    assert.equal(containers[0].cpu_percent, '0.12%');
+    assert.equal(containers[0].mem_usage, '1.5GiB / 3.8GiB');
+    assert.equal(containers[0].mem_percent, '39.4%');
+    assert.equal(containers[1].name, 'filebrowser');
+    assert.equal(containers[1].cpu_percent, undefined, 'stopped containers have no stats');
+
+    // Image list and image actions share the same exec pipeline.
+    const listedImages = await api(`/api/docker/${id}/images`);
+    assert.equal(listedImages.status, 200);
+    const { images } = await listedImages.json();
+    assert.equal(images.length, 2);
+    assert.equal(images[0].repository, 'caddy');
+    assert.equal(images[1].dangling, true);
+    const pulled = await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx:alpine', action: 'pull' });
+    assert.equal(pulled.status, 200);
+    assert.match((await pulled.json()).stdout, /IMAGE:pull nginx:alpine/);
+    const pruned = await api(`/api/docker/${id}/image-action`, 'POST', { action: 'prune-dangling' });
+    assert.match((await pruned.json()).stdout, /IMAGE:image prune -f/);
+    assert.equal((await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx; rm -rf /', action: 'pull' })).status, 400, 'dangerous refs rejected');
+    assert.equal((await api(`/api/docker/${id}/image-action`, 'POST', { ref: 'nginx', action: 'explode' })).status, 400);
     assert.equal(containers[1].name, 'filebrowser');
     assert.equal(containers[1].state, 'exited');
 
@@ -232,11 +363,52 @@ test('docker API manages containers over a real SSH connection with a stub docke
     assert.equal(failedResult.ok, false);
     assert.match(failedResult.stderr, /cannot stop container: failcase/);
 
+    // Container upgrade: inspect → pull → stop → rename → run → verify → drop backup.
+    const upgraded = await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'caddy:2' });
+    const upgradeBody = await upgraded.json();
+    assert.equal(upgraded.status, 200, JSON.stringify(upgradeBody));
+    assert.equal(upgradeBody.ok, true, JSON.stringify(upgradeBody));
+    const upgradeSteps = upgradeBody.steps.join('\n');
+    assert.match(upgradeSteps, /inspect: caddy \(caddy:latest\)/);
+    assert.match(upgradeSteps, /pull: caddy:2/);
+    assert.match(upgradeSteps, /rename: caddy-bak-/);
+    assert.equal(upgradeBody.backupRemoved, true);
+    // keep_backup keeps the renamed old container around instead of removing it.
+    await delay(1600); // per-server upgrade throttle window
+    const kept = await (await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'caddy:2', keep_backup: true })).json();
+    assert.equal(kept.ok, true, JSON.stringify(kept));
+    assert.match(kept.backupName, /^caddy-bak-/);
+    assert.equal(kept.backupRemoved, false, 'keep_backup must not remove the old container');
+    // Injection attempts are rejected before touching the remote host.
+    assert.equal((await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy; rm -rf /', image: 'caddy:2' })).status, 400);
+    assert.equal((await api(`/api/docker/${id}/upgrade`, 'POST', { container: 'caddy', image: 'cady; evil' })).status, 400);
+
     // Logs render the stub output with timestamps.
     const logs = await api(`/api/docker/${id}/logs`, 'POST', { container: 'caddy', tail: 100 });
     assert.equal(logs.status, 200);
     const logsBody = await logs.json();
     assert.match(logsBody.logs, /stub log line 1\n.*stub log line 2/);
+
+    // Regression (db069fc): aborting an in-flight docker listing (client
+    // disconnect) must not poison the cooldown for the replacement request.
+    // Slow the ps stub down so the abort lands while SSH is still running.
+    await delay(1600);
+    writeFileSync(join(binDir, 'docker'), stubLines.join('\n').replace('if [ "$1" = "ps" ]; then', 'if [ "$1" = "ps" ]; then\n  sleep 2') + '\n');
+    let aborting = true;
+    try {
+      const aborter = new AbortController();
+      const inflight = fetch(`${base}/api/docker/${id}/containers`, { signal: aborter.signal, headers: { Cookie: cookie, Origin: base } });
+      await delay(400);
+      aborter.abort();
+      await inflight.catch(() => {});
+      const replacement = await api(`/api/docker/${id}/containers`);
+      if (replacement.status !== 200) throw new Error(`replacement after abort got ${replacement.status}: ${JSON.stringify(await replacement.json().catch(() => ({})))}`);
+      assert.equal(replacement.status, 200);
+      aborting = false;
+    } finally {
+      if (aborting) writeFileSync(join(binDir, 'docker'), stubLines.join('\n') + '\n');
+    }
+    writeFileSync(join(binDir, 'docker'), stubLines.join('\n') + '\n');
 
     // After the throttle window the list works again.
     await delay(1600);

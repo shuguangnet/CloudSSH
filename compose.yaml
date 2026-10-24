@@ -16,6 +16,8 @@ services:
       GITHUB_ALLOWED_USER_IDS: "${GITHUB_ALLOWED_USER_IDS:-}"
       IDLE_TIMEOUT: "${IDLE_TIMEOUT:-30m}"
       CAPTCHA_MODE: "${CAPTCHA_MODE:-on}"
+      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
+      TURNSTILE_SECRET_KEY: "${TURNSTILE_SECRET_KEY:-}"
     volumes:
       - cloudssh-data:/app/data
     read_only: true
